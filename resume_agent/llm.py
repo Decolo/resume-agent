@@ -11,6 +11,73 @@ from google import genai
 from google.genai import types
 
 
+class HistoryManager:
+    """Manages conversation history with automatic pruning."""
+
+    def __init__(self, max_messages: int = 50, max_tokens: int = 100000):
+        """
+        Initialize history manager.
+
+        Args:
+            max_messages: Maximum number of messages to keep
+            max_tokens: Estimated maximum tokens to keep
+        """
+        self.max_messages = max_messages
+        self.max_tokens = max_tokens
+        self._history: List[types.Content] = []
+
+    def add_message(self, message: types.Content):
+        """Add a message and prune if needed."""
+        self._history.append(message)
+        self._prune_if_needed()
+
+    def get_history(self) -> List[types.Content]:
+        """Get current history."""
+        return self._history
+
+    def clear(self):
+        """Clear all history."""
+        self._history.clear()
+
+    def _prune_if_needed(self):
+        """Prune history if it exceeds limits."""
+        # Message count pruning
+        if len(self._history) > self.max_messages:
+            # Keep recent messages (sliding window)
+            self._history = self._history[-self.max_messages:]
+
+        # Token-based pruning (rough estimate)
+        estimated_tokens = sum(self._estimate_tokens(msg) for msg in self._history)
+        if estimated_tokens > self.max_tokens:
+            # Remove oldest messages until under limit
+            while estimated_tokens > self.max_tokens and len(self._history) > 1:
+                removed = self._history.pop(0)
+                estimated_tokens -= self._estimate_tokens(removed)
+
+    def _estimate_tokens(self, message: types.Content) -> int:
+        """
+        Estimate token count for a message.
+
+        Uses rough heuristic: 1 token ≈ 4 characters
+        """
+        total_chars = 0
+        for part in message.parts:
+            if part.text:
+                total_chars += len(part.text)
+            elif part.function_call:
+                # Estimate function call size
+                total_chars += len(part.function_call.name) * 2
+                if part.function_call.args:
+                    total_chars += len(str(dict(part.function_call.args)))
+            elif part.function_response:
+                # Estimate function response size
+                total_chars += len(part.function_response.name) * 2
+                if part.function_response.response:
+                    total_chars += len(str(dict(part.function_response.response)))
+
+        return total_chars // 4  # Rough estimate: 4 chars per token
+
+
 @dataclass
 class Message:
     """A message in the conversation."""
@@ -53,15 +120,15 @@ class GeminiAgent:
         self.config = config
         self.system_prompt = system_prompt
         self._resolve_api_key()
-        
+
         # Initialize the client
         self.client = genai.Client(api_key=self.config.api_key)
-        
+
         # Tools registry: name -> (function, schema)
         self._tools: Dict[str, tuple] = {}
-        
-        # Chat history for the session
-        self._history: List[types.Content] = []
+
+        # History manager with automatic pruning
+        self.history_manager = HistoryManager(max_messages=50, max_tokens=100000)
 
     def _resolve_api_key(self):
         """Resolve API key from environment if needed."""
@@ -127,7 +194,7 @@ class GeminiAgent:
     async def run(self, user_input: str, max_steps: int = 20) -> str:
         """Run the agent with user input, handling tool calls automatically."""
         # Add user message to history
-        self._history.append(types.Content(
+        self.history_manager.add_message(types.Content(
             role="user",
             parts=[types.Part.from_text(text=user_input)],
         ))
@@ -139,7 +206,7 @@ class GeminiAgent:
             # Generate response
             response = self.client.models.generate_content(
                 model=self.config.model,
-                contents=self._history,
+                contents=self.history_manager.get_history(),
                 config=types.GenerateContentConfig(
                     system_instruction=self.system_prompt if self.system_prompt else None,
                     tools=self._get_tools(),
@@ -162,7 +229,7 @@ class GeminiAgent:
                     text_parts.append(part.text)
             
             # Add model response to history
-            self._history.append(candidate.content)
+            self.history_manager.add_message(candidate.content)
             
             if function_calls:
                 # Execute function calls in parallel
@@ -209,7 +276,7 @@ class GeminiAgent:
                 )
                 
                 # Add function responses to history
-                self._history.append(types.Content(
+                self.history_manager.add_message(types.Content(
                     role="user",
                     parts=function_responses,
                 ))
@@ -222,7 +289,7 @@ class GeminiAgent:
 
     def reset(self):
         """Reset conversation history."""
-        self._history = []
+        self.history_manager.clear()
 
 
 def load_config(config_path: str = "config/config.yaml") -> LLMConfig:
