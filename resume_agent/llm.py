@@ -165,32 +165,30 @@ class GeminiAgent:
             self._history.append(candidate.content)
             
             if function_calls:
-                # Execute function calls
-                function_responses = []
-                
-                for fc in function_calls:
+                # Execute function calls in parallel
+                async def execute_single_tool(fc):
+                    """Execute a single tool call and return the response."""
                     func_name = fc.name
                     func_args = dict(fc.args) if fc.args else {}
-                    
+
                     print(f"\n🔧 Tool: {func_name}")
                     print(f"   Args: {json.dumps(func_args, indent=2)[:200]}")
-                    
+
                     if func_name in self._tools:
                         func, _ = self._tools[func_name]
                         try:
                             # Execute the tool (await if async)
-                            import asyncio
                             if asyncio.iscoroutinefunction(func):
                                 result = await func(**func_args)
                             else:
                                 result = func(**func_args)
-                            
+
                             # Convert ToolResult to string if needed
                             if hasattr(result, 'to_message'):
                                 result_str = result.to_message()
                             else:
                                 result_str = str(result)
-                            
+
                             print(f"   ✅ Result: {result_str[:200]}{'...' if len(result_str) > 200 else ''}")
                         except Exception as e:
                             result_str = f"Error: {str(e)}"
@@ -198,11 +196,17 @@ class GeminiAgent:
                     else:
                         result_str = f"Error: Unknown tool '{func_name}'"
                         print(f"   ❌ {result_str}")
-                    
-                    function_responses.append(types.Part.from_function_response(
+
+                    return types.Part.from_function_response(
                         name=func_name,
                         response={"result": result_str},
-                    ))
+                    )
+
+                # Execute all tools in parallel
+                function_responses = await asyncio.gather(
+                    *[execute_single_tool(fc) for fc in function_calls],
+                    return_exceptions=False
+                )
                 
                 # Add function responses to history
                 self._history.append(types.Content(
