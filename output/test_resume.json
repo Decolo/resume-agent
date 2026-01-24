@@ -1,0 +1,21 @@
+{
+  "basics": {
+    "name": "Test Resume",
+    "label": "",
+    "email": "",
+    "phone": "",
+    "summary": "A test resume."
+  },
+  "work": [],
+  "education": [],
+  "skills": [
+    {
+      "name": "Python",
+      "keywords": []
+    },
+    {
+      "name": "JavaScript",
+      "keywords": []
+    }
+  ]
+}
