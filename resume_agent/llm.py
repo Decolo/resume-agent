@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 
 from google import genai
 from google.genai import types
+
+from .retry import retry_with_backoff, RetryConfig
+from .observability import AgentObserver
+from .cache import ToolCache, should_cache_tool, get_tool_ttl
 
 
 class HistoryManager:
@@ -130,6 +136,12 @@ class GeminiAgent:
         # History manager with automatic pruning
         self.history_manager = HistoryManager(max_messages=50, max_tokens=100000)
 
+        # Observability for logging and metrics
+        self.observer = AgentObserver()
+
+        # Tool result caching
+        self.cache = ToolCache()
+
     def _resolve_api_key(self):
         """Resolve API key from environment if needed."""
         if self.config.api_key.startswith("${") and self.config.api_key.endswith("}"):
@@ -202,17 +214,52 @@ class GeminiAgent:
         step = 0
         while step < max_steps:
             step += 1
-            
-            # Generate response
-            response = self.client.models.generate_content(
+
+            # Log step start
+            self.observer.log_step_start(step, user_input if step == 1 else None)
+
+            # Generate response with retry logic
+            import time
+            start_time = time.time()
+
+            async def make_llm_request():
+                return self.client.models.generate_content(
+                    model=self.config.model,
+                    contents=self.history_manager.get_history(),
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt if self.system_prompt else None,
+                        tools=self._get_tools(),
+                        max_output_tokens=self.config.max_tokens,
+                        temperature=self.config.temperature,
+                    ),
+                )
+
+            # Retry configuration for LLM calls
+            retry_config = RetryConfig(
+                max_attempts=3,
+                base_delay=1.0,
+                max_delay=60.0,
+                exponential_base=2.0,
+                jitter_factor=0.2
+            )
+
+            response = await retry_with_backoff(
+                make_llm_request,
+                retry_config
+            )
+
+            # Log LLM request (rough token estimate and cost)
+            llm_duration = (time.time() - start_time) * 1000  # Convert to ms
+            estimated_tokens = sum(self.history_manager._estimate_tokens(msg)
+                                   for msg in self.history_manager.get_history())
+            # Gemini 2.5 Flash pricing: ~$0.08 per 1M input tokens
+            estimated_cost = (estimated_tokens / 1_000_000) * 0.08
+            self.observer.log_llm_request(
                 model=self.config.model,
-                contents=self.history_manager.get_history(),
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_prompt if self.system_prompt else None,
-                    tools=self._get_tools(),
-                    max_output_tokens=self.config.max_tokens,
-                    temperature=self.config.temperature,
-                ),
+                tokens=estimated_tokens,
+                cost=estimated_cost,
+                duration_ms=llm_duration,
+                step=step
             )
             
             # Check for function calls
@@ -238,31 +285,68 @@ class GeminiAgent:
                     func_name = fc.name
                     func_args = dict(fc.args) if fc.args else {}
 
-                    print(f"\n🔧 Tool: {func_name}")
-                    print(f"   Args: {json.dumps(func_args, indent=2)[:200]}")
+                    tool_start_time = time.time()
+                    success = True
+                    result_str = ""
+                    cached = False
 
-                    if func_name in self._tools:
-                        func, _ = self._tools[func_name]
-                        try:
-                            # Execute the tool (await if async)
-                            if asyncio.iscoroutinefunction(func):
-                                result = await func(**func_args)
-                            else:
-                                result = func(**func_args)
+                    # Check cache first (only for cacheable tools)
+                    if should_cache_tool(func_name):
+                        cached_result = self.cache.get(func_name, func_args)
+                        if cached_result is not None:
+                            result_str = cached_result
+                            cached = True
+                            success = True
 
-                            # Convert ToolResult to string if needed
-                            if hasattr(result, 'to_message'):
-                                result_str = result.to_message()
-                            else:
-                                result_str = str(result)
+                    # If not cached, execute the tool
+                    if not cached:
+                        if func_name in self._tools:
+                            func, _ = self._tools[func_name]
+                            try:
+                                # Execute the tool (await if async)
+                                if asyncio.iscoroutinefunction(func):
+                                    result = await func(**func_args)
+                                else:
+                                    result = func(**func_args)
 
-                            print(f"   ✅ Result: {result_str[:200]}{'...' if len(result_str) > 200 else ''}")
-                        except Exception as e:
-                            result_str = f"Error: {str(e)}"
-                            print(f"   ❌ {result_str}")
-                    else:
-                        result_str = f"Error: Unknown tool '{func_name}'"
-                        print(f"   ❌ {result_str}")
+                                # Convert ToolResult to string if needed
+                                if hasattr(result, 'to_message'):
+                                    result_str = result.to_message()
+                                else:
+                                    result_str = str(result)
+
+                                # Cache the result if tool is cacheable
+                                if should_cache_tool(func_name):
+                                    ttl = get_tool_ttl(func_name)
+                                    self.cache.set(func_name, func_args, result_str, ttl)
+
+                            except Exception as e:
+                                success = False
+                                result_str = f"Error: {str(e)}"
+                                self.observer.log_error(
+                                    error_type="tool_execution",
+                                    message=str(e),
+                                    context={"tool": func_name, "args": func_args}
+                                )
+                        else:
+                            success = False
+                            result_str = f"Error: Unknown tool '{func_name}'"
+                            self.observer.log_error(
+                                error_type="unknown_tool",
+                                message=f"Tool '{func_name}' not found",
+                                context={"tool": func_name}
+                            )
+
+                    # Log tool execution
+                    tool_duration = (time.time() - tool_start_time) * 1000
+                    self.observer.log_tool_call(
+                        tool_name=func_name,
+                        args=func_args,
+                        result=result_str,
+                        duration_ms=tool_duration,
+                        success=success,
+                        cached=cached
+                    )
 
                     return types.Part.from_function_response(
                         name=func_name,
@@ -280,11 +364,25 @@ class GeminiAgent:
                     role="user",
                     parts=function_responses,
                 ))
+
+                # Log step end
+                step_duration = (time.time() - start_time) * 1000
+                self.observer.log_step_end(step, step_duration)
             else:
                 # No function calls - return the text response
+                step_duration = (time.time() - start_time) * 1000
+                self.observer.log_step_end(step, step_duration)
+
                 final_text = "".join(text_parts)
+
+                # Print session summary
+                self.observer.print_session_summary()
+
+                # Print cache statistics
+                self.cache.print_stats()
+
                 return final_text
-        
+
         return f"Max steps ({max_steps}) reached."
 
     def reset(self):
@@ -296,20 +394,26 @@ def load_config(config_path: str = "config/config.yaml") -> LLMConfig:
     """Load LLM configuration from YAML file."""
     import yaml
     from pathlib import Path
-    
+
     path = Path(config_path)
     if not path.exists():
         path = Path(__file__).parent.parent / config_path
-    
+
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
-    
+
     with open(path) as f:
         data = yaml.safe_load(f)
-    
-    return LLMConfig(
+
+    config = LLMConfig(
         api_key=data.get("api_key", ""),
         model=data.get("model", "gemini-2.0-flash"),
         max_tokens=data.get("max_tokens", 4096),
         temperature=data.get("temperature", 0.7),
     )
+
+    # Add extra fields for OpenAI compatibility
+    config.api_type = data.get("api_type", "gemini")
+    config.api_base = data.get("api_base", "")
+
+    return config

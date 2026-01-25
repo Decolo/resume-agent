@@ -10,6 +10,18 @@ An AI-powered resume modification agent built on open-source LLM agent technolog
 - 💬 **Interactive CLI**: Rich command-line interface with conversation history
 - 📝 **Resume Expert Knowledge**: Built-in expertise for ATS optimization, action verbs, and best practices
 
+## 📚 Documentation
+
+Complete documentation is available in the `/docs` directory:
+
+- **[Quick Start](./docs/quick-start.md)** - Get running in 3 steps
+- **[Getting Started Guide](./docs/getting-started.md)** - Comprehensive setup and configuration
+- **[How to Run](./docs/how-to-run.md)** - Multiple ways to launch the agent
+- **[Architecture Overview](./.claude/CLAUDE.md)** - System design and components (Claude Code instructions)
+- **[Phase 1 Improvements](./docs/architecture/phase1-improvements.md)** - Technical improvements
+- **[API Reference](./docs/api-reference/phase1-quick-reference.md)** - Code examples and API usage
+- **[Workspace Guide](./docs/workspace/my-resume-guide.md)** - Using the example workspace
+
 ## Quick Start
 
 ### 1. Install Dependencies
@@ -26,39 +38,26 @@ pip install -e .
 
 ### 2. Configure API Key
 
-Edit `config/config.yaml`:
+Edit `config/config.yaml` or set environment variable:
 
-```yaml
-# Google Gemini (default)
-api_key: "your-gemini-api-key"
-api_base: "https://generativelanguage.googleapis.com/v1beta"
-model: "gemini-2.0-flash"  # or gemini-1.5-pro
-
-# Or use OpenAI
-# api_key: "your-openai-api-key"
-# api_base: "https://api.openai.com/v1"
-# model: "gpt-4o"
-```
-
-Or set environment variable:
 ```bash
-export GEMINI_API_KEY="your-key"
-# or
-export OPENAI_API_KEY="your-key"
+export GEMINI_API_KEY="your-gemini-api-key"
 ```
 
 ### 3. Run the Agent
 
 ```bash
-# Interactive mode
-resume-agent
+# Interactive mode (recommended)
+uv run resume-agent --workspace ./examples/my_resume
 
 # Or with Python
-python -m resume_agent.cli
+uv run python -m resume_agent.cli
 
 # Single prompt mode
-resume-agent --prompt "Analyze the resume in examples/sample_resumes/sample_resume.md"
+uv run resume-agent --prompt "Parse my resume and analyze it"
 ```
+
+For detailed instructions, see [Quick Start Guide](./docs/quick-start.md).
 
 ## Usage Examples
 

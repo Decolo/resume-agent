@@ -1,8 +1,10 @@
 """File operation tools - read, write, list files."""
 
-import os
 from pathlib import Path
 from .base import BaseTool, ToolResult
+
+# Constants
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 
 class FileReadTool(BaseTool):
@@ -26,6 +28,16 @@ class FileReadTool(BaseTool):
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
 
+    def _is_binary(self, file_path: Path) -> bool:
+        """Check if a file is binary by reading first chunk."""
+        try:
+            with open(file_path, 'rb') as f:
+                chunk = f.read(512)
+            # Check for null bytes (common in binary files)
+            return b'\x00' in chunk
+        except Exception:
+            return False
+
     async def execute(self, path: str, encoding: str = "utf-8") -> ToolResult:
         try:
             file_path = self._resolve_path(path)
@@ -33,6 +45,23 @@ class FileReadTool(BaseTool):
                 return ToolResult(success=False, output="", error=f"File not found: {path}")
             if not file_path.is_file():
                 return ToolResult(success=False, output="", error=f"Not a file: {path}")
+
+            # Check file size
+            file_size = file_path.stat().st_size
+            if file_size > MAX_FILE_SIZE:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"File too large: {file_size} bytes (max {MAX_FILE_SIZE} bytes)"
+                )
+
+            # Check if binary file
+            if self._is_binary(file_path):
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Cannot read binary file: {path}"
+                )
 
             content = file_path.read_text(encoding=encoding)
             return ToolResult(

@@ -26,6 +26,8 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
 
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
+        # Cache: path -> (mtime, parsed_result)
+        self._cache: Dict[str, Tuple[float, ToolResult]] = {}
 
     async def execute(self, path: str) -> ToolResult:
         try:
@@ -33,8 +35,19 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
             if not file_path.exists():
                 return ToolResult(success=False, output="", error=f"File not found: {path}")
 
+            # Check cache based on file modification time
+            current_mtime = file_path.stat().st_mtime
+            cache_key = str(file_path)
+
+            if cache_key in self._cache:
+                cached_mtime, cached_result = self._cache[cache_key]
+                if cached_mtime == current_mtime:
+                    # Cache hit - file hasn't changed
+                    cached_result.cached = True
+                    return cached_result
+
             suffix = file_path.suffix.lower()
-            
+
             if suffix == ".pdf":
                 content, metadata = await self._parse_pdf(file_path)
             elif suffix == ".docx":
@@ -52,12 +65,12 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
 
             # Try to extract sections
             sections = self._extract_sections(content)
-            
+
             output = f"=== Resume Content ===\n{content}\n\n=== Detected Sections ===\n"
             for section, text in sections.items():
                 output += f"\n[{section}]\n{text[:200]}{'...' if len(text) > 200 else ''}\n"
 
-            return ToolResult(
+            result = ToolResult(
                 success=True,
                 output=output,
                 data={
@@ -67,6 +80,11 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
                     "metadata": metadata,
                 },
             )
+
+            # Store in cache
+            self._cache[cache_key] = (current_mtime, result)
+
+            return result
 
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))

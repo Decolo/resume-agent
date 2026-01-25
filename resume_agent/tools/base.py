@@ -15,6 +15,12 @@ class ToolResult:
     error: Optional[str] = None
     data: Dict[str, Any] = field(default_factory=dict)
 
+    # Execution metadata for observability
+    execution_time_ms: float = 0.0
+    tokens_used: int = 0
+    cached: bool = False
+    retry_count: int = 0
+
     def to_message(self) -> str:
         if self.success:
             return self.output

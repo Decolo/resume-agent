@@ -1,12 +1,13 @@
-"""Agent - Resume modification agent using Google GenAI SDK."""
+"""Agent - Resume modification agent using Google GenAI SDK or OpenAI-compatible API."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 from pathlib import Path
 
 from .llm import GeminiAgent, LLMConfig, load_config
+from .llm_openai import OpenAIAgent, OpenAIConfig
 from .tools import (
     BaseTool,
     FileReadTool,
@@ -29,22 +30,45 @@ class AgentConfig:
 
 
 class ResumeAgent:
-    """Resume modification agent with tool-use capabilities via Google GenAI SDK."""
+    """Resume modification agent with tool-use capabilities."""
 
     def __init__(
         self,
-        llm_config: Optional[LLMConfig] = None,
+        llm_config: Optional[Union[LLMConfig, OpenAIConfig]] = None,
         agent_config: Optional[AgentConfig] = None,
     ):
-        self.llm_config = llm_config or load_config()
         self.agent_config = agent_config or AgentConfig()
-        
-        # Initialize the Gemini agent with system prompt
-        self.agent = GeminiAgent(
-            config=self.llm_config,
-            system_prompt=self.agent_config.system_prompt,
-        )
-        
+
+        # Load config if not provided
+        if llm_config is None:
+            config_data = load_config()
+            api_type = getattr(config_data, 'api_type', 'gemini')
+
+            if api_type == 'openai':
+                llm_config = OpenAIConfig(
+                    api_key=config_data.api_key,
+                    api_base=getattr(config_data, 'api_base', 'https://api.openai.com/v1'),
+                    model=config_data.model,
+                    max_tokens=config_data.max_tokens,
+                    temperature=config_data.temperature,
+                )
+            else:
+                llm_config = config_data
+
+        self.llm_config = llm_config
+
+        # Initialize the appropriate agent
+        if isinstance(llm_config, OpenAIConfig):
+            self.agent = OpenAIAgent(
+                config=llm_config,
+                system_prompt=self.agent_config.system_prompt,
+            )
+        else:
+            self.agent = GeminiAgent(
+                config=llm_config,
+                system_prompt=self.agent_config.system_prompt,
+            )
+
         # Initialize and register tools
         self.tools = self._init_tools()
         self._register_tools()
