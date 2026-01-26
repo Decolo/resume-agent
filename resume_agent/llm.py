@@ -46,19 +46,87 @@ class HistoryManager:
         self._history.clear()
 
     def _prune_if_needed(self):
-        """Prune history if it exceeds limits."""
+        """Prune history if it exceeds limits while preserving function call/response pairs."""
         # Message count pruning
         if len(self._history) > self.max_messages:
             # Keep recent messages (sliding window)
             self._history = self._history[-self.max_messages:]
+            # After sliding window, ensure we didn't break pairs
+            self._fix_broken_pairs()
 
         # Token-based pruning (rough estimate)
         estimated_tokens = sum(self._estimate_tokens(msg) for msg in self._history)
         if estimated_tokens > self.max_tokens:
-            # Remove oldest messages until under limit
-            while estimated_tokens > self.max_tokens and len(self._history) > 1:
-                removed = self._history.pop(0)
-                estimated_tokens -= self._estimate_tokens(removed)
+            # Remove oldest messages until under limit, respecting pairs
+            while estimated_tokens > self.max_tokens and len(self._history) > 2:
+                # Check if first message is part of a function call/response pair
+                if self._is_function_call_pair(0):
+                    # Remove both messages in the pair
+                    removed1 = self._history.pop(0)
+                    removed2 = self._history.pop(0)
+                    estimated_tokens -= self._estimate_tokens(removed1)
+                    estimated_tokens -= self._estimate_tokens(removed2)
+                else:
+                    # Safe to remove single message
+                    removed = self._history.pop(0)
+                    estimated_tokens -= self._estimate_tokens(removed)
+
+    def _is_function_call_pair(self, index: int) -> bool:
+        """
+        Check if message at index is the first part of a function call/response pair.
+
+        A valid pair is:
+        - history[index] has role="model" with function_call parts
+        - history[index+1] has role="user" with function_response parts
+        """
+        if index >= len(self._history) - 1:
+            return False
+
+        msg1 = self._history[index]
+        msg2 = self._history[index + 1]
+
+        # Check if msg1 is model with function calls
+        has_function_call = (
+            msg1.role == "model" and
+            msg1.parts is not None and
+            any(part.function_call for part in msg1.parts)
+        )
+
+        # Check if msg2 is user with function responses
+        has_function_response = (
+            msg2.role == "user" and
+            msg2.parts is not None and
+            any(part.function_response for part in msg2.parts)
+        )
+
+        return has_function_call and has_function_response
+
+    def _fix_broken_pairs(self):
+        """
+        Fix broken function call/response pairs after pruning.
+
+        If history starts with an orphaned function response (user message with
+        function_response but no preceding function_call), remove it.
+        """
+        if not self._history:
+            return
+
+        # Check if first message is an orphaned function response
+        first_msg = self._history[0]
+        if (first_msg.role == "user" and
+            first_msg.parts is not None and
+            any(part.function_response for part in first_msg.parts)):
+            # This is an orphaned response, remove it
+            self._history.pop(0)
+
+        # Check if last message is an orphaned function call
+        if self._history:
+            last_msg = self._history[-1]
+            if (last_msg.role == "model" and
+                last_msg.parts is not None and
+                any(part.function_call for part in last_msg.parts)):
+                # This is an orphaned call, remove it
+                self._history.pop()
 
     def _estimate_tokens(self, message: types.Content) -> int:
         """
