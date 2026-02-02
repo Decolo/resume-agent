@@ -15,7 +15,7 @@ Welcome to the Resume Agent documentation! This guide will help you get started 
 - **[API Reference](./api-reference/phase1-quick-reference.md)** - Code examples and API usage
 
 ### Workspace & Examples
-- **[My Resume Workspace Guide](./workspace/my-resume-guide.md)** - Using the example workspace
+- **Examples Folder** - Sample resumes and outputs live in `../examples/`
 
 ---
 
@@ -42,7 +42,7 @@ Welcome to the Resume Agent documentation! This guide will help you get started 
 → Go to [API Reference](./api-reference/phase1-quick-reference.md)
 
 **Use the example workspace with your resume**
-→ Go to [My Resume Workspace Guide](./workspace/my-resume-guide.md)
+→ See the `../examples/` folder for sample inputs
 
 ---
 
@@ -176,10 +176,10 @@ Some bash commands are blocked for security. Use only safe commands like `ls`, `
 - **docs/quick-start.md** - 3-step quick start guide
 - **docs/getting-started.md** - Comprehensive setup guide
 - **docs/how-to-run.md** - Multiple ways to run the agent
-- **docs/architecture/claude.md** - Architecture and technical details
+- **.claude/CLAUDE.md** - Architecture and technical details
 - **docs/architecture/phase1-improvements.md** - Phase 1 improvements details
 - **docs/api-reference/phase1-quick-reference.md** - API reference with code examples
-- **docs/workspace/my-resume-guide.md** - Workspace-specific guide
+- **examples/** - Sample resumes and example workspace
 
 ---
 
@@ -189,7 +189,7 @@ Some bash commands are blocked for security. Use only safe commands like `ls`, `
 2. **Copy your resume** to the workspace
 3. **Run the agent** and start improving your resume
 4. **Review [Getting Started Guide](./getting-started.md)** for more details
-5. **Check [Architecture Overview](./architecture/claude.md)** to understand how it works
+5. **Check [Architecture Overview](../.claude/CLAUDE.md)** to understand how it works
 
 ---
 

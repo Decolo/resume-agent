@@ -6,7 +6,7 @@ An AI-powered resume modification agent built on open-source LLM agent technolog
 
 - 📄 **Multi-format Support**: Parse and generate resumes in PDF, DOCX, Markdown, JSON, HTML
 - 🔧 **Tool-based Architecture**: Modular tools for file operations, resume parsing, and generation
-- 🤖 **Multiple LLM Backends**: Works with Google Gemini, OpenAI, Anthropic, or any OpenAI-compatible API
+- 🤖 **Multiple LLM Backends**: Gemini by default, with an OpenAI-compatible client available
 - 💬 **Interactive CLI**: Rich command-line interface with conversation history
 - 📝 **Resume Expert Knowledge**: Built-in expertise for ATS optimization, action verbs, and best practices
 
@@ -20,7 +20,7 @@ Complete documentation is available in the `/docs` directory:
 - **[Architecture Overview](./.claude/CLAUDE.md)** - System design and components (Claude Code instructions)
 - **[Phase 1 Improvements](./docs/architecture/phase1-improvements.md)** - Technical improvements
 - **[API Reference](./docs/api-reference/phase1-quick-reference.md)** - Code examples and API usage
-- **[Workspace Guide](./docs/workspace/my-resume-guide.md)** - Using the example workspace
+- **Examples Folder** - Sample resumes and workspaces live in `./examples/`
 
 ## Quick Start
 
@@ -38,7 +38,7 @@ pip install -e .
 
 ### 2. Configure API Key
 
-Edit `config/config.yaml` or set environment variable:
+Edit `config/config.local.yaml` (default) or set an environment variable:
 
 ```bash
 export GEMINI_API_KEY="your-gemini-api-key"
@@ -88,7 +88,8 @@ resume-agent/
 ├── resume_agent/
 │   ├── __init__.py
 │   ├── agent.py          # Core agent loop
-│   ├── llm.py            # LLM client (OpenAI-compatible)
+│   ├── llm.py            # Gemini LLM client
+│   ├── llm_openai.py     # OpenAI-compatible LLM client
 │   ├── cli.py            # Command-line interface
 │   ├── tools/
 │   │   ├── base.py           # Base tool class
@@ -99,7 +100,8 @@ resume-agent/
 │   └── skills/
 │       └── resume_expert.py  # System prompt
 ├── config/
-│   └── config.yaml       # Configuration
+│   ├── config.local.yaml # Local config (default, keep secrets here)
+│   └── config.yaml       # Optional shared defaults
 ├── examples/
 │   └── sample_resumes/   # Example resumes
 ├── pyproject.toml
@@ -127,19 +129,15 @@ User Input → LLM (with tools) → Tool Calls → Tool Results → LLM → ... 
 
 The key components are:
 
-1. **LLM Client** (`llm.py`): Handles communication with OpenAI-compatible APIs
+1. **LLM Client** (`llm.py`, `llm_openai.py`): Gemini client plus OpenAI-compatible adapter
 2. **Tools** (`tools/`): Connect the LLM to local system capabilities
 3. **Agent Loop** (`agent.py`): Orchestrates the conversation and tool execution
 4. **System Prompt** (`skills/`): Provides domain expertise
 
 ## Supported LLM Providers
 
-| Provider | API Base | Models |
-|----------|----------|--------|
-| **Google Gemini** | `generativelanguage.googleapis.com/v1beta` | gemini-2.0-flash, gemini-1.5-pro |
-| **OpenAI** | `api.openai.com/v1` | gpt-4o, gpt-4-turbo |
-| **Anthropic** | `api.anthropic.com` | claude-sonnet-4, claude-opus-4 |
-| **MiniMax** | `api.minimax.io` | MiniMax-M2.1 |
+- **Google Gemini** is the default (via `resume_agent/llm.py`).
+- **OpenAI-compatible endpoints** can be used via `resume_agent/llm_openai.py` when wired in.
 
 ## License
 

@@ -97,7 +97,7 @@ ValueError: GEMINI_API_KEY not set
 
 **Solution:**
 
-1. Set the API key in `config/config.yaml`:
+1. Set the API key in `config/config.local.yaml` (default):
    ```yaml
    api_key: "your-gemini-api-key-here"
    ```
@@ -262,7 +262,7 @@ The `file_read` tool only reads text files. For binary formats:
    }
    ```
 
-3. **Reduce max_steps** in `config/config.yaml`:
+3. **Reduce max_steps** in `config/config.local.yaml`:
    ```yaml
    max_steps: 30  # Reduce from 50
    ```
@@ -365,7 +365,7 @@ If you encounter an issue not covered here:
 
 To enable detailed debugging:
 
-1. **Set log level** in `config/config.yaml`:
+1. **Set log level** in `config/config.local.yaml`:
    ```yaml
    log_level: "DEBUG"
    ```
@@ -388,6 +388,6 @@ To enable detailed debugging:
 ## Version Information
 
 - **Current Version**: 0.1.0
-- **Python Version**: 3.8+
+- **Python Version**: 3.10+
 - **Gemini API**: google-genai >= 1.0.0
 - **Last Updated**: 2026-01-26

@@ -177,14 +177,16 @@ Type your prompts at the `📝 You:` prompt.
 
 ### API Key Setup
 
-The agent uses Google Gemini API by default. You have two options:
+The agent uses Google Gemini API by default. Configure it in one of these ways:
 
-#### Option 1: Config File (Already Set)
-The API key is already configured in `config/config.yaml`:
+#### Option 1: Config File (Default)
+The CLI defaults to `config/config.local.yaml`. Set your key there (do not commit secrets):
 ```yaml
-api_key: "AIzaSyCAlPgLJnzG6iad9ujohkkUFrewO2ajzfU"
+api_key: "${GEMINI_API_KEY}"
 model: "gemini-2.5-flash"
 ```
+
+You can also create `config/config.yaml` if you prefer a non-local config.
 
 #### Option 2: Environment Variable
 ```bash
