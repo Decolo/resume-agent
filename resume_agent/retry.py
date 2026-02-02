@@ -77,6 +77,11 @@ async def retry_with_backoff(
         except Exception as e:
             last_exception = e
 
+            # Stop retrying if the error isn't transient
+            if not is_transient_error(e):
+                logger.error("Permanent error encountered, not retrying")
+                raise PermanentError(str(e)) from e
+
             # If this was the last attempt, raise the exception
             if attempt == config.max_attempts - 1:
                 logger.error(f"All {config.max_attempts} retry attempts failed")
@@ -125,8 +130,13 @@ def is_transient_error(error: Exception) -> bool:
         "connection",
         "rate limit",
         "429",
+        "500",
         "503",
         "504",
+        "ssl",
+        "eof",
+        "connection reset",
+        "broken pipe",
         "temporary",
         "unavailable",
     ]

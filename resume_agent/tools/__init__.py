@@ -1,10 +1,11 @@
 """Resume Agent Tools - Connect LLM to local filesystem and resume operations."""
 
 from .base import BaseTool, ToolResult
-from .file_tool import FileReadTool, FileWriteTool, FileListTool
+from .file_tool import FileReadTool, FileWriteTool, FileListTool, FileRenameTool
 from .bash_tool import BashTool
 from .resume_parser import ResumeParserTool
 from .resume_writer import ResumeWriterTool
+from .web_tool import WebFetchTool, WebReadTool
 
 __all__ = [
     "BaseTool",
@@ -12,7 +13,10 @@ __all__ = [
     "FileReadTool",
     "FileWriteTool",
     "FileListTool",
+    "FileRenameTool",
     "BashTool",
     "ResumeParserTool",
     "ResumeWriterTool",
+    "WebFetchTool",
+    "WebReadTool",
 ]

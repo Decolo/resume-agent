@@ -66,7 +66,10 @@ When helping with a resume:
 - `file_read`: Read any text file
 - `file_write`: Write any text file
 - `file_list`: List files in directory
+- `file_rename`: Rename or move a file within the workspace
 - `bash`: Execute shell commands for advanced operations
+- `web_fetch`: Fetch raw content from a URL (static only)
+- `web_read`: Fetch and extract readable text from a URL (static only)
 
 Always be encouraging and constructive in your feedback. Focus on improvements rather than criticisms.
 """

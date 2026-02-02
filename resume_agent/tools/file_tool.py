@@ -185,3 +185,71 @@ class FileListTool(BaseTool):
         if p.is_absolute():
             return p
         return self.workspace_dir / p
+
+
+class FileRenameTool(BaseTool):
+    """Rename (move) a file within the workspace."""
+
+    name = "file_rename"
+    description = "Rename or move a file to a new path within the workspace."
+    parameters = {
+        "source_path": {
+            "type": "string",
+            "description": "Current path of the file to rename",
+            "required": True,
+        },
+        "dest_path": {
+            "type": "string",
+            "description": "New path for the file",
+            "required": True,
+        },
+        "overwrite": {
+            "type": "boolean",
+            "description": "Overwrite destination if it exists (default: false)",
+            "default": False,
+        },
+    }
+
+    def __init__(self, workspace_dir: str = "."):
+        self.workspace_dir = Path(workspace_dir).resolve()
+
+    async def execute(self, source_path: str, dest_path: str, overwrite: bool = False) -> ToolResult:
+        try:
+            src = self._resolve_path(source_path)
+            dst = self._resolve_path(dest_path)
+
+            if not src.exists():
+                return ToolResult(success=False, output="", error=f"Source file not found: {source_path}")
+            if not src.is_file():
+                return ToolResult(success=False, output="", error=f"Source is not a file: {source_path}")
+
+            if dst.exists():
+                if not overwrite:
+                    return ToolResult(
+                        success=False,
+                        output="",
+                        error=f"Destination already exists: {dest_path}. Set overwrite=true to replace.",
+                    )
+                if dst.is_dir():
+                    return ToolResult(
+                        success=False,
+                        output="",
+                        error=f"Destination is a directory: {dest_path}.",
+                    )
+
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+
+            return ToolResult(
+                success=True,
+                output=f"Renamed {source_path} to {dest_path}",
+                data={"source": str(src), "dest": str(dst)},
+            )
+        except Exception as e:
+            return ToolResult(success=False, output="", error=str(e))
+
+    def _resolve_path(self, path: str) -> Path:
+        p = Path(path)
+        if p.is_absolute():
+            return p
+        return self.workspace_dir / p

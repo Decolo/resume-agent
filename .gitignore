@@ -63,11 +63,10 @@ uv.lock
 # OS
 .DS_Store
 Thumbs.db
-.env.example
 
 # Project-specific
-config/config.local.yaml
 workspace/
+exports/
 *.pdf
 *.docx
 *.xlsx
