@@ -28,10 +28,15 @@ class AgentObserver:
     Collects events, logs, and metrics for debugging and monitoring.
     """
 
-    def __init__(self):
+    def __init__(self, agent_id: Optional[str] = None):
         self.events: List[AgentEvent] = []
         self.logger = logging.getLogger("resume_agent")
+        self.agent_id = agent_id
         self._setup_logging()
+
+    def _format_agent_prefix(self, agent_id: Optional[str]) -> str:
+        use_id = agent_id or self.agent_id
+        return f"[{use_id}] " if use_id else ""
 
     def _setup_logging(self):
         """Configure logging format and handlers."""
@@ -52,7 +57,8 @@ class AgentObserver:
         result: str,
         duration_ms: float,
         success: bool = True,
-        cached: bool = False
+        cached: bool = False,
+        agent_id: Optional[str] = None,
     ):
         """
         Log a tool execution.
@@ -80,10 +86,11 @@ class AgentObserver:
         self.events.append(event)
 
         # Log to console
+        prefix = self._format_agent_prefix(agent_id)
         cache_indicator = " [CACHED]" if cached else ""
         status = "✓" if success else "✗"
         self.logger.info(
-            f"{status} Tool: {tool_name}{cache_indicator} ({duration_ms:.2f}ms)"
+            f"{prefix}{status} Tool: {tool_name}{cache_indicator} ({duration_ms:.2f}ms)"
         )
 
     def log_llm_request(
@@ -92,7 +99,8 @@ class AgentObserver:
         tokens: int,
         cost: float,
         duration_ms: float,
-        step: int
+        step: int,
+        agent_id: Optional[str] = None,
     ):
         """
         Log an LLM API request.
@@ -114,16 +122,49 @@ class AgentObserver:
         )
         self.events.append(event)
 
+        prefix = self._format_agent_prefix(agent_id)
         self.logger.info(
-            f"🤖 LLM: {model} | Step {step} | "
+            f"{prefix}🤖 LLM: {model} | Step {step} | "
             f"{tokens} tokens | ${cost:.4f} | {duration_ms:.2f}ms"
         )
+
+    def log_llm_response(
+        self,
+        step: int,
+        text: str,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        agent_id: Optional[str] = None,
+    ):
+        """Log the LLM response details (text + tool calls)."""
+        event = AgentEvent(
+            timestamp=datetime.now(),
+            event_type="llm_response",
+            data={
+                "step": step,
+                "text": text,
+                "tool_calls": tool_calls or [],
+            },
+        )
+        self.events.append(event)
+
+        prefix = self._format_agent_prefix(agent_id)
+        tools = tool_calls or []
+        try:
+            import json as _json
+            tools_dump = _json.dumps(tools, ensure_ascii=True)
+        except Exception:
+            tools_dump = str(tools)
+
+        self.logger.info(f"{prefix}🧠 LLM response | Step {step}")
+        self.logger.info(f"{prefix}↳ tools={tools_dump}")
+        self.logger.info(f"{prefix}↳ text={text}")
 
     def log_error(
         self,
         error_type: str,
         message: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        agent_id: Optional[str] = None,
     ):
         """
         Log an error event.
@@ -144,9 +185,10 @@ class AgentObserver:
         )
         self.events.append(event)
 
-        self.logger.error(f"❌ Error ({error_type}): {message}")
+        prefix = self._format_agent_prefix(agent_id)
+        self.logger.error(f"{prefix}❌ Error ({error_type}): {message}")
 
-    def log_step_start(self, step: int, user_input: Optional[str] = None):
+    def log_step_start(self, step: int, user_input: Optional[str] = None, agent_id: Optional[str] = None):
         """
         Log the start of an agent step.
 
@@ -161,11 +203,12 @@ class AgentObserver:
         )
         self.events.append(event)
 
+        prefix = self._format_agent_prefix(agent_id)
         if step == 1 and user_input:
-            self.logger.info(f"👤 User: {user_input[:100]}...")
-        self.logger.info(f"🔄 Step {step} started")
+            self.logger.info(f"{prefix}👤 User: {user_input[:100]}...")
+        self.logger.info(f"{prefix}🔄 Step {step} started")
 
-    def log_step_end(self, step: int, duration_ms: float):
+    def log_step_end(self, step: int, duration_ms: float, agent_id: Optional[str] = None):
         """
         Log the end of an agent step.
 
@@ -181,7 +224,8 @@ class AgentObserver:
         )
         self.events.append(event)
 
-        self.logger.info(f"✓ Step {step} completed ({duration_ms:.2f}ms)")
+        prefix = self._format_agent_prefix(agent_id)
+        self.logger.info(f"{prefix}✓ Step {step} completed ({duration_ms:.2f}ms)")
 
     def get_session_stats(self) -> Dict[str, Any]:
         """

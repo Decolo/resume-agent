@@ -1,18 +1,21 @@
 """CLI - Command line interface for Resume Agent."""
 
 import asyncio
-import sys
 from pathlib import Path
+from typing import Union, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Prompt
+from rich.table import Table
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 
 from .agent import ResumeAgent, AgentConfig
 from .llm import LLMConfig, load_config
+from .agent_factory import create_agent
+from .agents.orchestrator_agent import OrchestratorAgent
+from .session import SessionManager
 
 
 console = Console()
@@ -25,16 +28,14 @@ def print_banner():
 ║                    📄 Resume Agent                        ║
 ║         AI-powered Resume Modification Assistant          ║
 ╠═══════════════════════════════════════════════════════════╣
-║  Commands:                                                ║
-║    /help     - Show this help message                     ║
-║    /reset    - Reset conversation                         ║
+║  Quick Commands:                                          ║
+║    /help     - Show all commands                          ║
+║    /save     - Save current session                       ║
+║    /load     - Load a previous session (shows picker)     ║
+║    /sessions - List all saved sessions                    ║
 ║    /quit     - Exit the agent                             ║
-║    /files    - List files in workspace                    ║
 ║                                                           ║
-║  Tips:                                                    ║
-║    • Drop your resume file in the workspace directory     ║
-║    • Ask me to analyze, improve, or reformat your resume  ║
-║    • I can tailor your resume for specific job postings   ║
+║  💡 Auto-save is enabled - your work is protected!        ║
 ╚═══════════════════════════════════════════════════════════╝
 """
     console.print(banner, style="cyan")
@@ -49,9 +50,67 @@ def print_help():
 |---------|-------------|
 | `/help` | Show this help message |
 | `/reset` | Reset conversation history |
+| `/save [name]` | Save current session (optional custom name) |
+| `/load [number]` | Load a saved session (shows picker if no number) |
+| `/sessions` | List all saved sessions with numbers |
+| `/delete-session <number>` | Delete a saved session by number |
+| `/auto-save [on\|off]` | Toggle auto-save after tool execution |
 | `/quit` or `/exit` | Exit the agent |
 | `/files` | List files in workspace |
 | `/config` | Show current configuration |
+| `/export [target] [format]` | Export conversation history |
+| `/agents` | Show agent statistics (multi-agent mode) |
+| `/trace` | Show delegation trace (multi-agent mode) |
+| `/delegation-tree` | Show delegation stats (multi-agent mode) |
+
+### Session Management
+
+Save and restore conversation sessions:
+
+```bash
+/save                    # Save with auto-generated timestamp
+/save my_resume_v1       # Save with custom name
+/sessions                # List all saved sessions (numbered)
+/load                    # Show session picker
+/load 1                  # Load session #1 (most recent)
+/load 2                  # Load session #2
+/delete-session 1        # Delete session #1
+/auto-save on            # Enable auto-save after tool calls
+/auto-save off           # Disable auto-save
+```
+
+**Session features:**
+- 🎯 **Quick load by number**: `/load 1` loads the most recent session
+- 📋 **Interactive picker**: `/load` without arguments shows all sessions
+- 🏷️ **Custom names**: `/save my_project_v1` for easy identification
+- 🔄 **Auto-save enabled by default**: Sessions saved after each tool execution
+- 📊 **Full state preservation**: History, observability, multi-agent state
+
+### Export Command
+
+Export conversation history to file or clipboard:
+
+```bash
+/export file markdown         # Save as markdown (default)
+/export file json             # Save as JSON
+/export file text             # Save as plain text
+/export clipboard markdown    # Copy markdown to clipboard
+/export clip json             # Copy JSON to clipboard (shorthand)
+
+# Verbose mode - includes observability logs
+/export file markdown verbose # Save with tool calls, LLM requests, errors, stats
+/export file json verbose     # Save with full observability data
+/export clip text verbose     # Copy with detailed execution logs
+```
+
+**Verbose mode includes:**
+- Tool execution logs (name, args, duration, cache status)
+- LLM API requests (model, tokens, cost, duration)
+- Error events with context
+- Step-by-step execution trace
+- Session statistics (total tokens, cost, cache hit rate)
+
+Files are saved to `exports/conversation_YYYYMMDD_HHMMSS[_verbose].{ext}`
 
 ## Example Prompts
 
@@ -65,49 +124,635 @@ def print_help():
     console.print(Markdown(help_text))
 
 
-async def handle_command(command: str, agent: ResumeAgent) -> bool:
+async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None) -> bool:
     """Handle special commands. Returns True if should continue, False to exit."""
     cmd = command.lower().strip()
-    
+
     if cmd in ["/quit", "/exit", "/q"]:
         console.print("\n👋 Goodbye!", style="yellow")
         return False
-    
+
     elif cmd == "/help":
         print_help()
-    
+
     elif cmd == "/reset":
         agent.reset()
         console.print("🔄 Conversation reset.", style="green")
-    
+
+    elif cmd.startswith("/save"):
+        if not session_manager:
+            console.print("⚠️ Session management not available.", style="yellow")
+            return True
+
+        # Parse: /save [session_name]
+        parts = cmd.split(maxsplit=1)
+        session_name = parts[1] if len(parts) > 1 else None
+
+        try:
+            session_id = session_manager.save_session(agent, session_name=session_name)
+
+            # Show friendly confirmation
+            if session_name:
+                console.print(f"✓ Session saved as: {session_name}", style="green")
+            else:
+                # Extract timestamp from session ID for display
+                parts_id = session_id.split("_")
+                if len(parts_id) >= 3:
+                    timestamp = f"{parts_id[1]}_{parts_id[2]}"
+                    console.print(f"✓ Session saved: {timestamp}", style="green")
+                else:
+                    console.print(f"✓ Session saved", style="green")
+
+            console.print(f"   Use /load to restore this session later", style="dim")
+        except Exception as e:
+            console.print(f"❌ Failed to save session: {e}", style="red")
+
+    elif cmd.startswith("/load"):
+        if not session_manager:
+            console.print("⚠️ Session management not available.", style="yellow")
+            return True
+
+        # Parse: /load [session_id or number]
+        parts = cmd.split()
+
+        # Get available sessions
+        sessions = session_manager.list_sessions()
+        if not sessions:
+            console.print("No saved sessions found.", style="yellow")
+            return True
+
+        # If no argument provided, show interactive picker
+        if len(parts) < 2:
+            console.print("\n📁 Available Sessions:", style="bold cyan")
+            console.print("─" * 80)
+
+            table = Table(show_header=True, header_style="bold cyan", box=None)
+            table.add_column("#", style="yellow", width=3)
+            table.add_column("Name", style="cyan", no_wrap=False)
+            table.add_column("Updated", style="dim", width=16)
+            table.add_column("Mode", style="green", width=12)
+            table.add_column("Msgs", justify="right", width=5)
+            table.add_column("Tokens", justify="right", width=8)
+
+            for i, session in enumerate(sessions, 1):
+                # Extract custom name from session ID
+                session_id = session["id"]
+                # Format: session_YYYYMMDD_HHMMSS_[name]_[uuid]
+                parts_id = session_id.split("_")
+                if len(parts_id) >= 5:
+                    # Has custom name
+                    custom_name = "_".join(parts_id[3:-1])
+                    display_name = f"{custom_name} ({parts_id[1]}_{parts_id[2]})"
+                else:
+                    # No custom name, show timestamp
+                    display_name = f"{parts_id[1]}_{parts_id[2]}"
+
+                from datetime import datetime
+                updated = datetime.fromisoformat(session["updated_at"]).strftime("%m-%d %H:%M")
+
+                table.add_row(
+                    str(i),
+                    display_name,
+                    updated,
+                    session["mode"],
+                    str(session["message_count"]),
+                    f"{session['total_tokens']:,}"
+                )
+
+            console.print(table)
+            console.print("\n💡 Usage: /load <number> or /load <full_session_id>", style="dim")
+            console.print("   Example: /load 1  (loads the most recent session)", style="dim")
+            return True
+
+        # Load by number or full session ID
+        session_arg = parts[1]
+
+        # Check if it's a number (index)
+        if session_arg.isdigit():
+            index = int(session_arg) - 1
+            if 0 <= index < len(sessions):
+                session_id = sessions[index]["id"]
+            else:
+                console.print(f"❌ Invalid session number. Use 1-{len(sessions)}", style="red")
+                return True
+        else:
+            # Assume it's a full session ID
+            session_id = session_arg
+
+        # Load the session
+        try:
+            session_data = session_manager.load_session(session_id)
+            session_manager.restore_agent_state(agent, session_data)
+
+            # Show success with session info
+            session_info = next((s for s in sessions if s["id"] == session_id), None)
+            if session_info:
+                console.print(f"✓ Session loaded: {session_info['message_count']} messages, {session_info['total_tokens']:,} tokens", style="green")
+            else:
+                console.print(f"✓ Session loaded: {session_id}", style="green")
+        except FileNotFoundError:
+            console.print(f"❌ Session not found: {session_id}", style="red")
+            console.print("Tip: Use /load without arguments to see available sessions", style="dim")
+        except Exception as e:
+            console.print(f"❌ Failed to load session: {e}", style="red")
+
+    elif cmd == "/sessions":
+        if not session_manager:
+            console.print("⚠️ Session management not available.", style="yellow")
+            return True
+
+        sessions = session_manager.list_sessions()
+        if not sessions:
+            console.print("No saved sessions found.", style="dim")
+        else:
+            table = Table(title="📁 Saved Sessions", show_header=True, header_style="bold cyan")
+            table.add_column("#", style="yellow", width=3)
+            table.add_column("Name", style="cyan", no_wrap=False)
+            table.add_column("Created", style="dim", width=16)
+            table.add_column("Updated", style="dim", width=16)
+            table.add_column("Mode", style="green", width=12)
+            table.add_column("Messages", justify="right", width=8)
+            table.add_column("Tokens", justify="right", width=10)
+
+            for i, session in enumerate(sessions, 1):
+                # Extract custom name from session ID
+                session_id = session["id"]
+                # Format: session_YYYYMMDD_HHMMSS_[name]_[uuid]
+                parts = session_id.split("_")
+                if len(parts) >= 5:
+                    # Has custom name
+                    custom_name = "_".join(parts[3:-1])
+                    display_name = f"{custom_name}"
+                    timestamp = f"{parts[1]}_{parts[2]}"
+                else:
+                    # No custom name, show timestamp
+                    display_name = f"session_{parts[1]}_{parts[2]}"
+                    timestamp = ""
+
+                # Format timestamps
+                from datetime import datetime
+                created = datetime.fromisoformat(session["created_at"]).strftime("%m-%d %H:%M")
+                updated = datetime.fromisoformat(session["updated_at"]).strftime("%m-%d %H:%M")
+
+                table.add_row(
+                    str(i),
+                    display_name,
+                    created,
+                    updated,
+                    session["mode"],
+                    str(session["message_count"]),
+                    f"{session['total_tokens']:,}"
+                )
+
+            console.print(table)
+            console.print(f"\n💡 Quick load: /load <number>  (e.g., /load 1 for most recent)", style="dim")
+            console.print(f"   Full ID load: /load <full_session_id>", style="dim")
+
+    elif cmd.startswith("/delete-session"):
+        if not session_manager:
+            console.print("⚠️ Session management not available.", style="yellow")
+            return True
+
+        # Parse: /delete-session <session_id or number>
+        parts = cmd.split()
+        if len(parts) < 2:
+            console.print("Usage: /delete-session <number> or /delete-session <full_session_id>", style="yellow")
+            console.print("Tip: Use /sessions to see session numbers", style="dim")
+        else:
+            session_arg = parts[1]
+
+            # Get available sessions
+            sessions = session_manager.list_sessions()
+
+            # Check if it's a number (index)
+            if session_arg.isdigit():
+                index = int(session_arg) - 1
+                if 0 <= index < len(sessions):
+                    session_id = sessions[index]["id"]
+                else:
+                    console.print(f"❌ Invalid session number. Use 1-{len(sessions)}", style="red")
+                    return True
+            else:
+                # Assume it's a full session ID
+                session_id = session_arg
+
+            # Delete the session
+            if session_manager.delete_session(session_id):
+                console.print(f"✓ Session deleted", style="green")
+            else:
+                console.print(f"❌ Session not found", style="red")
+
+    elif cmd.startswith("/auto-save"):
+        # Parse: /auto-save [on|off]
+        parts = cmd.split()
+
+        # Get LLM agent (handle AutoAgent, OrchestratorAgent, ResumeAgent)
+        from .agent_factory import AutoAgent
+        if isinstance(agent, AutoAgent):
+            llm_agent = agent.agent
+        elif isinstance(agent, OrchestratorAgent):
+            llm_agent = agent.llm_agent
+        else:
+            llm_agent = agent.agent
+
+        if len(parts) < 2:
+            status = "enabled" if llm_agent.auto_save_enabled else "disabled"
+            console.print(f"Auto-save is currently {status}", style="dim")
+        else:
+            enable = parts[1].lower() in ["on", "true", "1", "yes"]
+            llm_agent.auto_save_enabled = enable
+            status = "enabled" if enable else "disabled"
+            console.print(f"✓ Auto-save {status}", style="green")
+
     elif cmd == "/files":
-        result = await agent.tools["file_list"].execute()
-        console.print(Panel(result.output, title="📁 Workspace Files"))
-    
+        if isinstance(agent, ResumeAgent):
+            result = await agent.tools["file_list"].execute()
+            console.print(Panel(result.output, title="📁 Workspace Files"))
+        else:
+            # Multi-agent mode - use orchestrator's LLM agent
+            console.print("📁 Use 'list files in workspace' to see files.", style="dim")
+
     elif cmd == "/config":
-        config_info = f"""
+        if isinstance(agent, ResumeAgent):
+            config_info = f"""
 **Model**: {agent.llm_config.model}
-**API Base**: {agent.llm_config.api_base}
 **Max Tokens**: {agent.llm_config.max_tokens}
 **Temperature**: {agent.llm_config.temperature}
 **Workspace**: {agent.agent_config.workspace_dir}
+**Mode**: Single-Agent
+"""
+        else:
+            config_info = f"""
+**Model**: {agent.config.model}
+**Max Tokens**: {agent.config.max_tokens}
+**Temperature**: {agent.config.temperature}
+**Mode**: Multi-Agent (Orchestrated)
+**Agents**: {len(agent.registry) if agent.registry else 0}
 """
         console.print(Markdown(config_info))
-    
+
+    elif cmd == "/agents":
+        if isinstance(agent, OrchestratorAgent) and agent.registry:
+            stats = agent.get_agent_stats()
+
+            table = Table(title="Agent Statistics")
+            table.add_column("Agent", style="cyan")
+            table.add_column("Type", style="green")
+            table.add_column("Tasks", justify="right")
+            table.add_column("Success Rate", justify="right")
+            table.add_column("Avg Time", justify="right")
+
+            for agent_id, agent_stats in stats.items():
+                table.add_row(
+                    agent_id,
+                    agent_stats.get("agent_type", ""),
+                    str(agent_stats.get("tasks_completed", 0)),
+                    agent_stats.get("success_rate", "N/A"),
+                    agent_stats.get("average_execution_time_ms", "N/A"),
+                )
+
+            console.print(table)
+        else:
+            console.print("⚠️ Agent statistics only available in multi-agent mode.", style="yellow")
+
+    elif cmd == "/delegation-tree":
+        if isinstance(agent, OrchestratorAgent) and agent.delegation_manager:
+            delegation_stats = agent.delegation_manager.get_stats()
+            console.print(Panel(
+                f"Total delegations: {delegation_stats['total_delegations']}\n"
+                f"Successful: {delegation_stats['successful']}\n"
+                f"Failed: {delegation_stats['failed']}\n"
+                f"Success rate: {delegation_stats['success_rate']}\n"
+                f"Average duration: {delegation_stats['average_duration_ms']}",
+                title="📊 Delegation Statistics"
+            ))
+        else:
+            console.print("⚠️ Delegation tree only available in multi-agent mode.", style="yellow")
+
+    elif cmd == "/trace":
+        if isinstance(agent, OrchestratorAgent) and agent.delegation_manager:
+            history = agent.delegation_manager._delegation_history
+            if not history:
+                console.print("No delegations recorded yet.", style="dim")
+            else:
+                table = Table(title="🔄 Delegation Trace")
+                table.add_column("#", style="dim", justify="right")
+                table.add_column("Task ID", style="cyan")
+                table.add_column("From", style="yellow")
+                table.add_column("To", style="green")
+                table.add_column("Duration", justify="right")
+                table.add_column("Status", justify="center")
+
+                for i, record in enumerate(history, 1):
+                    status = "✓" if record.success else "✗" if record.success is False else "⏳"
+                    status_style = "green" if record.success else "red" if record.success is False else "yellow"
+                    duration = f"{record.duration_ms:.0f}ms" if record.duration_ms else "-"
+                    table.add_row(
+                        str(i),
+                        record.task_id[:16] + "...",
+                        record.from_agent,
+                        record.to_agent,
+                        duration,
+                        f"[{status_style}]{status}[/{status_style}]",
+                    )
+
+                console.print(table)
+
+                # Show delegation flow diagram
+                console.print("\n📊 Delegation Flow:", style="bold")
+                for record in history:
+                    arrow = "[green]→[/green]" if record.success else "[red]→[/red]"
+                    console.print(f"  {record.from_agent} {arrow} {record.to_agent}")
+        else:
+            console.print("⚠️ Trace only available in multi-agent mode.", style="yellow")
+
+    elif cmd.startswith("/export"):
+        # Parse export command: /export [file|clipboard] [format] [verbose]
+        parts = cmd.split()
+        target = parts[1] if len(parts) > 1 else "file"
+        format_type = parts[2] if len(parts) > 2 else "markdown"
+        verbose = len(parts) > 3 and parts[3] == "verbose"
+
+        if target not in ["file", "clipboard", "clip"]:
+            console.print("Usage: /export [file|clipboard] [markdown|json|text] [verbose]", style="yellow")
+            return True
+
+        # Get conversation history (handle AutoAgent, OrchestratorAgent, ResumeAgent)
+        from .agent_factory import AutoAgent
+        if isinstance(agent, AutoAgent):
+            llm_agent = agent.agent
+        elif isinstance(agent, OrchestratorAgent):
+            llm_agent = agent.llm_agent
+        else:
+            llm_agent = agent.agent  # ResumeAgent uses self.agent for GeminiAgent
+
+        if not llm_agent or not llm_agent.history_manager:
+            console.print("No conversation history available.", style="yellow")
+            return True
+
+        history = llm_agent.history_manager.get_history()
+        if not history:
+            console.print("No conversation history to export.", style="yellow")
+            return True
+
+        # Get observability events if verbose mode
+        observer_events = []
+        if verbose:
+            observer = llm_agent.observer if hasattr(llm_agent, 'observer') else None
+            if observer:
+                observer_events = observer.events
+            else:
+                console.print("⚠️ No observability data available.", style="yellow")
+
+        # Format the history
+        if format_type == "json":
+            import json
+            from datetime import datetime
+
+            export_data = {
+                "exported_at": datetime.now().isoformat(),
+                "agent_mode": "multi-agent" if isinstance(agent, OrchestratorAgent) else "single-agent",
+                "messages": []
+            }
+
+            for msg in history:
+                msg_data = {
+                    "role": msg.role,
+                    "parts": []
+                }
+                if msg.parts:
+                    for part in msg.parts:
+                        if hasattr(part, 'text') and part.text:
+                            msg_data["parts"].append({"type": "text", "content": part.text})
+                        elif hasattr(part, 'function_call') and part.function_call:
+                            msg_data["parts"].append({
+                                "type": "function_call",
+                                "name": part.function_call.name,
+                                "args": dict(part.function_call.args) if part.function_call.args else {}
+                            })
+                        elif hasattr(part, 'function_response') and part.function_response:
+                            msg_data["parts"].append({
+                                "type": "function_response",
+                                "name": part.function_response.name,
+                                "response": str(part.function_response.response)
+                            })
+                export_data["messages"].append(msg_data)
+
+            # Add observability events if verbose
+            if verbose and observer_events:
+                export_data["observability"] = {
+                    "events": [
+                        {
+                            "timestamp": event.timestamp.isoformat(),
+                            "event_type": event.event_type,
+                            "data": event.data,
+                            "duration_ms": event.duration_ms,
+                            "tokens_used": event.tokens_used,
+                            "cost_usd": event.cost_usd,
+                        }
+                        for event in observer_events
+                    ],
+                    "session_stats": llm_agent.observer.get_session_stats() if hasattr(llm_agent, 'observer') else {}
+                }
+
+            content = json.dumps(export_data, indent=2)
+
+        elif format_type == "text":
+            lines = []
+            for msg in history:
+                role_label = "User" if msg.role == "user" else "Assistant" if msg.role == "model" else "Tool"
+                lines.append(f"\n{'='*60}")
+                lines.append(f"{role_label}:")
+                lines.append('='*60)
+
+                if msg.parts:
+                    for part in msg.parts:
+                        if hasattr(part, 'text') and part.text:
+                            lines.append(part.text)
+                        elif hasattr(part, 'function_call') and part.function_call:
+                            lines.append(f"[Tool Call: {part.function_call.name}]")
+                        elif hasattr(part, 'function_response') and part.function_response:
+                            lines.append(f"[Tool Response: {part.function_response.name}]")
+
+            # Add observability events if verbose
+            if verbose and observer_events:
+                lines.append(f"\n\n{'='*60}")
+                lines.append("OBSERVABILITY LOGS")
+                lines.append('='*60)
+
+                for event in observer_events:
+                    lines.append(f"\n[{event.timestamp.strftime('%H:%M:%S')}] {event.event_type.upper()}")
+
+                    if event.event_type == "tool_call":
+                        tool = event.data.get("tool", "unknown")
+                        success = "✓" if event.data.get("success") else "✗"
+                        cached = " [CACHED]" if event.data.get("cached") else ""
+                        lines.append(f"  {success} Tool: {tool}{cached} ({event.duration_ms:.2f}ms)")
+                        lines.append(f"  Args: {event.data.get('args', {})}")
+
+                    elif event.event_type == "llm_request":
+                        lines.append(f"  Model: {event.data.get('model')}")
+                        lines.append(f"  Step: {event.data.get('step')}")
+                        lines.append(f"  Tokens: {event.tokens_used}")
+                        lines.append(f"  Cost: ${event.cost_usd:.4f}")
+                        lines.append(f"  Duration: {event.duration_ms:.2f}ms")
+
+                    elif event.event_type == "error":
+                        lines.append(f"  ❌ {event.data.get('error_type')}: {event.data.get('message')}")
+
+                    elif event.event_type in ["step_start", "step_end"]:
+                        lines.append(f"  Step: {event.data.get('step')}")
+                        if event.duration_ms:
+                            lines.append(f"  Duration: {event.duration_ms:.2f}ms")
+
+                # Add session stats
+                if hasattr(llm_agent, 'observer'):
+                    stats = llm_agent.observer.get_session_stats()
+                    lines.append(f"\n{'='*60}")
+                    lines.append("SESSION STATISTICS")
+                    lines.append('='*60)
+                    lines.append(f"Total Events:     {stats['event_count']}")
+                    lines.append(f"Tool Calls:       {stats['tool_calls']} (cache hit: {stats['cache_hit_rate']:.1%})")
+                    lines.append(f"LLM Requests:     {stats['llm_requests']}")
+                    lines.append(f"Errors:           {stats['errors']}")
+                    lines.append(f"Total Tokens:     {stats['total_tokens']:,}")
+                    lines.append(f"Total Cost:       ${stats['total_cost_usd']:.4f}")
+                    lines.append(f"Total Duration:   {stats['total_duration_ms']:.2f}ms")
+
+            content = "\n".join(lines)
+
+        else:  # markdown (default)
+            lines = ["# Conversation History\n"]
+
+            for msg in history:
+                if msg.role == "user":
+                    lines.append("## 👤 User\n")
+                elif msg.role == "model":
+                    lines.append("## 🤖 Assistant\n")
+                else:
+                    lines.append("## 🔧 Tool\n")
+
+                if msg.parts:
+                    for part in msg.parts:
+                        if hasattr(part, 'text') and part.text:
+                            lines.append(part.text + "\n")
+                        elif hasattr(part, 'function_call') and part.function_call:
+                            lines.append(f"**Tool Call:** `{part.function_call.name}`\n")
+                        elif hasattr(part, 'function_response') and part.function_response:
+                            lines.append(f"**Tool Response:** `{part.function_response.name}`\n")
+
+                lines.append("---\n")
+
+            # Add observability events if verbose
+            if verbose and observer_events:
+                lines.append("\n# Observability Logs\n")
+
+                for event in observer_events:
+                    timestamp = event.timestamp.strftime('%H:%M:%S')
+
+                    if event.event_type == "tool_call":
+                        tool = event.data.get("tool", "unknown")
+                        success = "✓" if event.data.get("success") else "✗"
+                        cached = " 🔄" if event.data.get("cached") else ""
+                        lines.append(f"- **[{timestamp}]** {success} Tool: `{tool}`{cached} ({event.duration_ms:.2f}ms)")
+                        args = event.data.get('args', {})
+                        if args:
+                            lines.append(f"  - Args: `{args}`")
+
+                    elif event.event_type == "llm_request":
+                        model = event.data.get('model')
+                        step = event.data.get('step')
+                        lines.append(f"- **[{timestamp}]** 🤖 LLM Request: `{model}` (Step {step})")
+                        lines.append(f"  - Tokens: {event.tokens_used}, Cost: ${event.cost_usd:.4f}, Duration: {event.duration_ms:.2f}ms")
+
+                    elif event.event_type == "llm_response":
+                        step = event.data.get('step')
+                        text = event.data.get('text', '')[:100]
+                        tool_calls = event.data.get('tool_calls', [])
+                        lines.append(f"- **[{timestamp}]** 🧠 LLM Response (Step {step})")
+                        if tool_calls:
+                            lines.append(f"  - Tool calls: {len(tool_calls)}")
+                        if text:
+                            lines.append(f"  - Text: {text}...")
+
+                    elif event.event_type == "error":
+                        error_type = event.data.get('error_type')
+                        message = event.data.get('message')
+                        lines.append(f"- **[{timestamp}]** ❌ Error: `{error_type}` - {message}")
+
+                    elif event.event_type == "step_start":
+                        step = event.data.get('step')
+                        lines.append(f"- **[{timestamp}]** 🔄 Step {step} started")
+
+                    elif event.event_type == "step_end":
+                        step = event.data.get('step')
+                        lines.append(f"- **[{timestamp}]** ✓ Step {step} completed ({event.duration_ms:.2f}ms)")
+
+                # Add session stats
+                if hasattr(llm_agent, 'observer'):
+                    stats = llm_agent.observer.get_session_stats()
+                    lines.append("\n## Session Statistics\n")
+                    lines.append(f"- **Total Events:** {stats['event_count']}")
+                    lines.append(f"- **Tool Calls:** {stats['tool_calls']} (cache hit: {stats['cache_hit_rate']:.1%})")
+                    lines.append(f"- **LLM Requests:** {stats['llm_requests']}")
+                    lines.append(f"- **Errors:** {stats['errors']}")
+                    lines.append(f"- **Total Tokens:** {stats['total_tokens']:,}")
+                    lines.append(f"- **Total Cost:** ${stats['total_cost_usd']:.4f}")
+                    lines.append(f"- **Total Duration:** {stats['total_duration_ms']:.2f}ms")
+
+            content = "\n".join(lines)
+
+        # Export to target
+        verbose_label = " (with observability logs)" if verbose else ""
+        if target in ["clipboard", "clip"]:
+            try:
+                import pyperclip
+                pyperclip.copy(content)
+                console.print(f"✓ Conversation history copied to clipboard ({format_type} format{verbose_label})", style="green")
+            except Exception as e:
+                console.print(f"❌ Failed to copy to clipboard: {e}", style="red")
+        else:  # file
+            from datetime import datetime
+            from pathlib import Path
+
+            # Create exports directory
+            export_dir = Path("exports")
+            export_dir.mkdir(exist_ok=True)
+
+            # Generate filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ext = {"json": "json", "text": "txt", "markdown": "md"}[format_type]
+            verbose_suffix = "_verbose" if verbose else ""
+            filename = export_dir / f"conversation_{timestamp}{verbose_suffix}.{ext}"
+
+            # Write to file
+            try:
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(content)
+                console.print(f"✓ Conversation history exported to: {filename}{verbose_label}", style="green")
+            except Exception as e:
+                console.print(f"❌ Failed to export: {e}", style="red")
+
     else:
         console.print(f"Unknown command: {command}. Type /help for available commands.", style="red")
-    
+
     return True
 
 
-async def run_interactive(agent: ResumeAgent):
+async def run_interactive(agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None):
     """Run interactive chat loop."""
     # Setup prompt with history
     history_file = Path.home() / ".resume_agent_history"
     session = PromptSession(history=FileHistory(str(history_file)))
-    
+
     print_banner()
-    
+
+    # Show mode
+    if isinstance(agent, OrchestratorAgent):
+        console.print("🤖 Running in multi-agent mode", style="dim")
+    else:
+        console.print("🤖 Running in single-agent mode", style="dim")
+
     while True:
         try:
             # Get user input
@@ -115,31 +760,34 @@ async def run_interactive(agent: ResumeAgent):
                 None,
                 lambda: session.prompt("\n📝 You: "),
             )
-            
+
             user_input = user_input.strip()
-            
+
             if not user_input:
                 continue
-            
+
             # Handle commands
             if user_input.startswith("/"):
-                should_continue = await handle_command(user_input, agent)
+                should_continue = await handle_command(user_input, agent, session_manager)
                 if not should_continue:
                     break
                 continue
-            
+
             # Run agent
             console.print("\n🤔 Thinking...", style="dim")
-            
+
             try:
-                response = await agent.run(user_input)
+                if isinstance(agent, OrchestratorAgent):
+                    response = await agent.run(user_input)
+                else:
+                    response = await agent.run(user_input)
                 console.print("\n🤖 Assistant:", style="bold green")
                 console.print(Markdown(response))
             except KeyboardInterrupt:
                 console.print("\n⚠️ Interrupted.", style="yellow")
             except Exception as e:
                 console.print(f"\n❌ Error: {str(e)}", style="red")
-        
+
         except KeyboardInterrupt:
             console.print("\n\n👋 Goodbye!", style="yellow")
             break
@@ -151,7 +799,12 @@ async def run_interactive(agent: ResumeAgent):
 def main():
     """Main entry point."""
     import argparse
-    
+    import os
+    from dotenv import load_dotenv
+
+    # Load environment variables from .env file
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="Resume Agent - AI-powered resume modification assistant"
     )
@@ -162,7 +815,7 @@ def main():
     )
     parser.add_argument(
         "--config", "-c",
-        default="config/config.yaml",
+        default="config/config.local.yaml",
         help="Path to configuration file",
     )
     parser.add_argument(
@@ -180,52 +833,99 @@ def main():
         action="store_true",
         help="Quiet mode (minimal output)",
     )
-    
+    parser.add_argument(
+        "--multi-agent", "-m",
+        action="store_true",
+        help="Force multi-agent mode (overrides config)",
+    )
+    parser.add_argument(
+        "--single-agent", "-s",
+        action="store_true",
+        help="Force single-agent mode (overrides config)",
+    )
+
     args = parser.parse_args()
-    
+
     # Load config
     try:
         llm_config = load_config(args.config)
     except FileNotFoundError:
         console.print(f"⚠️ Config file not found: {args.config}", style="yellow")
         console.print("Using default configuration. Set GEMINI_API_KEY environment variable.", style="dim")
-        
-        # Try to get API key from environment (priority: Gemini > OpenAI)
-        import os
+
+        # Try to get API key from environment
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
-        
-        if os.environ.get("GEMINI_API_KEY"):
-            api_base = "https://generativelanguage.googleapis.com/v1beta"
-            model = "gemini-2.0-flash"
-        else:
-            api_base = "https://api.openai.com/v1"
-            model = "gpt-4o"
-        
+
         llm_config = LLMConfig(
             api_key=api_key,
-            api_base=api_base,
-            model=model,
+            model="gemini-2.5-flash" if os.environ.get("GEMINI_API_KEY") else "gpt-4o",
         )
-    
-    # Create agent
-    agent_config = AgentConfig(
-        workspace_dir=args.workspace,
-        verbose=not args.quiet,
-    )
-    
-    agent = ResumeAgent(llm_config=llm_config, agent_config=agent_config)
-    
+
+    # Determine agent mode
+    if args.single_agent:
+        # Force single-agent mode
+        agent_config = AgentConfig(
+            workspace_dir=args.workspace,
+            verbose=not args.quiet,
+        )
+        session_manager = SessionManager(args.workspace)
+        agent = ResumeAgent(llm_config=llm_config, agent_config=agent_config, session_manager=session_manager)
+    elif args.multi_agent:
+        # Force multi-agent mode
+        session_manager = SessionManager(args.workspace)
+        agent = create_agent(
+            llm_config=llm_config,
+            workspace_dir=args.workspace,
+            session_manager=session_manager,
+        )
+        # Ensure it's multi-agent
+        if isinstance(agent, ResumeAgent):
+            console.print("⚠️ Multi-agent mode requested but not configured. Using single-agent.", style="yellow")
+    else:
+        # Use config to determine mode (single, multi, or auto)
+        session_manager = SessionManager(args.workspace)
+        agent = create_agent(
+            llm_config=llm_config,
+            workspace_dir=args.workspace,
+            session_manager=session_manager,
+        )
+
+    # Enable auto-save if configured
+    try:
+        from .llm import load_raw_config
+        raw_config = load_raw_config(args.config)
+        session_config = raw_config.get("session", {})
+        auto_save_enabled = session_config.get("auto_save", False)
+
+        # Get LLM agent and enable auto-save
+        from .agent_factory import AutoAgent
+        if isinstance(agent, AutoAgent):
+            agent.agent.auto_save_enabled = auto_save_enabled
+        elif isinstance(agent, OrchestratorAgent):
+            agent.llm_agent.auto_save_enabled = auto_save_enabled
+        else:
+            agent.agent.auto_save_enabled = auto_save_enabled
+
+        if auto_save_enabled:
+            console.print("✓ Auto-save enabled (sessions saved after tool execution)", style="dim")
+    except Exception as e:
+        # Don't crash if config loading fails
+        pass
+
     # Run
     if args.prompt:
         # Non-interactive mode
         async def run_once():
-            response = await agent.run(args.prompt)
+            if isinstance(agent, OrchestratorAgent):
+                response = await agent.run(args.prompt)
+            else:
+                response = await agent.run(args.prompt)
             console.print(Markdown(response))
-        
+
         asyncio.run(run_once())
     else:
         # Interactive mode
-        asyncio.run(run_interactive(agent))
+        asyncio.run(run_interactive(agent, session_manager))
 
 
 if __name__ == "__main__":

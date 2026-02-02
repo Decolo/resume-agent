@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Callable
 from google import genai
 from google.genai import types
 
-from .retry import retry_with_backoff, RetryConfig
+from .retry import retry_with_backoff, RetryConfig, TransientError
 from .observability import AgentObserver
 from .cache import ToolCache, should_cache_tool, get_tool_ttl
 
@@ -34,7 +34,13 @@ class HistoryManager:
 
     def add_message(self, message: types.Content):
         """Add a message and prune if needed."""
+        if message is None:
+            return
         self._history.append(message)
+        # Remove any accidental None entries in history
+        if any(m is None for m in self._history):
+            self._history = [m for m in self._history if m is not None]
+        self._ensure_valid_sequence()
         self._prune_if_needed()
 
     def get_history(self) -> List[types.Content]:
@@ -53,6 +59,7 @@ class HistoryManager:
             self._history = self._history[-self.max_messages:]
             # After sliding window, ensure we didn't break pairs
             self._fix_broken_pairs()
+            self._ensure_valid_sequence()
 
         # Token-based pruning (rough estimate)
         estimated_tokens = sum(self._estimate_tokens(msg) for msg in self._history)
@@ -70,6 +77,7 @@ class HistoryManager:
                     # Safe to remove single message
                     removed = self._history.pop(0)
                     estimated_tokens -= self._estimate_tokens(removed)
+            self._ensure_valid_sequence()
 
     def _is_function_call_pair(self, index: int) -> bool:
         """
@@ -84,20 +92,12 @@ class HistoryManager:
 
         msg1 = self._history[index]
         msg2 = self._history[index + 1]
+        if msg1 is None or msg2 is None:
+            return False
 
-        # Check if msg1 is model with function calls
-        has_function_call = (
-            msg1.role == "model" and
-            msg1.parts is not None and
-            any(part.function_call for part in msg1.parts)
-        )
+        has_function_call = self._has_function_call(msg1)
 
-        # Check if msg2 is user with function responses
-        has_function_response = (
-            msg2.role == "user" and
-            msg2.parts is not None and
-            any(part.function_response for part in msg2.parts)
-        )
+        has_function_response = self._has_function_response(msg2)
 
         return has_function_call and has_function_response
 
@@ -110,6 +110,12 @@ class HistoryManager:
         """
         if not self._history:
             return
+
+        # Drop any None entries that might exist
+        while self._history and self._history[0] is None:
+            self._history.pop(0)
+        while self._history and self._history[-1] is None:
+            self._history.pop()
 
         # Check if first message is an orphaned function response
         first_msg = self._history[0]
@@ -128,12 +134,74 @@ class HistoryManager:
                 # This is an orphaned call, remove it
                 self._history.pop()
 
+    def _has_function_call(self, msg: types.Content) -> bool:
+        return (
+            msg is not None and
+            msg.role == "model" and
+            msg.parts is not None and
+            any(part.function_call for part in msg.parts)
+        )
+
+    def _has_function_response(self, msg: types.Content) -> bool:
+        return (
+            msg is not None and
+            msg.role == "user" and
+            msg.parts is not None and
+            any(part.function_response for part in msg.parts)
+        )
+
+    def _ensure_valid_sequence(self):
+        """Ensure history ordering is valid for Gemini function calling."""
+        if not self._history:
+            return
+
+        # Remove None entries
+        self._history = [m for m in self._history if m is not None]
+        if not self._history:
+            return
+
+        cleaned: List[types.Content] = []
+        for msg in self._history:
+            # Drop orphaned function responses
+            if self._has_function_response(msg):
+                if not cleaned:
+                    continue
+                if not self._has_function_call(cleaned[-1]):
+                    continue
+            # Drop model function calls that do not follow a user turn
+            if self._has_function_call(msg):
+                if not cleaned:
+                    continue
+                if cleaned[-1].role != "user":
+                    continue
+            cleaned.append(msg)
+
+        # Drop model function calls not followed by a user function response
+        final: List[types.Content] = []
+        i = 0
+        while i < len(cleaned):
+            msg = cleaned[i]
+            if self._has_function_call(msg):
+                if i + 1 >= len(cleaned):
+                    i += 1
+                    continue
+                next_msg = cleaned[i + 1]
+                if not self._has_function_response(next_msg):
+                    i += 1
+                    continue
+            final.append(msg)
+            i += 1
+
+        self._history = final
+
     def _estimate_tokens(self, message: types.Content) -> int:
         """
         Estimate token count for a message.
 
         Uses rough heuristic: 1 token ≈ 4 characters
         """
+        if message is None or message.parts is None:
+            return 0
         total_chars = 0
         for part in message.parts:
             if part.text:
@@ -162,13 +230,15 @@ class Message:
     name: Optional[str] = None
 
 
-@dataclass 
+@dataclass
 class LLMConfig:
     """Configuration for LLM client."""
     api_key: str
     model: str = "gemini-2.0-flash"
     max_tokens: int = 4096
     temperature: float = 0.7
+    api_base: str = ""  # Custom API endpoint (proxy)
+    search_grounding: bool = False
 
 
 @dataclass
@@ -190,9 +260,10 @@ class LLMResponse:
 class GeminiAgent:
     """Agent using Google GenAI SDK with function calling."""
 
-    def __init__(self, config: LLMConfig, system_prompt: str = ""):
+    def __init__(self, config: LLMConfig, system_prompt: str = "", agent_id: Optional[str] = None, session_manager: Optional[Any] = None):
         self.config = config
         self.system_prompt = system_prompt
+        self.agent_id = agent_id
         self._resolve_api_key()
 
         # Initialize the client
@@ -205,21 +276,48 @@ class GeminiAgent:
         self.history_manager = HistoryManager(max_messages=50, max_tokens=100000)
 
         # Observability for logging and metrics
-        self.observer = AgentObserver()
+        self.observer = AgentObserver(agent_id=agent_id)
 
         # Tool result caching
         self.cache = ToolCache()
 
+        # Session management
+        self.session_manager = session_manager
+        self.auto_save_enabled = False
+        self.current_session_id: Optional[str] = None
+
     def _resolve_api_key(self):
-        """Resolve API key from environment if needed."""
+        """Resolve API key with priority: env var > config file.
+
+        Priority order:
+        1. GEMINI_API_KEY environment variable
+        2. api_key from config file
+        3. Raise error if neither is set
+        """
+        # First, try environment variable (highest priority)
+        env_key = os.environ.get("GEMINI_API_KEY", "")
+        if env_key:
+            self.config.api_key = env_key
+            return
+
+        # Second, check if config has a key (not a placeholder)
+        if self.config.api_key and not self.config.api_key.startswith("${"):
+            return
+
+        # Third, try to resolve ${VAR_NAME} placeholder in config
         if self.config.api_key.startswith("${") and self.config.api_key.endswith("}"):
             env_var = self.config.api_key[2:-1]
-            self.config.api_key = os.environ.get(env_var, "")
-        if not self.config.api_key:
-            # Try common env vars
-            self.config.api_key = os.environ.get("GEMINI_API_KEY", "")
-        if not self.config.api_key:
-            raise ValueError("GEMINI_API_KEY not set")
+            resolved = os.environ.get(env_var, "")
+            if resolved:
+                self.config.api_key = resolved
+                return
+
+        # No valid API key found
+        raise ValueError(
+            "GEMINI_API_KEY not set. Please either:\n"
+            "  1. Set GEMINI_API_KEY environment variable, or\n"
+            "  2. Add 'api_key: your_key' to config/config.local.yaml"
+        )
 
     def register_tool(
         self,
@@ -265,11 +363,16 @@ class GeminiAgent:
 
     def _get_tools(self) -> Optional[List[types.Tool]]:
         """Get tools in Gemini format."""
-        if not self._tools:
-            return None
-        
-        declarations = [schema for _, (_, schema) in self._tools.items()]
-        return [types.Tool(function_declarations=declarations)]
+        tools: List[types.Tool] = []
+
+        if self._tools:
+            declarations = [schema for _, (_, schema) in self._tools.items()]
+            tools.append(types.Tool(function_declarations=declarations))
+
+        if self.config.search_grounding:
+            tools.append(types.Tool(google_search=types.GoogleSearch()))
+
+        return tools or None
 
     async def run(self, user_input: str, max_steps: int = 20) -> str:
         """Run the agent with user input, handling tool calls automatically."""
@@ -278,13 +381,20 @@ class GeminiAgent:
             role="user",
             parts=[types.Part.from_text(text=user_input)],
         ))
+
+        # Ensure history ordering is valid before calling the model
+        self.history_manager._ensure_valid_sequence()
         
         step = 0
         while step < max_steps:
             step += 1
 
             # Log step start
-            self.observer.log_step_start(step, user_input if step == 1 else None)
+            self.observer.log_step_start(
+                step,
+                user_input if step == 1 else None,
+                agent_id=self.agent_id,
+            )
 
             # Generate response with retry logic
             import time
@@ -311,10 +421,19 @@ class GeminiAgent:
                 jitter_factor=0.2
             )
 
-            response = await retry_with_backoff(
-                make_llm_request,
-                retry_config
-            )
+            try:
+                response = await retry_with_backoff(
+                    make_llm_request,
+                    retry_config
+                )
+            except Exception as e:
+                self.observer.log_error(
+                    error_type="llm_request",
+                    message=str(e),
+                    context={"model": self.config.model, "step": step},
+                    agent_id=self.agent_id,
+                )
+                return f"Error: LLM request failed: {e}"
 
             # Log LLM request (rough token estimate and cost)
             llm_duration = (time.time() - start_time) * 1000  # Convert to ms
@@ -327,12 +446,19 @@ class GeminiAgent:
                 tokens=estimated_tokens,
                 cost=estimated_cost,
                 duration_ms=llm_duration,
-                step=step
+                step=step,
+                agent_id=self.agent_id,
             )
             
             # Check for function calls
+            # Validate response structure early
+            if not response.candidates:
+                raise TransientError("Empty LLM response: no candidates")
+
             candidate = response.candidates[0]
-            parts = candidate.content.parts
+            parts = []
+            if candidate.content and candidate.content.parts:
+                parts = candidate.content.parts
             
             function_calls = []
             text_parts = []
@@ -342,7 +468,27 @@ class GeminiAgent:
                     function_calls.append(part.function_call)
                 elif part.text:
                     text_parts.append(part.text)
-            
+
+            if not parts or (not function_calls and not text_parts):
+                # Treat empty responses as transient to trigger retry upstream
+                raise TransientError("Empty LLM response: no text or tool calls")
+
+            # Log a brief response summary for debugging
+            response_text = " ".join(text_parts).strip()
+            tool_calls_dump = []
+            if function_calls:
+                for fc in function_calls:
+                    tool_calls_dump.append({
+                        "name": fc.name,
+                        "args": dict(fc.args) if fc.args else {},
+                    })
+            self.observer.log_llm_response(
+                step=step,
+                text=response_text or "(no text)",
+                tool_calls=tool_calls_dump,
+                agent_id=self.agent_id,
+            )
+
             # Add model response to history
             self.history_manager.add_message(candidate.content)
             
@@ -357,6 +503,7 @@ class GeminiAgent:
                     success = True
                     result_str = ""
                     cached = False
+                    tool_error = None
 
                     # Check cache first (only for cacheable tools)
                     if should_cache_tool(func_name):
@@ -378,23 +525,27 @@ class GeminiAgent:
                                     result = func(**func_args)
 
                                 # Convert ToolResult to string if needed
-                                if hasattr(result, 'to_message'):
+                                if hasattr(result, "to_message"):
                                     result_str = result.to_message()
+                                    success = getattr(result, "success", True)
+                                    tool_error = getattr(result, "error", None)
                                 else:
                                     result_str = str(result)
 
-                                # Cache the result if tool is cacheable
-                                if should_cache_tool(func_name):
+                                # Cache only successful tool results
+                                if success and should_cache_tool(func_name):
                                     ttl = get_tool_ttl(func_name)
                                     self.cache.set(func_name, func_args, result_str, ttl)
 
                             except Exception as e:
                                 success = False
                                 result_str = f"Error: {str(e)}"
+                                tool_error = str(e)
                                 self.observer.log_error(
                                     error_type="tool_execution",
                                     message=str(e),
-                                    context={"tool": func_name, "args": func_args}
+                                    context={"tool": func_name, "args": func_args},
+                                    agent_id=self.agent_id,
                                 )
                         else:
                             success = False
@@ -402,18 +553,28 @@ class GeminiAgent:
                             self.observer.log_error(
                                 error_type="unknown_tool",
                                 message=f"Tool '{func_name}' not found",
-                                context={"tool": func_name}
+                                context={"tool": func_name},
+                                agent_id=self.agent_id,
                             )
 
                     # Log tool execution
                     tool_duration = (time.time() - tool_start_time) * 1000
+                    if not success and tool_error:
+                        self.observer.log_error(
+                            error_type="tool_execution",
+                            message=str(tool_error),
+                            context={"tool": func_name, "args": func_args},
+                            agent_id=self.agent_id,
+                        )
+
                     self.observer.log_tool_call(
                         tool_name=func_name,
                         args=func_args,
                         result=result_str,
                         duration_ms=tool_duration,
                         success=success,
-                        cached=cached
+                        cached=cached,
+                        agent_id=self.agent_id,
                     )
 
                     return types.Part.from_function_response(
@@ -433,13 +594,17 @@ class GeminiAgent:
                     parts=function_responses,
                 ))
 
+                # Auto-save after tool execution
+                if self.auto_save_enabled and self.session_manager:
+                    await self._auto_save()
+
                 # Log step end
                 step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration)
+                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
             else:
                 # No function calls - return the text response
                 step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration)
+                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
 
                 final_text = "".join(text_parts)
 
@@ -453,13 +618,35 @@ class GeminiAgent:
 
         return f"Max steps ({max_steps}) reached."
 
+    async def _auto_save(self):
+        """Trigger auto-save."""
+        if self.session_manager:
+            try:
+                # Get the agent instance (passed from parent)
+                # This will be set by ResumeAgent or OrchestratorAgent
+                if hasattr(self, '_parent_agent'):
+                    self.current_session_id = self.session_manager.save_session(
+                        agent=self._parent_agent,
+                        session_id=self.current_session_id,
+                        auto_save=True
+                    )
+            except Exception as e:
+                # Don't crash on auto-save failure
+                print(f"Warning: Auto-save failed: {e}")
+
     def reset(self):
         """Reset conversation history."""
         self.history_manager.clear()
+        self.current_session_id = None
 
 
-def load_config(config_path: str = "config/config.yaml") -> LLMConfig:
-    """Load LLM configuration from YAML file."""
+def load_raw_config(config_path: str = "config/config.local.yaml") -> dict:
+    """Load raw configuration dictionary from YAML file.
+
+    Priority order:
+    1. config.local.yaml (user's local config with secrets)
+    2. config.yaml (template/defaults)
+    """
     import yaml
     from pathlib import Path
 
@@ -467,21 +654,34 @@ def load_config(config_path: str = "config/config.yaml") -> LLMConfig:
     if not path.exists():
         path = Path(__file__).parent.parent / config_path
 
+    # If config.local.yaml doesn't exist, try config.yaml as fallback
+    if not path.exists():
+        fallback_path = path.with_name("config.yaml")
+        if fallback_path.exists():
+            path = fallback_path
+        else:
+            fallback_path = Path(__file__).parent.parent / "config" / "config.yaml"
+            if fallback_path.exists():
+                path = fallback_path
+
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
     with open(path) as f:
-        data = yaml.safe_load(f)
+        return yaml.safe_load(f)
+
+
+def load_config(config_path: str = "config/config.local.yaml") -> LLMConfig:
+    """Load LLM configuration from YAML file."""
+    data = load_raw_config(config_path)
 
     config = LLMConfig(
         api_key=data.get("api_key", ""),
         model=data.get("model", "gemini-2.0-flash"),
         max_tokens=data.get("max_tokens", 4096),
         temperature=data.get("temperature", 0.7),
+        api_base=data.get("api_base", ""),
+        search_grounding=data.get("search_grounding", {}).get("enabled", False),
     )
-
-    # Add extra fields for OpenAI compatibility
-    config.api_type = data.get("api_type", "gemini")
-    config.api_base = data.get("api_base", "")
 
     return config
