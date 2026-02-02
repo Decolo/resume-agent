@@ -1,0 +1,69 @@
+# Resume Agent Configuration Template
+# Copy this to config.local.yaml and customize
+
+# Google Gemini API (using google-genai SDK)
+# Set GEMINI_API_KEY environment variable in .env file
+api_key: "${GEMINI_API_KEY}"
+model: "gemini-3-pro-preview"  # v1beta compatible model
+
+# Agent settings
+max_steps: 50
+max_tokens: 4096
+temperature: 0.7
+
+# Workspace
+workspace_dir: "./workspace"
+
+# Logging
+log_level: "INFO"
+log_file: "./logs/agent.log"
+
+# Web search grounding (Gemini built-in tool)
+search_grounding:
+  enabled: false
+
+# Session persistence (Phase 3)
+session:
+  enabled: true
+  auto_save: true  # Auto-save after tool execution (enabled by default)
+  sessions_dir: "./sessions"  # Relative to workspace_dir
+
+# Multi-agent configuration (Phase 2)
+multi_agent:
+  enabled: "auto"  # true=multi-agent, false=single-agent, "auto"=route per request
+  use_preview_models: true  # set true to use preview models for multi-agent only
+  preview_model: "gemini-3-flash-preview"
+  preview_orchestrator_model: "gemini-3-pro-preview"
+  mode: "orchestrated"
+
+  agents:
+    parser:
+      enabled: true
+      model: "gemini-3-flash-preview"
+      temperature: 0.3  # Lower for deterministic parsing
+
+    writer:
+      enabled: true
+      model: "gemini-3-flash-preview"
+      temperature: 0.7  # Higher for creative writing
+
+    formatter:
+      enabled: true
+      model: "gemini-3-flash-preview"
+      temperature: 0.3
+
+    orchestrator:
+      enabled: true
+      model: "gemini-3-pro-preview"
+      temperature: 0.5
+      max_steps: 30
+
+  delegation:
+    max_depth: 5
+    timeout_seconds: 300
+    enable_cycle_detection: true
+
+  history:
+    strategy: "isolated"  # Each agent has separate history
+    max_messages_per_agent: 50
+    max_tokens_per_agent: 100000
