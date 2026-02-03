@@ -4,7 +4,7 @@
 # Google Gemini API (using google-genai SDK)
 # Set GEMINI_API_KEY environment variable in .env file
 api_key: "${GEMINI_API_KEY}"
-model: "gemini-3-pro-preview"  # v1beta compatible model
+model: "gemini-3-pro-preview"  # preview model
 
 # Agent settings
 max_steps: 50
@@ -31,7 +31,7 @@ session:
 # Multi-agent configuration (Phase 2)
 multi_agent:
   enabled: "auto"  # true=multi-agent, false=single-agent, "auto"=route per request
-  use_preview_models: true  # set true to use preview models for multi-agent only
+  use_preview_models: false  # set true to use preview models for multi-agent only
   preview_model: "gemini-3-flash-preview"
   preview_orchestrator_model: "gemini-3-pro-preview"
   mode: "orchestrated"
@@ -39,22 +39,22 @@ multi_agent:
   agents:
     parser:
       enabled: true
-      model: "gemini-3-flash-preview"
+      model: "gemini-2.5-flash"
       temperature: 0.3  # Lower for deterministic parsing
 
     writer:
       enabled: true
-      model: "gemini-3-flash-preview"
+      model: "gemini-2.5-flash"
       temperature: 0.7  # Higher for creative writing
 
     formatter:
       enabled: true
-      model: "gemini-3-flash-preview"
+      model: "gemini-2.5-flash"
       temperature: 0.3
 
     orchestrator:
       enabled: true
-      model: "gemini-3-pro-preview"
+      model: "gemini-2.5-pro"
       temperature: 0.5
       max_steps: 30
 
