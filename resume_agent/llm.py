@@ -384,7 +384,11 @@ class GeminiAgent:
 
         # Ensure history ordering is valid before calling the model
         self.history_manager._ensure_valid_sequence()
-        
+
+        last_tool_call: Optional[Dict[str, Any]] = None
+        repeated_tool_calls = 0
+        last_tool_result: Optional[str] = None
+
         step = 0
         while step < max_steps:
             step += 1
@@ -493,6 +497,18 @@ class GeminiAgent:
             self.history_manager.add_message(candidate.content)
             
             if function_calls:
+                # Detect repeated identical tool calls with no text output
+                if not response_text and len(function_calls) == 1:
+                    current_call = {"name": function_calls[0].name, "args": dict(function_calls[0].args) if function_calls[0].args else {}}
+                    if last_tool_call == current_call:
+                        repeated_tool_calls += 1
+                    else:
+                        repeated_tool_calls = 0
+                    last_tool_call = current_call
+                else:
+                    repeated_tool_calls = 0
+                    last_tool_call = None
+
                 # Execute function calls in parallel
                 async def execute_single_tool(fc):
                     """Execute a single tool call and return the response."""
@@ -587,7 +603,13 @@ class GeminiAgent:
                     *[execute_single_tool(fc) for fc in function_calls],
                     return_exceptions=False
                 )
-                
+
+                # Capture last tool result for fallback
+                if len(function_calls) == 1:
+                    fr = getattr(function_responses[0], "function_response", None)
+                    if fr and getattr(fr, "response", None):
+                        last_tool_result = fr.response.get("result")
+
                 # Add function responses to history
                 self.history_manager.add_message(types.Content(
                     role="user",
@@ -601,6 +623,10 @@ class GeminiAgent:
                 # Log step end
                 step_duration = (time.time() - start_time) * 1000
                 self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+
+                # If the model is stuck repeating the same tool call, return the last tool result
+                if repeated_tool_calls >= 1 and last_tool_result:
+                    return last_tool_result
             else:
                 # No function calls - return the text response
                 step_duration = (time.time() - start_time) * 1000
