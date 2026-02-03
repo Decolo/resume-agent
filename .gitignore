@@ -70,3 +70,9 @@ exports/
 *.pdf
 *.docx
 *.xlsx
+config/config.local.yaml
+config/*.local.yaml
+config/*.local.yml
+
+
+examples/my_resume
