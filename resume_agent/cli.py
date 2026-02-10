@@ -12,10 +12,11 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 
 from .agent import ResumeAgent, AgentConfig
-from .llm import LLMConfig, load_config
+from .llm import LLMConfig, load_config, load_raw_config
 from .agent_factory import create_agent
 from .agents.orchestrator_agent import OrchestratorAgent
 from .session import SessionManager
+from .config_validator import validate_config, has_errors, Severity
 
 
 console = Console()
@@ -54,11 +55,14 @@ def print_help():
 | `/load [number]` | Load a saved session (shows picker if no number) |
 | `/sessions` | List all saved sessions with numbers |
 | `/delete-session <number>` | Delete a saved session by number |
-| `/auto-save [on\|off]` | Toggle auto-save after tool execution |
 | `/quit` or `/exit` | Exit the agent |
 | `/files` | List files in workspace |
 | `/config` | Show current configuration |
 | `/export [target] [format]` | Export conversation history |
+| `/approve` | Approve pending tool call(s) |
+| `/reject` | Reject pending tool call(s) |
+| `/pending` | List pending tool approvals |
+| `/auto-approve [on|off|status]` | Control auto-approval for write tools |
 | `/agents` | Show agent statistics (multi-agent mode) |
 | `/trace` | Show delegation trace (multi-agent mode) |
 | `/delegation-tree` | Show delegation stats (multi-agent mode) |
@@ -75,15 +79,13 @@ Save and restore conversation sessions:
 /load 1                  # Load session #1 (most recent)
 /load 2                  # Load session #2
 /delete-session 1        # Delete session #1
-/auto-save on            # Enable auto-save after tool calls
-/auto-save off           # Disable auto-save
 ```
 
 **Session features:**
 - 🎯 **Quick load by number**: `/load 1` loads the most recent session
 - 📋 **Interactive picker**: `/load` without arguments shows all sessions
 - 🏷️ **Custom names**: `/save my_project_v1` for easy identification
-- 🔄 **Auto-save enabled by default**: Sessions saved after each tool execution
+- 🔄 **Auto-save always enabled**: Sessions automatically saved after each tool execution
 - 📊 **Full state preservation**: History, observability, multi-agent state
 
 ### Export Command
@@ -122,6 +124,72 @@ Files are saved to `exports/conversation_YYYYMMDD_HHMMSS[_verbose].{ext}`
 - "Check if my resume is ATS-friendly"
 """
     console.print(Markdown(help_text))
+
+
+def _get_llm_agents(agent: Union[ResumeAgent, OrchestratorAgent]):
+    """Return list of GeminiAgent instances for pending tool approvals."""
+    from .agent_factory import AutoAgent
+    agents = []
+    if isinstance(agent, AutoAgent):
+        if hasattr(agent, "single_agent") and hasattr(agent.single_agent, "agent"):
+            agents.append(agent.single_agent.agent)
+        if hasattr(agent, "multi_agent") and hasattr(agent.multi_agent, "llm_agent"):
+            agents.append(agent.multi_agent.llm_agent)
+        if hasattr(agent, "multi_agent") and hasattr(agent.multi_agent, "registry"):
+            for sub_agent in agent.multi_agent.registry.get_all_agents():
+                if hasattr(sub_agent, "llm_agent") and sub_agent.llm_agent:
+                    agents.append(sub_agent.llm_agent)
+    elif isinstance(agent, ResumeAgent):
+        if hasattr(agent, "agent"):
+            agents.append(agent.agent)
+    elif isinstance(agent, OrchestratorAgent):
+        if hasattr(agent, "llm_agent"):
+            agents.append(agent.llm_agent)
+        if hasattr(agent, "registry"):
+            for sub_agent in agent.registry.get_all_agents():
+                if hasattr(sub_agent, "llm_agent") and sub_agent.llm_agent:
+                    agents.append(sub_agent.llm_agent)
+
+    # De-duplicate
+    unique = []
+    seen = set()
+    for a in agents:
+        if a is None:
+            continue
+        aid = id(a)
+        if aid in seen:
+            continue
+        seen.add(aid)
+        unique.append(a)
+    return unique
+
+
+def _list_pending_tool_calls(agent: Union[ResumeAgent, OrchestratorAgent]) -> list:
+    pending = []
+    for llm_agent in _get_llm_agents(agent):
+        if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
+            pending.extend(llm_agent.list_pending_tool_calls())
+    return pending
+
+
+def _get_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent]) -> Optional[str]:
+    states = []
+    for llm_agent in _get_llm_agents(agent):
+        if hasattr(llm_agent, "is_auto_approve_enabled"):
+            states.append(bool(llm_agent.is_auto_approve_enabled()))
+    if not states:
+        return None
+    if all(states):
+        return "on"
+    if not any(states):
+        return "off"
+    return "mixed"
+
+
+def _set_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent], enabled: bool) -> None:
+    for llm_agent in _get_llm_agents(agent):
+        if hasattr(llm_agent, "set_auto_approve_tools"):
+            llm_agent.set_auto_approve_tools(enabled)
 
 
 async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None) -> bool:
@@ -342,28 +410,6 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
             else:
                 console.print(f"❌ Session not found", style="red")
 
-    elif cmd.startswith("/auto-save"):
-        # Parse: /auto-save [on|off]
-        parts = cmd.split()
-
-        # Get LLM agent (handle AutoAgent, OrchestratorAgent, ResumeAgent)
-        from .agent_factory import AutoAgent
-        if isinstance(agent, AutoAgent):
-            llm_agent = agent.agent
-        elif isinstance(agent, OrchestratorAgent):
-            llm_agent = agent.llm_agent
-        else:
-            llm_agent = agent.agent
-
-        if len(parts) < 2:
-            status = "enabled" if llm_agent.auto_save_enabled else "disabled"
-            console.print(f"Auto-save is currently {status}", style="dim")
-        else:
-            enable = parts[1].lower() in ["on", "true", "1", "yes"]
-            llm_agent.auto_save_enabled = enable
-            status = "enabled" if enable else "disabled"
-            console.print(f"✓ Auto-save {status}", style="green")
-
     elif cmd == "/files":
         if isinstance(agent, ResumeAgent):
             result = await agent.tools["file_list"].execute()
@@ -465,6 +511,70 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                     console.print(f"  {record.from_agent} {arrow} {record.to_agent}")
         else:
             console.print("⚠️ Trace only available in multi-agent mode.", style="yellow")
+
+    elif cmd.startswith("/approve"):
+        approved_any = False
+
+        # Approve pending tool calls (pre-execution approval)
+        for llm_agent in _get_llm_agents(agent):
+            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
+                results = await llm_agent.approve_pending_tool_calls()
+                for result in results:
+                    name = result.get("name", "tool")
+                    output = result.get("result", "")
+                    console.print(f"  ✓ Approved {name}", style="green")
+                    if output:
+                        console.print(f"    {output}", style="dim")
+                approved_any = True
+
+        if not approved_any:
+            console.print("No pending approvals.", style="dim")
+
+    elif cmd.startswith("/reject"):
+        rejected_any = False
+
+        # Reject pending tool calls
+        for llm_agent in _get_llm_agents(agent):
+            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
+                count = llm_agent.reject_pending_tool_calls()
+                console.print(f"✓ Rejected {count} pending tool call(s)", style="yellow")
+                rejected_any = True
+
+        if not rejected_any:
+            console.print("No pending approvals to reject.", style="dim")
+
+    elif cmd == "/pending":
+        pending_tool_calls = _list_pending_tool_calls(agent)
+
+        if not pending_tool_calls:
+            console.print("No pending approvals.", style="dim")
+            return True
+
+        if pending_tool_calls:
+            console.print(f"\n📋 Pending tool approvals ({len(pending_tool_calls)}):", style="bold cyan")
+            for item in pending_tool_calls:
+                name = item.get("name", "tool")
+                console.print(f"  🔧 {name}", style="cyan")
+
+        console.print(f"\n💡 /approve to apply, /reject to discard", style="dim")
+
+    elif cmd.startswith("/auto-approve"):
+        parts = cmd.split(maxsplit=1)
+        action = parts[1].strip().lower() if len(parts) > 1 else "status"
+        if action in {"status", "state"}:
+            state = _get_auto_approve_state(agent)
+            if state is None:
+                console.print("Auto-approve not supported in this mode.", style="dim")
+            else:
+                console.print(f"Auto-approve is {state}.", style="green" if state == "on" else "yellow")
+        elif action in {"on", "true", "1", "yes"}:
+            _set_auto_approve_state(agent, True)
+            console.print("✓ Auto-approve enabled for write tools.", style="green")
+        elif action in {"off", "false", "0", "no"}:
+            _set_auto_approve_state(agent, False)
+            console.print("✓ Auto-approve disabled for write tools.", style="yellow")
+        else:
+            console.print("Usage: /auto-approve [on|off|status]", style="yellow")
 
     elif cmd.startswith("/export"):
         # Parse export command: /export [file|clipboard] [format] [verbose]
@@ -739,6 +849,63 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
     return True
 
 
+async def _prompt_pending_tool_action(
+    agent: Union[ResumeAgent, OrchestratorAgent],
+    session: PromptSession,
+    console: Console,
+) -> None:
+    """Prompt user to approve/reject pending tool calls before execution."""
+    pending = _list_pending_tool_calls(agent)
+    if not pending:
+        return
+
+    console.print(f"\n🛡️ Pending tool approvals ({len(pending)}):", style="bold cyan")
+    for item in pending:
+        name = item.get("name", "tool")
+        console.print(f"  🔧 {name}", style="cyan")
+
+    console.print("\n  [1] ✅ Approve (execute tools)", style="green")
+    console.print("  [2] ✅ Approve, and don't ask again", style="green")
+    console.print("  [3] ❌ Reject (discard)", style="red")
+
+    choice = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: session.prompt("\n> "),
+    )
+    choice = choice.strip()
+
+    if choice == "1":
+        for llm_agent in _get_llm_agents(agent):
+            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
+                results = await llm_agent.approve_pending_tool_calls()
+                for result in results:
+                    name = result.get("name", "tool")
+                    output = result.get("result", "")
+                    console.print(f"  ✓ Approved {name}", style="green")
+                    if output:
+                        console.print(f"    {output}", style="dim")
+    elif choice == "2":
+        for llm_agent in _get_llm_agents(agent):
+            if hasattr(llm_agent, "set_auto_approve_tools"):
+                llm_agent.set_auto_approve_tools(True)
+        for llm_agent in _get_llm_agents(agent):
+            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
+                results = await llm_agent.approve_pending_tool_calls()
+                for result in results:
+                    name = result.get("name", "tool")
+                    output = result.get("result", "")
+                    console.print(f"  ✓ Approved {name}", style="green")
+                    if output:
+                        console.print(f"    {output}", style="dim")
+        console.print("✓ Auto-approve enabled for future write tool calls", style="green")
+    elif choice == "3":
+        rejected = 0
+        for llm_agent in _get_llm_agents(agent):
+            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
+                rejected += llm_agent.reject_pending_tool_calls()
+        console.print(f"✓ Rejected {rejected} pending tool call(s)", style="yellow")
+    # Any other input: do nothing
+
+
 async def run_interactive(agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None):
     """Run interactive chat loop."""
     # Setup prompt with history
@@ -752,13 +919,16 @@ async def run_interactive(agent: Union[ResumeAgent, OrchestratorAgent], session_
         console.print("🤖 Running in multi-agent mode", style="dim")
     else:
         console.print("🤖 Running in single-agent mode", style="dim")
+    console.print("✅ Write approval enabled — file writes require approval", style="green")
 
     while True:
         try:
-            # Get user input
+            # Get user input — show pending approvals count if any
+            pending_count = len(_list_pending_tool_calls(agent))
+            prompt_prefix = f"\n📝 [{pending_count} pending] You: " if pending_count else "\n📝 You: "
             user_input = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: session.prompt("\n📝 You: "),
+                lambda: session.prompt(prompt_prefix),
             )
 
             user_input = user_input.strip()
@@ -783,6 +953,10 @@ async def run_interactive(agent: Union[ResumeAgent, OrchestratorAgent], session_
                     response = await agent.run(user_input)
                 console.print("\n🤖 Assistant:", style="bold green")
                 console.print(Markdown(response))
+
+                # Auto-prompt if tool approvals are pending
+                if _list_pending_tool_calls(agent):
+                    await _prompt_pending_tool_action(agent, session, console)
             except KeyboardInterrupt:
                 console.print("\n⚠️ Interrupted.", style="yellow")
             except Exception as e:
@@ -861,6 +1035,28 @@ def main():
             model="gemini-2.5-flash" if os.environ.get("GEMINI_API_KEY") else "gpt-4o",
         )
 
+    # Validate configuration at startup
+    try:
+        raw_config = load_raw_config(args.config)
+    except FileNotFoundError:
+        raw_config = {}
+
+    issues = validate_config(raw_config, workspace_dir=args.workspace)
+    if issues:
+        for issue in issues:
+            icon = "❌" if issue.severity == Severity.ERROR else "⚠️"
+            style = "red" if issue.severity == Severity.ERROR else "yellow"
+            console.print(f"  {icon} [{issue.field}] {issue.message}", style=style)
+
+        if has_errors(issues):
+            console.print(
+                "\n💡 Fix the errors above, then try again.\n"
+                "   Quick fix: export GEMINI_API_KEY=your_key_here\n"
+                "   Or copy config/config.yaml → config/config.local.yaml and set api_key",
+                style="dim",
+            )
+            return
+
     # Determine agent mode
     if args.single_agent:
         # Force single-agent mode
@@ -890,28 +1086,6 @@ def main():
             session_manager=session_manager,
         )
 
-    # Enable auto-save if configured
-    try:
-        from .llm import load_raw_config
-        raw_config = load_raw_config(args.config)
-        session_config = raw_config.get("session", {})
-        auto_save_enabled = session_config.get("auto_save", False)
-
-        # Get LLM agent and enable auto-save
-        from .agent_factory import AutoAgent
-        if isinstance(agent, AutoAgent):
-            agent.agent.auto_save_enabled = auto_save_enabled
-        elif isinstance(agent, OrchestratorAgent):
-            agent.llm_agent.auto_save_enabled = auto_save_enabled
-        else:
-            agent.agent.auto_save_enabled = auto_save_enabled
-
-        if auto_save_enabled:
-            console.print("✓ Auto-save enabled (sessions saved after tool execution)", style="dim")
-    except Exception as e:
-        # Don't crash if config loading fails
-        pass
-
     # Run
     if args.prompt:
         # Non-interactive mode
@@ -921,6 +1095,22 @@ def main():
             else:
                 response = await agent.run(args.prompt)
             console.print(Markdown(response))
+
+            if _list_pending_tool_calls(agent):
+                import sys
+                if sys.stdin.isatty():
+                    session = PromptSession()
+                    # Handle tool approvals first if present
+                    if _list_pending_tool_calls(agent):
+                        await _prompt_pending_tool_action(agent, session, console)
+                else:
+                    tool_pending = _list_pending_tool_calls(agent)
+                    if tool_pending:
+                        console.print(
+                            f"\n⚠️ {len(tool_pending)} pending tool call(s) require approval. "
+                            "Run in interactive mode to approve.",
+                            style="yellow",
+                        )
 
         asyncio.run(run_once())
     else:

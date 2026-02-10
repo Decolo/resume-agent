@@ -32,14 +32,20 @@ class HistoryManager:
         self.max_tokens = max_tokens
         self._history: List[types.Content] = []
 
-    def add_message(self, message: types.Content):
-        """Add a message and prune if needed."""
+    def add_message(self, message: types.Content, allow_incomplete: bool = False):
+        """Add a message and prune if needed.
+
+        If allow_incomplete is True, skips validation/pruning to allow a
+        model function_call to be immediately followed by its tool response.
+        """
         if message is None:
             return
         self._history.append(message)
         # Remove any accidental None entries in history
         if any(m is None for m in self._history):
             self._history = [m for m in self._history if m is not None]
+        if allow_incomplete:
+            return
         self._ensure_valid_sequence()
         self._prune_if_needed()
 
@@ -221,16 +227,6 @@ class HistoryManager:
 
 
 @dataclass
-class Message:
-    """A message in the conversation."""
-    role: str  # "user", "model", "tool"
-    content: str
-    tool_calls: Optional[List[dict]] = None
-    tool_call_id: Optional[str] = None
-    name: Optional[str] = None
-
-
-@dataclass
 class LLMConfig:
     """Configuration for LLM client."""
     api_key: str
@@ -241,24 +237,25 @@ class LLMConfig:
     search_grounding: bool = False
 
 
-@dataclass
-class ToolCall:
-    """A tool call from the model."""
-    id: str
-    name: str
-    arguments: Dict[str, Any]
-
-
-@dataclass
-class LLMResponse:
-    """Response from LLM."""
-    content: str
-    tool_calls: List[ToolCall] = field(default_factory=list)
-    finish_reason: str = "stop"
-
-
 class GeminiAgent:
     """Agent using Google GenAI SDK with function calling."""
+
+    _COST_PER_MILLION_TOKENS = 0.08
+    _READ_ONLY_TOOLS = {
+        "file_read",
+        "file_list",
+        "resume_parse",
+        "web_fetch",
+        "web_read",
+        "ats_score",
+        "job_match",
+        "resume_validate",
+    }
+    # Loop-guard thresholds (tune as needed)
+    _MAX_TOOL_ONLY_STEPS = 8
+    _MAX_REPEAT_READ_ONLY = 2
+    _MAX_REPEAT_DEFAULT = 1
+    _WRITE_TOOLS = {"file_write", "resume_write", "file_rename"}
 
     def __init__(self, config: LLMConfig, system_prompt: str = "", agent_id: Optional[str] = None, session_manager: Optional[Any] = None):
         self.config = config
@@ -283,8 +280,14 @@ class GeminiAgent:
 
         # Session management
         self.session_manager = session_manager
-        self.auto_save_enabled = False
         self.current_session_id: Optional[str] = None
+
+        # Retry configuration for LLM calls (defaults match RetryConfig dataclass)
+        self._retry_config = RetryConfig()
+        # Pending tool calls that require user approval
+        self._pending_tool_calls: List[Any] = []
+        # Auto-approve tool calls that require approval
+        self._auto_approve_tools = False
 
     def _resolve_api_key(self):
         """Resolve API key with priority: env var > config file.
@@ -376,6 +379,10 @@ class GeminiAgent:
 
     async def run(self, user_input: str, max_steps: int = 20) -> str:
         """Run the agent with user input, handling tool calls automatically."""
+        # If we already have pending tool calls, ask for approval first
+        if self._pending_tool_calls:
+            return "Pending tool call(s) require approval. Use /approve or /reject."
+
         # Add user message to history
         self.history_manager.add_message(types.Content(
             role="user",
@@ -385,51 +392,24 @@ class GeminiAgent:
         # Ensure history ordering is valid before calling the model
         self.history_manager._ensure_valid_sequence()
 
-        last_tool_call: Optional[Dict[str, Any]] = None
-        repeated_tool_calls = 0
-        last_tool_result: Optional[str] = None
+        loop_state: Dict[str, Any] = {
+            "last_call": None,
+            "same_call_repeats": 0,
+            "tool_only_steps": 0,
+            "last_result": None,
+        }
 
-        step = 0
-        while step < max_steps:
-            step += 1
-
-            # Log step start
+        for step in range(1, max_steps + 1):
             self.observer.log_step_start(
                 step,
                 user_input if step == 1 else None,
                 agent_id=self.agent_id,
             )
-
-            # Generate response with retry logic
-            import time
             start_time = time.time()
 
-            async def make_llm_request():
-                return self.client.models.generate_content(
-                    model=self.config.model,
-                    contents=self.history_manager.get_history(),
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.system_prompt if self.system_prompt else None,
-                        tools=self._get_tools(),
-                        max_output_tokens=self.config.max_tokens,
-                        temperature=self.config.temperature,
-                    ),
-                )
-
-            # Retry configuration for LLM calls
-            retry_config = RetryConfig(
-                max_attempts=3,
-                base_delay=1.0,
-                max_delay=60.0,
-                exponential_base=2.0,
-                jitter_factor=0.2
-            )
-
+            # 1. Call LLM
             try:
-                response = await retry_with_backoff(
-                    make_llm_request,
-                    retry_config
-                )
+                response = await self._call_llm()
             except Exception as e:
                 self.observer.log_error(
                     error_type="llm_request",
@@ -439,46 +419,14 @@ class GeminiAgent:
                 )
                 return f"Error: LLM request failed: {e}"
 
-            # Log LLM request (rough token estimate and cost)
-            llm_duration = (time.time() - start_time) * 1000  # Convert to ms
-            estimated_tokens = sum(self.history_manager._estimate_tokens(msg)
-                                   for msg in self.history_manager.get_history())
-            # Gemini 2.5 Flash pricing: ~$0.08 per 1M input tokens
-            estimated_cost = (estimated_tokens / 1_000_000) * 0.08
-            self.observer.log_llm_request(
-                model=self.config.model,
-                tokens=estimated_tokens,
-                cost=estimated_cost,
-                duration_ms=llm_duration,
-                step=step,
-                agent_id=self.agent_id,
-            )
-            
-            # Check for function calls
-            # Validate response structure early
-            if not response.candidates:
-                raise TransientError("Empty LLM response: no candidates")
+            # 2. Log LLM metrics
+            self._log_llm_metrics(step, start_time)
 
-            candidate = response.candidates[0]
-            parts = []
-            if candidate.content and candidate.content.parts:
-                parts = candidate.content.parts
-            
-            function_calls = []
-            text_parts = []
-            
-            for part in parts:
-                if part.function_call:
-                    function_calls.append(part.function_call)
-                elif part.text:
-                    text_parts.append(part.text)
-
-            if not parts or (not function_calls and not text_parts):
-                # Treat empty responses as transient to trigger retry upstream
-                raise TransientError("Empty LLM response: no text or tool calls")
-
-            # Log a brief response summary for debugging
+            # 3. Parse response
+            function_calls, text_parts = self._parse_response(response)
             response_text = " ".join(text_parts).strip()
+
+            # 4. Log response summary
             tool_calls_dump = []
             if function_calls:
                 for fc in function_calls:
@@ -493,156 +441,327 @@ class GeminiAgent:
                 agent_id=self.agent_id,
             )
 
-            # Add model response to history
-            self.history_manager.add_message(candidate.content)
-            
-            if function_calls:
-                # Detect repeated identical tool calls with no text output
-                if not response_text and len(function_calls) == 1:
-                    current_call = {"name": function_calls[0].name, "args": dict(function_calls[0].args) if function_calls[0].args else {}}
-                    if last_tool_call == current_call:
-                        repeated_tool_calls += 1
-                    else:
-                        repeated_tool_calls = 0
-                    last_tool_call = current_call
-                else:
-                    repeated_tool_calls = 0
-                    last_tool_call = None
+            # 5. Add model response to history
+            self.history_manager.add_message(
+                response.candidates[0].content,
+                allow_incomplete=bool(function_calls),
+            )
 
-                # Execute function calls in parallel
-                async def execute_single_tool(fc):
-                    """Execute a single tool call and return the response."""
-                    func_name = fc.name
-                    func_args = dict(fc.args) if fc.args else {}
-
-                    tool_start_time = time.time()
-                    success = True
-                    result_str = ""
-                    cached = False
-                    tool_error = None
-
-                    # Check cache first (only for cacheable tools)
-                    if should_cache_tool(func_name):
-                        cached_result = self.cache.get(func_name, func_args)
-                        if cached_result is not None:
-                            result_str = cached_result
-                            cached = True
-                            success = True
-
-                    # If not cached, execute the tool
-                    if not cached:
-                        if func_name in self._tools:
-                            func, _ = self._tools[func_name]
-                            try:
-                                # Execute the tool (await if async)
-                                if asyncio.iscoroutinefunction(func):
-                                    result = await func(**func_args)
-                                else:
-                                    result = func(**func_args)
-
-                                # Convert ToolResult to string if needed
-                                if hasattr(result, "to_message"):
-                                    result_str = result.to_message()
-                                    success = getattr(result, "success", True)
-                                    tool_error = getattr(result, "error", None)
-                                else:
-                                    result_str = str(result)
-
-                                # Cache only successful tool results
-                                if success and should_cache_tool(func_name):
-                                    ttl = get_tool_ttl(func_name)
-                                    self.cache.set(func_name, func_args, result_str, ttl)
-
-                            except Exception as e:
-                                success = False
-                                result_str = f"Error: {str(e)}"
-                                tool_error = str(e)
-                                self.observer.log_error(
-                                    error_type="tool_execution",
-                                    message=str(e),
-                                    context={"tool": func_name, "args": func_args},
-                                    agent_id=self.agent_id,
-                                )
-                        else:
-                            success = False
-                            result_str = f"Error: Unknown tool '{func_name}'"
-                            self.observer.log_error(
-                                error_type="unknown_tool",
-                                message=f"Tool '{func_name}' not found",
-                                context={"tool": func_name},
-                                agent_id=self.agent_id,
-                            )
-
-                    # Log tool execution
-                    tool_duration = (time.time() - tool_start_time) * 1000
-                    if not success and tool_error:
-                        self.observer.log_error(
-                            error_type="tool_execution",
-                            message=str(tool_error),
-                            context={"tool": func_name, "args": func_args},
-                            agent_id=self.agent_id,
-                        )
-
-                    self.observer.log_tool_call(
-                        tool_name=func_name,
-                        args=func_args,
-                        result=result_str,
-                        duration_ms=tool_duration,
-                        success=success,
-                        cached=cached,
-                        agent_id=self.agent_id,
-                    )
-
-                    return types.Part.from_function_response(
-                        name=func_name,
-                        response={"result": result_str},
-                    )
-
-                # Execute all tools in parallel
-                function_responses = await asyncio.gather(
-                    *[execute_single_tool(fc) for fc in function_calls],
-                    return_exceptions=False
-                )
-
-                # Capture last tool result for fallback
-                if len(function_calls) == 1:
-                    fr = getattr(function_responses[0], "function_response", None)
-                    if fr and getattr(fr, "response", None):
-                        last_tool_result = fr.response.get("result")
-
-                # Add function responses to history
-                self.history_manager.add_message(types.Content(
-                    role="user",
-                    parts=function_responses,
-                ))
-
-                # Auto-save after tool execution
-                if self.auto_save_enabled and self.session_manager:
-                    await self._auto_save()
-
-                # Log step end
+            # 6. If no tool calls → done
+            if not function_calls:
                 step_duration = (time.time() - start_time) * 1000
                 self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-
-                # If the model is stuck repeating the same tool call, return the last tool result
-                if repeated_tool_calls >= 1 and last_tool_result:
-                    return last_tool_result
-            else:
-                # No function calls - return the text response
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-
-                final_text = "".join(text_parts)
-
-                # Print session summary
                 self.observer.print_session_summary()
-
-                # Print cache statistics
                 self.cache.print_stats()
+                return "".join(text_parts)
 
-                return final_text
+            # 7. Pause before executing any write tools (approval required)
+            if self._requires_tool_approval(function_calls) and not self._auto_approve_tools:
+                self._pending_tool_calls = list(function_calls)
+                step_duration = (time.time() - start_time) * 1000
+                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                return "Tool call(s) require approval before execution. Use /approve or /reject."
+
+            # 7. Loop guard to prevent runaway tool-only loops
+            guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
+            if guard_reason:
+                step_duration = (time.time() - start_time) * 1000
+                self.observer.log_error(
+                    error_type="loop_guard",
+                    message=guard_reason,
+                    context={
+                        "last_call": loop_state.get("last_call"),
+                        "tool_only_steps": loop_state.get("tool_only_steps"),
+                        "same_call_repeats": loop_state.get("same_call_repeats"),
+                    },
+                    agent_id=self.agent_id,
+                )
+                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                return guard_reason
+
+            # 8. Execute tools in parallel
+            function_responses = await asyncio.gather(
+                *[self._execute_tool(fc) for fc in function_calls],
+                return_exceptions=False,
+            )
+
+            # 9. Capture last tool result for fallback
+            if len(function_calls) == 1:
+                fr = getattr(function_responses[0], "function_response", None)
+                if fr and getattr(fr, "response", None):
+                    loop_state["last_result"] = fr.response.get("result")
+
+            # 10. Update history + auto-save
+            self.history_manager.add_message(types.Content(
+                role="user",
+                parts=function_responses,
+            ))
+            if self.session_manager:
+                await self._auto_save()
+
+            # 11. Log step end
+            step_duration = (time.time() - start_time) * 1000
+            self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
 
         return f"Max steps ({max_steps}) reached."
+
+    # --- Extracted helper methods ---
+
+    async def _call_llm(self) -> types.GenerateContentResponse:
+        """Call LLM with retry logic."""
+        async def make_request():
+            return self.client.models.generate_content(
+                model=self.config.model,
+                contents=self.history_manager.get_history(),
+                config=types.GenerateContentConfig(
+                    system_instruction=self.system_prompt if self.system_prompt else None,
+                    tools=self._get_tools(),
+                    max_output_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature,
+                ),
+            )
+
+        return await retry_with_backoff(make_request, self._retry_config)
+
+    def _log_llm_metrics(self, step: int, start_time: float) -> None:
+        """Log LLM request metrics (tokens, cost, duration)."""
+        llm_duration = (time.time() - start_time) * 1000  # Convert to ms
+        estimated_tokens = sum(
+            self.history_manager._estimate_tokens(msg)
+            for msg in self.history_manager.get_history()
+        )
+        estimated_cost = (estimated_tokens / 1_000_000) * self._COST_PER_MILLION_TOKENS
+        self.observer.log_llm_request(
+            model=self.config.model,
+            tokens=estimated_tokens,
+            cost=estimated_cost,
+            duration_ms=llm_duration,
+            step=step,
+            agent_id=self.agent_id,
+        )
+
+    def _parse_response(self, response) -> tuple[list, list[str]]:
+        """Parse LLM response into function_calls and text_parts.
+
+        Raises TransientError if response is empty.
+        """
+        if not response.candidates:
+            raise TransientError("Empty LLM response: no candidates")
+
+        candidate = response.candidates[0]
+        parts = []
+        if candidate.content and candidate.content.parts:
+            parts = candidate.content.parts
+
+        function_calls = []
+        text_parts = []
+
+        for part in parts:
+            if part.function_call:
+                function_calls.append(part.function_call)
+            elif part.text:
+                text_parts.append(part.text)
+
+        if not parts or (not function_calls and not text_parts):
+            raise TransientError("Empty LLM response: no text or tool calls")
+
+        return function_calls, text_parts
+
+    def _check_loop_guard(
+        self,
+        function_calls: list,
+        response_text: str,
+        state: Dict[str, Any],
+    ) -> Optional[str]:
+        """Update loop-guard state. Return a stop reason if stuck."""
+        tool_only = bool(function_calls) and not response_text
+
+        if tool_only:
+            state["tool_only_steps"] += 1
+        else:
+            state["tool_only_steps"] = 0
+
+        if tool_only and len(function_calls) == 1:
+            current_call = {
+                "name": function_calls[0].name,
+                "args": dict(function_calls[0].args) if function_calls[0].args else {},
+            }
+            if state["last_call"] == current_call:
+                state["same_call_repeats"] += 1
+            else:
+                state["same_call_repeats"] = 0
+            state["last_call"] = current_call
+        else:
+            state["same_call_repeats"] = 0
+            state["last_call"] = None
+
+        if state["tool_only_steps"] >= self._MAX_TOOL_ONLY_STEPS:
+            return (
+                f"Loop guard triggered: {state['tool_only_steps']} consecutive tool-only steps "
+                "without model text. Aborting to prevent token waste."
+            )
+
+        if state["same_call_repeats"] > 0 and state["last_call"] is not None:
+            tool_name = state["last_call"].get("name", "unknown")
+            limit = (
+                self._MAX_REPEAT_READ_ONLY
+                if tool_name in self._READ_ONLY_TOOLS
+                else self._MAX_REPEAT_DEFAULT
+            )
+            if state["same_call_repeats"] >= limit:
+                return (
+                    f"Loop guard triggered: repeated tool call '{tool_name}' "
+                    f"{state['same_call_repeats']} time(s) without model text. "
+                    "Aborting to prevent token waste."
+                )
+
+        return None
+
+    def _requires_tool_approval(self, function_calls: list) -> bool:
+        for fc in function_calls:
+            if fc.name in self._WRITE_TOOLS:
+                return True
+        return False
+
+    def has_pending_tool_calls(self) -> bool:
+        return len(self._pending_tool_calls) > 0
+
+    def set_auto_approve_tools(self, enabled: bool) -> None:
+        self._auto_approve_tools = bool(enabled)
+
+    def is_auto_approve_enabled(self) -> bool:
+        return self._auto_approve_tools
+
+    def list_pending_tool_calls(self) -> List[Dict[str, Any]]:
+        pending = []
+        for fc in self._pending_tool_calls:
+            pending.append({
+                "name": fc.name,
+                "args": dict(fc.args) if getattr(fc, "args", None) else {},
+            })
+        return pending
+
+    async def approve_pending_tool_calls(self) -> List[Dict[str, Any]]:
+        calls = list(self._pending_tool_calls)
+        self._pending_tool_calls = []
+        if not calls:
+            return []
+
+        responses = await asyncio.gather(
+            *[self._execute_tool(fc) for fc in calls],
+            return_exceptions=False,
+        )
+
+        # Add function responses to history for continuity
+        self.history_manager.add_message(types.Content(
+            role="user",
+            parts=responses,
+        ))
+        if self.session_manager:
+            await self._auto_save()
+
+        results = []
+        for part in responses:
+            fr = getattr(part, "function_response", None)
+            if fr:
+                results.append({
+                    "name": fr.name,
+                    "result": fr.response.get("result") if getattr(fr, "response", None) else "",
+                })
+        return results
+
+    def reject_pending_tool_calls(self) -> int:
+        count = len(self._pending_tool_calls)
+        self._pending_tool_calls = []
+        return count
+
+    async def _execute_tool(self, fc) -> types.Part:
+        """Execute a single tool call, with caching and observability."""
+        func_name = fc.name
+        func_args = dict(fc.args) if fc.args else {}
+
+        tool_start_time = time.time()
+        success = True
+        result_str = ""
+        cached = False
+        tool_error = None
+
+        # Check cache first (only for cacheable tools)
+        if should_cache_tool(func_name):
+            cached_result = self.cache.get(func_name, func_args)
+            if cached_result is not None:
+                result_str = cached_result
+                cached = True
+                success = True
+
+        # If not cached, execute the tool
+        if not cached:
+            if func_name in self._tools:
+                func, _ = self._tools[func_name]
+                try:
+                    # Execute the tool (await if async)
+                    if asyncio.iscoroutinefunction(func):
+                        result = await func(**func_args)
+                    else:
+                        result = func(**func_args)
+
+                    # Convert ToolResult to string if needed
+                    if hasattr(result, "to_message"):
+                        result_str = result.to_message()
+                        success = getattr(result, "success", True)
+                        tool_error = getattr(result, "error", None)
+                    else:
+                        result_str = str(result)
+
+                    # Cache only successful tool results
+                    if success and should_cache_tool(func_name):
+                        ttl = get_tool_ttl(func_name)
+                        self.cache.set(func_name, func_args, result_str, ttl)
+
+                except Exception as e:
+                    success = False
+                    result_str = f"Error: {str(e)}"
+                    tool_error = str(e)
+                    self.observer.log_error(
+                        error_type="tool_execution",
+                        message=str(e),
+                        context={"tool": func_name, "args": func_args},
+                        agent_id=self.agent_id,
+                    )
+            else:
+                success = False
+                result_str = f"Error: Unknown tool '{func_name}'"
+                self.observer.log_error(
+                    error_type="unknown_tool",
+                    message=f"Tool '{func_name}' not found",
+                    context={"tool": func_name},
+                    agent_id=self.agent_id,
+                )
+
+        # Log tool execution
+        tool_duration = (time.time() - tool_start_time) * 1000
+        if not success and tool_error:
+            self.observer.log_error(
+                error_type="tool_execution",
+                message=str(tool_error),
+                context={"tool": func_name, "args": func_args},
+                agent_id=self.agent_id,
+            )
+
+        self.observer.log_tool_call(
+            tool_name=func_name,
+            args=func_args,
+            result=result_str,
+            duration_ms=tool_duration,
+            success=success,
+            cached=cached,
+            agent_id=self.agent_id,
+        )
+
+        return types.Part.from_function_response(
+            name=func_name,
+            response={"result": result_str},
+        )
 
     async def _auto_save(self):
         """Trigger auto-save."""
@@ -654,7 +773,6 @@ class GeminiAgent:
                     self.current_session_id = self.session_manager.save_session(
                         agent=self._parent_agent,
                         session_id=self.current_session_id,
-                        auto_save=True
                     )
             except Exception as e:
                 # Don't crash on auto-save failure
