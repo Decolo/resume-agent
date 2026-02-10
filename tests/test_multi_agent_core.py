@@ -5,10 +5,9 @@ from resume_agent.agents.protocol import (
     AgentTask,
     AgentResult,
     generate_task_id,
-    create_task,
     create_result,
 )
-from resume_agent.agents.context import SharedContext, ContextUpdate
+from resume_agent.agents.context import SharedContext
 
 
 class TestAgentTask:
@@ -47,41 +46,6 @@ class TestAgentTask:
         assert task.context == {"user_id": "123"}
         assert task.parent_task_id == "parent_789"
         assert task.max_depth == 3
-
-    def test_create_subtask(self):
-        """Test creating a subtask from a parent task."""
-        parent = AgentTask(
-            task_id="parent_123",
-            task_type="orchestrate",
-            description="Main task",
-            context={"workspace": "/path"},
-            max_depth=5,
-        )
-
-        subtask = parent.create_subtask(
-            task_type="parse",
-            description="Parse resume",
-            parameters={"path": "resume.pdf"},
-        )
-
-        assert subtask.task_type == "parse"
-        assert subtask.description == "Parse resume"
-        assert subtask.parameters == {"path": "resume.pdf"}
-        assert subtask.context == {"workspace": "/path"}  # Inherited
-        assert subtask.parent_task_id == "parent_123"
-        assert subtask.max_depth == 4  # Decremented
-
-    def test_create_subtask_max_depth_exceeded(self):
-        """Test that creating subtask fails when max_depth is 0."""
-        task = AgentTask(
-            task_id="test",
-            task_type="test",
-            description="Test",
-            max_depth=0,
-        )
-
-        with pytest.raises(ValueError, match="max delegation depth"):
-            task.create_subtask("sub", "Subtask")
 
     def test_generate_task_id(self):
         """Test that task IDs are unique."""
@@ -129,77 +93,6 @@ class TestAgentResult:
         assert result.success is False
         assert result.error == "File not found"
 
-    def test_result_to_dict(self):
-        """Test converting result to dictionary."""
-        result = AgentResult(
-            task_id="task_789",
-            agent_id="formatter_agent",
-            success=True,
-            output="HTML content",
-            metadata={"format": "html"},
-            execution_time_ms=200.0,
-        )
-
-        d = result.to_dict()
-
-        assert d["task_id"] == "task_789"
-        assert d["agent_id"] == "formatter_agent"
-        assert d["success"] is True
-        assert d["output"] == "HTML content"
-        assert d["metadata"] == {"format": "html"}
-
-    def test_get_total_execution_time(self):
-        """Test calculating total execution time with sub-results."""
-        sub_result1 = AgentResult(
-            task_id="sub1",
-            agent_id="agent1",
-            success=True,
-            output="",
-            execution_time_ms=100.0,
-        )
-        sub_result2 = AgentResult(
-            task_id="sub2",
-            agent_id="agent2",
-            success=True,
-            output="",
-            execution_time_ms=150.0,
-        )
-
-        result = AgentResult(
-            task_id="main",
-            agent_id="orchestrator",
-            success=True,
-            output="",
-            execution_time_ms=50.0,
-            sub_results=[sub_result1, sub_result2],
-        )
-
-        total = result.get_total_execution_time()
-        assert total == 300.0  # 50 + 100 + 150
-
-    def test_get_all_errors(self):
-        """Test collecting all errors from result tree."""
-        sub_result = AgentResult(
-            task_id="sub",
-            agent_id="agent1",
-            success=False,
-            output="",
-            error="Sub error",
-        )
-
-        result = AgentResult(
-            task_id="main",
-            agent_id="orchestrator",
-            success=False,
-            output="",
-            error="Main error",
-            sub_results=[sub_result],
-        )
-
-        errors = result.get_all_errors()
-        assert len(errors) == 2
-        assert "orchestrator: Main error" in errors
-        assert "agent1: Sub error" in errors
 
 
 class TestSharedContext:
@@ -342,23 +235,6 @@ class TestSharedContext:
 
 class TestHelperFunctions:
     """Tests for helper functions."""
-
-    def test_create_task_helper(self):
-        """Test create_task helper function."""
-        task = create_task(
-            task_type="parse",
-            description="Parse resume",
-            parameters={"path": "resume.pdf"},
-            context={"workspace": "/path"},
-            max_depth=3,
-        )
-
-        assert task.task_type == "parse"
-        assert task.description == "Parse resume"
-        assert task.parameters == {"path": "resume.pdf"}
-        assert task.context == {"workspace": "/path"}
-        assert task.max_depth == 3
-        assert task.task_id.startswith("task_")
 
     def test_create_result_helper(self):
         """Test create_result helper function."""

@@ -139,22 +139,6 @@ class SharedContext:
         """
         return list(self._data.keys())
 
-    def values(self) -> List[Any]:
-        """Get all values in the context.
-
-        Returns:
-            List of all values
-        """
-        return list(self._data.values())
-
-    def items(self) -> List[tuple]:
-        """Get all key-value pairs in the context.
-
-        Returns:
-            List of (key, value) tuples
-        """
-        return list(self._data.items())
-
     def to_dict(self) -> Dict[str, Any]:
         """Convert context to a dictionary.
 
@@ -208,10 +192,6 @@ class SharedContext:
     def clear(self) -> None:
         """Clear all data and history."""
         self._data.clear()
-        self._history.clear()
-
-    def clear_history(self) -> None:
-        """Clear only the history, keeping the data."""
         self._history.clear()
 
     def copy(self) -> SharedContext:

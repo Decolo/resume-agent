@@ -69,6 +69,9 @@ async def retry_with_backoff(
                 logger.info(f"Retry succeeded on attempt {attempt + 1}")
             return result
 
+        except asyncio.CancelledError:
+            # Don't retry if the operation was cancelled by the user
+            raise
         except PermanentError:
             # Don't retry permanent errors
             logger.error(f"Permanent error encountered, not retrying")

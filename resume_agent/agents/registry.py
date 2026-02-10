@@ -66,34 +66,6 @@ class AgentRegistry:
             f"Registered agent '{agent.agent_id}' with capabilities: {agent.capabilities}"
         )
 
-    def unregister(self, agent_id: str) -> Optional[BaseAgent]:
-        """Unregister an agent from the registry.
-
-        Args:
-            agent_id: ID of the agent to unregister
-
-        Returns:
-            The unregistered agent, or None if not found
-        """
-        agent = self._agents.pop(agent_id, None)
-
-        if agent:
-            # Remove from capabilities index
-            for capability in agent.capabilities:
-                if capability in self._capabilities_index:
-                    self._capabilities_index[capability] = [
-                        aid
-                        for aid in self._capabilities_index[capability]
-                        if aid != agent_id
-                    ]
-                    # Clean up empty lists
-                    if not self._capabilities_index[capability]:
-                        del self._capabilities_index[capability]
-
-            logger.info(f"Unregistered agent '{agent_id}'")
-
-        return agent
-
     def get_agent(self, agent_id: str) -> Optional[BaseAgent]:
         """Get an agent by its ID.
 
@@ -124,19 +96,6 @@ class AgentRegistry:
         """
         agent_ids = self._capabilities_index.get(capability, [])
         return [self._agents[aid] for aid in agent_ids if aid in self._agents]
-
-    def find_agents_by_type(self, agent_type: str) -> List[BaseAgent]:
-        """Find all agents of a specific type.
-
-        Args:
-            agent_type: The agent type to search for
-
-        Returns:
-            List of agents of the specified type
-        """
-        return [
-            agent for agent in self._agents.values() if agent.agent_type == agent_type
-        ]
 
     def find_best_agent(self, task: AgentTask) -> Optional[BaseAgent]:
         """Find the best agent to handle a task.
@@ -191,14 +150,6 @@ class AgentRegistry:
 
         return best_agent
 
-    def get_capabilities(self) -> List[str]:
-        """Get all registered capabilities.
-
-        Returns:
-            List of all capabilities across all agents
-        """
-        return list(self._capabilities_index.keys())
-
     def get_stats(self) -> Dict[str, Dict]:
         """Get statistics for all registered agents.
 
@@ -209,12 +160,6 @@ class AgentRegistry:
             agent_id: agent.get_stats_dict()
             for agent_id, agent in self._agents.items()
         }
-
-    def clear(self) -> None:
-        """Clear all registered agents."""
-        self._agents.clear()
-        self._capabilities_index.clear()
-        logger.info("Cleared all agents from registry")
 
     def __len__(self) -> int:
         """Return the number of registered agents."""

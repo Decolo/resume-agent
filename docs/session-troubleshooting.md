@@ -67,26 +67,14 @@ Sessions aren't being saved automatically.
 
 **Solutions:**
 
-1. **Check if auto-save is enabled:**
-   ```bash
-   /auto-save
-   # Should show: "Auto-save is currently enabled"
-   ```
-
-2. **Enable auto-save:**
-   ```bash
-   /auto-save on
-   ```
-
-3. **Check config file:**
+1. **Check config file:**
    ```yaml
    # config/config.yaml
    session:
      enabled: true
-     auto_save: true  # Should be true
    ```
 
-4. **Verify auto-save triggers:**
+2. **Verify auto-save triggers:**
    Auto-save only triggers after tool execution, not after every message.
    Try a command that uses tools:
    ```
@@ -220,11 +208,6 @@ Agent becomes slow with many sessions.
    ```
    Large sessions (> 5MB) may slow down loading.
 
-3. **Disable auto-save if not needed:**
-   ```bash
-   /auto-save off
-   ```
-
 ## Getting Help
 
 If you encounter issues not covered here:
@@ -235,7 +218,6 @@ If you encounter issues not covered here:
 2. **Verify your setup:**
    ```bash
    /config  # Check configuration
-   /auto-save  # Check auto-save status
    ls -la workspace/sessions/  # Check session files
    ```
 
@@ -251,7 +233,7 @@ If you encounter issues not covered here:
 1. ✅ **Use custom names for important sessions:** `/save project_v1`
 2. ✅ **Load by number, not full ID:** `/load 1`
 3. ✅ **Clean up old sessions regularly:** `/delete-session <number>`
-4. ✅ **Let auto-save do its job:** Don't disable unless necessary
+4. ✅ **Auto-save is always on:** Sessions are saved automatically after tool execution
 5. ✅ **Save at natural breakpoints:** After completing tasks
 6. ✅ **Check `/sessions` before loading:** See what's available
 7. ✅ **Use `/load` without arguments:** Interactive picker is easier

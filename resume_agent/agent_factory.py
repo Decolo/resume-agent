@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
@@ -27,6 +28,9 @@ from .tools import (
     ResumeWriterTool,
     WebFetchTool,
     WebReadTool,
+    ATSScorerTool,
+    JobMatcherTool,
+    ResumeValidatorTool,
 )
 from .skills.parser_prompt import PARSER_AGENT_PROMPT
 from .skills.writer_prompt import WRITER_AGENT_PROMPT
@@ -34,6 +38,23 @@ from .skills.formatter_prompt import FORMATTER_AGENT_PROMPT
 from .skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
 
 logger = logging.getLogger(__name__)
+
+ROUTER_SYSTEM_PROMPT = (
+    "You are a routing classifier for a resume assistant.\n"
+    "Decide whether the request needs MULTI-agent or SINGLE-agent execution.\n"
+    "\n"
+    "Use MULTI when:\n"
+    "- The user requests multiple output formats (e.g., Markdown + HTML + JSON)\n"
+    "- The user requests batch/bulk processing or multiple files\n"
+    "- The task clearly needs parallel specialized steps (parse + write + format)\n"
+    "\n"
+    "Use SINGLE when:\n"
+    "- The task is focused on one file or one output format\n"
+    "- The request is simple editing, reading, or minor changes\n"
+    "\n"
+    "Output only one word: SINGLE or MULTI.\n"
+    "If unsure, choose SINGLE."
+)
 
 
 @dataclass
@@ -58,7 +79,6 @@ class MultiAgentConfig:
     enable_cycle_detection: bool = True
 
     # History configuration
-    history_strategy: str = "isolated"
     max_messages_per_agent: int = 50
     max_tokens_per_agent: int = 100000
 
@@ -87,7 +107,6 @@ def load_multi_agent_config(config_data: Dict[str, Any]) -> MultiAgentConfig:
         delegation_max_depth=ma_config.get("delegation", {}).get("max_depth", 5),
         delegation_timeout=ma_config.get("delegation", {}).get("timeout_seconds", 300.0),
         enable_cycle_detection=ma_config.get("delegation", {}).get("enable_cycle_detection", True),
-        history_strategy=ma_config.get("history", {}).get("strategy", "isolated"),
         max_messages_per_agent=ma_config.get("history", {}).get("max_messages_per_agent", 50),
         max_tokens_per_agent=ma_config.get("history", {}).get("max_tokens_per_agent", 100000),
     )
@@ -137,7 +156,7 @@ def create_agent(
             workspace_dir=workspace_dir,
             session_manager=session_manager,
         )
-        return AutoAgent(single_agent=single_agent, multi_agent=multi_agent)
+        return AutoAgent(single_agent=single_agent, multi_agent=multi_agent, raw_config=raw_config)
 
     if not ma_config.enabled:
         # Single-agent mode (backward compatible)
@@ -158,29 +177,105 @@ def create_agent(
     )
 
 
+class IntentRouter:
+    """LLM-based intent router for single vs multi agent."""
+
+    def __init__(self, llm_config: LLMConfig, routing_config: Optional[Dict[str, Any]] = None):
+        routing_config = routing_config or {}
+        self.enabled = routing_config.get("enabled", True)
+        model = routing_config.get("model", llm_config.model)
+        max_tokens = routing_config.get("max_tokens", 64)
+        temperature = routing_config.get("temperature", 0.0)
+
+        self._agent = GeminiAgent(
+            config=LLMConfig(
+                api_key=llm_config.api_key,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                search_grounding=False,
+            ),
+            system_prompt=ROUTER_SYSTEM_PROMPT,
+            agent_id="router_agent",
+        )
+
+    async def classify(self, user_input: str) -> Optional[bool]:
+        if not self.enabled:
+            return None
+
+        self._agent.reset()
+        response = await self._agent.run(user_input=user_input, max_steps=3)
+        decision = (response or "").strip().upper()
+
+        if "MULTI" in decision:
+            return True
+        if "SINGLE" in decision:
+            return False
+        return None
+
+
 class AutoAgent:
     """Route requests to single-agent or multi-agent based on intent."""
 
-    def __init__(self, single_agent: ResumeAgent, multi_agent: OrchestratorAgent):
+    def __init__(
+        self,
+        single_agent: ResumeAgent,
+        multi_agent: OrchestratorAgent,
+        raw_config: Optional[Dict[str, Any]] = None,
+    ):
         self.single_agent = single_agent
         self.multi_agent = multi_agent
         # Expose agent for session management (defaults to single-agent)
         self.agent = single_agent.agent
         self.llm_agent = single_agent.agent
+        routing_config = (raw_config or {}).get("routing", {})
+        self.router = IntentRouter(single_agent.llm_config, routing_config)
 
-    def _should_use_multi(self, user_input: str) -> bool:
+    async def _should_use_multi(self, user_input: str) -> bool:
+        decision = None
+        if self.router:
+            try:
+                decision = await self.router.classify(user_input)
+            except Exception:
+                decision = None
+
+        if decision is not None:
+            return decision
+
+        return self._regex_should_use_multi(user_input)
+
+    def _regex_should_use_multi(self, user_input: str) -> bool:
         text = (user_input or "").lower()
-        # Prefer multi-agent for export/convert and multi-format requests
-        format_markers = ["markdown", "md", "html", "json", "txt", "pdf", "docx"]
-        format_hits = sum(1 for marker in format_markers if marker in text)
-        if format_hits >= 2:
+        if any(k in text for k in ["batch", "bulk", "all files", "entire folder", "entire directory", "whole folder"]):
             return True
-        if any(k in text for k in ["export", "convert", "format", "save as", "save to", "output"]):
+        if self._count_output_formats(text) >= 2:
+            return True
+        if self._count_file_paths(text) >= 2:
             return True
         return False
 
+    def _count_output_formats(self, text: str) -> int:
+        patterns = {
+            "markdown": [r"\bmarkdown\b", r"\.md\b"],
+            "html": [r"\bhtml\b", r"\.html?\b"],
+            "json": [r"\bjson\b", r"\.json\b"],
+            "pdf": [r"\bpdf\b", r"\.pdf\b"],
+            "docx": [r"\bdocx\b", r"\.docx\b"],
+            "txt": [r"\btxt\b", r"\.txt\b"],
+        }
+        hits = 0
+        for pats in patterns.values():
+            if any(re.search(pat, text) for pat in pats):
+                hits += 1
+        return hits
+
+    def _count_file_paths(self, text: str) -> int:
+        # Rough heuristic: count file-like paths with known extensions
+        matches = re.findall(r"[\w./-]+\.(md|markdown|html?|json|pdf|docx|txt)\b", text)
+        return len(matches)
+
     async def run(self, user_input: str) -> str:
-        if self._should_use_multi(user_input):
+        if await self._should_use_multi(user_input):
             return await self.multi_agent.run(user_input)
         return await self.single_agent.run(user_input)
 
@@ -214,7 +309,6 @@ def create_multi_agent_system(
 
     # Create history manager
     history_config = HistoryConfig(
-        strategy=ma_config.history_strategy,
         max_messages_per_agent=ma_config.max_messages_per_agent,
         max_tokens_per_agent=ma_config.max_tokens_per_agent,
     )
@@ -241,6 +335,9 @@ def create_multi_agent_system(
         "bash": BashTool(workspace_dir),
         "resume_parse": ResumeParserTool(workspace_dir),
         "resume_write": ResumeWriterTool(workspace_dir),
+        "ats_score": ATSScorerTool(workspace_dir),
+        "job_match": JobMatcherTool(workspace_dir),
+        "resume_validate": ResumeValidatorTool(workspace_dir),
         "web_fetch": WebFetchTool(),
         "web_read": WebReadTool(),
     }
@@ -291,7 +388,6 @@ def create_multi_agent_system(
 
     # Register agent tools with orchestrator
     orchestrator.register_agent_tools()
-
     logger.info(
         f"Multi-agent system created with {len(registry)} agents: "
         f"{[a.agent_id for a in registry.get_all_agents()]}"
@@ -383,7 +479,7 @@ def _create_writer_agent(
         session_manager=session_manager,
     )
 
-    _register_tools(llm_agent, tools, ["file_read", "file_write"])
+    _register_tools(llm_agent, tools, ["file_read", "file_write", "ats_score", "job_match"])
 
     llm_agent.history_manager = history_manager.get_agent_history("writer_agent")
 
@@ -428,7 +524,7 @@ def _create_formatter_agent(
         session_manager=session_manager,
     )
 
-    _register_tools(llm_agent, tools, ["resume_write", "file_read", "file_write"])
+    _register_tools(llm_agent, tools, ["resume_write", "file_read", "file_write", "resume_validate"])
 
     llm_agent.history_manager = history_manager.get_agent_history("formatter_agent")
 
@@ -476,8 +572,11 @@ def _create_orchestrator_agent(
         session_manager=session_manager,
     )
 
-    # Orchestrator gets file_list and bash tools
-    _register_tools(llm_agent, tools, ["file_list", "file_rename", "web_read", "web_fetch"])
+    # Orchestrator gets coordination and analysis tools
+    _register_tools(llm_agent, tools, [
+        "file_list", "file_rename", "web_read", "web_fetch",
+        "ats_score", "job_match", "resume_validate",
+    ])
 
     llm_agent.history_manager = history_manager.get_master_history()
 

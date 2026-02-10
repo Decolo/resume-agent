@@ -101,28 +101,3 @@ async def test_session_list_and_delete(tmp_path):
     sessions = session_manager.list_sessions()
     assert len(sessions) == 2
     assert session_ids[0] not in [s["id"] for s in sessions]
-
-
-@pytest.mark.asyncio
-async def test_auto_save_flag(tmp_path):
-    """Test auto-save flag on GeminiAgent."""
-    config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
-    agent_config = AgentConfig(workspace_dir=str(tmp_path))
-    session_manager = SessionManager(str(tmp_path))
-
-    agent = ResumeAgent(
-        llm_config=config,
-        agent_config=agent_config,
-        session_manager=session_manager
-    )
-
-    # Verify auto-save is disabled by default
-    assert agent.agent.auto_save_enabled is False
-
-    # Enable auto-save
-    agent.agent.auto_save_enabled = True
-    assert agent.agent.auto_save_enabled is True
-
-    # Disable auto-save
-    agent.agent.auto_save_enabled = False
-    assert agent.agent.auto_save_enabled is False

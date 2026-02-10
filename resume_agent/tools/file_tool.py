@@ -104,10 +104,22 @@ class FileWriteTool(BaseTool):
 
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
+        self._preview_manager = None  # Set by CLI when preview mode is on
 
     async def execute(self, path: str, content: str, encoding: str = "utf-8") -> ToolResult:
         try:
             file_path = self._resolve_path(path)
+
+            # Preview mode: intercept write, but return the same success
+            # message as a real write so the LLM continues normally.
+            if self._preview_manager is not None:
+                self._preview_manager.add(path, content, file_path)
+                return ToolResult(
+                    success=True,
+                    output=f"Successfully wrote {len(content)} characters to {path}",
+                    data={"preview": True, "pending_path": path},
+                )
+
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding=encoding)
             return ToolResult(

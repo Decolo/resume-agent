@@ -43,7 +43,6 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
                 cached_mtime, cached_result = self._cache[cache_key]
                 if cached_mtime == current_mtime:
                     # Cache hit - file hasn't changed
-                    cached_result.cached = True
                     return cached_result
 
             suffix = file_path.suffix.lower()

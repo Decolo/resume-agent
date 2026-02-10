@@ -7,9 +7,9 @@ api_key: "${GEMINI_API_KEY}"
 model: "gemini-3-pro-preview"  # preview model
 
 # Agent settings
-max_steps: 50
-max_tokens: 4096
-temperature: 0.7
+max_steps: 20
+max_tokens: 2048
+temperature: 0.5
 
 # Workspace
 workspace_dir: "./workspace"
@@ -18,6 +18,13 @@ workspace_dir: "./workspace"
 log_level: "INFO"
 log_file: "./logs/agent.log"
 
+# Routing (AutoAgent intent detection)
+routing:
+  enabled: true
+  model: "gemini-2.5-flash"
+  temperature: 0.0
+  max_tokens: 64
+
 # Web search grounding (Gemini built-in tool)
 search_grounding:
   enabled: false
@@ -25,7 +32,7 @@ search_grounding:
 # Session persistence (Phase 3)
 session:
   enabled: true
-  auto_save: true  # Auto-save after tool execution (enabled by default)
+  # Note: Auto-save is always enabled - sessions are automatically saved after tool execution
   sessions_dir: "./sessions"  # Relative to workspace_dir
 
 # Multi-agent configuration (Phase 2)
@@ -41,22 +48,26 @@ multi_agent:
       enabled: true
       model: "gemini-2.5-flash"
       temperature: 0.3  # Lower for deterministic parsing
+      max_tokens: 1536
 
     writer:
       enabled: true
       model: "gemini-2.5-flash"
       temperature: 0.7  # Higher for creative writing
+      max_tokens: 2048
 
     formatter:
       enabled: true
       model: "gemini-2.5-flash"
       temperature: 0.3
+      max_tokens: 1536
 
     orchestrator:
       enabled: true
       model: "gemini-2.5-pro"
       temperature: 0.5
-      max_steps: 30
+      max_steps: 12
+      max_tokens: 2048
 
   delegation:
     max_depth: 5
@@ -65,5 +76,5 @@ multi_agent:
 
   history:
     strategy: "isolated"  # Each agent has separate history
-    max_messages_per_agent: 50
-    max_tokens_per_agent: 100000
+    max_messages_per_agent: 30
+    max_tokens_per_agent: 50000

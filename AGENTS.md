@@ -58,9 +58,9 @@ uv run pytest
 
 ## Session Persistence (Phase 3)
 
-- Enable in config (`session.enabled: true`), with optional auto-save (`session.auto_save: true`).
-- CLI commands: `/save [name]`, `/load <id>`, `/sessions`, `/delete-session <id>`, `/auto-save on|off`.
 - Sessions are saved as JSON under `workspace/sessions/` with an index file at `.index.json`.
+- CLI commands: `/save [name]`, `/load <id>`, `/sessions`, `/delete-session <id>`.
+- Auto-save is always enabled — sessions are saved automatically after tool execution.
 
 
 ## Plan Mode

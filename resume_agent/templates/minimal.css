@@ -1,0 +1,39 @@
+/* Resume Template: Minimal */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    line-height: 1.7;
+    color: #444;
+    background: white;
+}
+.resume-container {
+    max-width: 700px;
+    margin: 20px auto;
+    padding: 20px 30px;
+}
+h1 {
+    font-size: 1.8em;
+    font-weight: 300;
+    margin-bottom: 0.3em;
+    color: #222;
+}
+h2 {
+    font-size: 0.85em;
+    margin-top: 2em;
+    margin-bottom: 0.5em;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #888;
+    font-weight: 400;
+}
+h3 { font-size: 1em; margin-top: 0.8em; font-weight: 500; color: #333; }
+p { margin-bottom: 0.6em; }
+ul { margin-left: 1.2em; margin-bottom: 0.8em; list-style-type: none; }
+ul li::before { content: "–"; margin-right: 0.5em; color: #aaa; }
+li { margin-bottom: 0.2em; }
+a { color: #666; text-decoration: none; border-bottom: 1px dotted #ccc; }
+a:hover { color: #333; }
+
+@media print {
+    .resume-container { margin: 0; padding: 10px; }
+}

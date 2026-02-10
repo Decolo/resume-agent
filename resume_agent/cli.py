@@ -1,6 +1,10 @@
 """CLI - Command line interface for Resume Agent."""
 
 import asyncio
+import os
+import sys
+import threading
+import select
 from pathlib import Path
 from typing import Union, Optional
 
@@ -20,6 +24,39 @@ from .config_validator import validate_config, has_errors, Severity
 
 
 console = Console()
+
+
+def _wait_for_escape(stop_event: threading.Event) -> bool:
+    """Block until ESC is pressed or stop_event is set. Returns True if ESC."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        import termios
+        import tty
+    except Exception:
+        return False
+
+    fd = sys.stdin.fileno()
+    try:
+        old_settings = termios.tcgetattr(fd)
+    except Exception:
+        return False
+
+    try:
+        tty.setraw(fd)
+        while not stop_event.is_set():
+            rlist, _, _ = select.select([fd], [], [], 0.1)
+            if not rlist:
+                continue
+            ch = os.read(fd, 1)
+            if ch == b"\x1b":
+                return True
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        except Exception:
+            pass
+    return False
 
 
 def print_banner():
@@ -944,13 +981,51 @@ async def run_interactive(agent: Union[ResumeAgent, OrchestratorAgent], session_
                 continue
 
             # Run agent
-            console.print("\n🤔 Thinking...", style="dim")
+            console.print("\n🤔 Thinking... (Press ESC to interrupt)", style="dim")
 
             try:
-                if isinstance(agent, OrchestratorAgent):
-                    response = await agent.run(user_input)
-                else:
-                    response = await agent.run(user_input)
+                agent_task = asyncio.create_task(agent.run(user_input))
+                stop_event = threading.Event()
+                esc_future = None
+                if sys.stdin.isatty():
+                    esc_future = asyncio.get_event_loop().run_in_executor(
+                        None, _wait_for_escape, stop_event
+                    )
+
+                wait_set = {agent_task}
+                if esc_future:
+                    wait_set.add(esc_future)
+
+                done, _pending = await asyncio.wait(
+                    wait_set,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                esc_pressed = False
+                if esc_future and esc_future in done:
+                    try:
+                        esc_pressed = esc_future.result() is True
+                    except Exception:
+                        esc_pressed = False
+
+                if esc_pressed:
+                    stop_event.set()
+                    if not agent_task.done():
+                        agent_task.cancel()
+                        try:
+                            await agent_task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            pass
+                    console.print("\n⚠️ Interrupted by user (ESC).", style="yellow")
+                    continue
+
+                stop_event.set()
+                if esc_future and not esc_future.done():
+                    await esc_future
+
+                response = await agent_task
                 console.print("\n🤖 Assistant:", style="bold green")
                 console.print(Markdown(response))
 

@@ -74,22 +74,6 @@ class OrchestratorAgent(BaseAgent):
         self.system_prompt = ORCHESTRATOR_AGENT_PROMPT
         self._agent_tools: List = []
 
-    def set_registry(self, registry: AgentRegistry) -> None:
-        """Set the agent registry.
-
-        Args:
-            registry: Agent registry to use
-        """
-        self.registry = registry
-
-    def set_delegation_manager(self, delegation_manager: DelegationManager) -> None:
-        """Set the delegation manager.
-
-        Args:
-            delegation_manager: Delegation manager to use
-        """
-        self.delegation_manager = delegation_manager
-
     def register_agent_tools(self) -> None:
         """Register specialized agents as tools.
 
@@ -239,20 +223,6 @@ class OrchestratorAgent(BaseAgent):
 
         if self.delegation_manager:
             self.delegation_manager.clear_history()
-
-    def get_delegation_tree(self, task_id: str) -> str:
-        """Get the delegation tree for a task.
-
-        Args:
-            task_id: ID of the root task
-
-        Returns:
-            ASCII representation of the delegation tree
-        """
-        if not self.delegation_manager:
-            return "No delegation manager available"
-
-        return self.delegation_manager.print_delegation_tree(task_id)
 
     def get_agent_stats(self) -> dict:
         """Get statistics for all agents.

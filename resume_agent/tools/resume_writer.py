@@ -26,19 +26,20 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
         },
         "template": {
             "type": "string",
-            "description": "Template style: 'modern', 'classic', 'minimal' (for HTML output)",
+            "description": "Template style: 'modern', 'classic', 'minimal', 'creative' (for HTML output)",
             "default": "modern",
         },
     }
 
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
+        self._preview_manager = None  # Set by CLI when preview mode is on
 
     async def execute(self, path: str, content: str, template: str = "modern") -> ToolResult:
         try:
             file_path = self._resolve_path(path)
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             suffix = file_path.suffix.lower()
 
             if suffix == ".md":
@@ -54,6 +55,16 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
                     success=False,
                     output="",
                     error=f"Unsupported output format: {suffix}. Supported: .md, .txt, .json, .html",
+                )
+
+            # Preview mode: intercept write, but return the same success
+            # message as a real write so the LLM continues normally.
+            if self._preview_manager is not None:
+                self._preview_manager.add(path, output_content, file_path)
+                return ToolResult(
+                    success=True,
+                    output=f"Successfully wrote resume to {path} ({len(output_content)} characters)",
+                    data={"preview": True, "pending_path": path, "format": suffix},
                 )
 
             file_path.write_text(output_content, encoding="utf-8")
@@ -202,37 +213,22 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
         return html
 
     def _get_template_styles(self, template: str) -> str:
-        """Get CSS styles for template."""
-        base_styles = """
+        """Get CSS styles for template from external CSS files."""
+        try:
+            from ..templates import load_template_css
+            return load_template_css(template)
+        except Exception:
+            # Fallback to minimal inline styles if template loading fails
+            return """
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; line-height: 1.6; color: #333; }
+        body { font-family: sans-serif; line-height: 1.6; color: #333; }
         .resume-container { max-width: 800px; margin: 0 auto; padding: 40px; }
-        h1 { font-size: 2.5em; margin-bottom: 0.2em; }
-        h2 { font-size: 1.3em; margin-top: 1.5em; margin-bottom: 0.5em; border-bottom: 2px solid #333; padding-bottom: 0.2em; }
-        h3 { font-size: 1.1em; margin-top: 1em; }
+        h1 { font-size: 2em; margin-bottom: 0.2em; }
+        h2 { font-size: 1.2em; margin-top: 1.5em; border-bottom: 1px solid #ccc; }
         p { margin-bottom: 0.8em; }
-        ul { margin-left: 1.5em; margin-bottom: 1em; }
+        ul { margin-left: 1.5em; }
         li { margin-bottom: 0.3em; }
         a { color: #0066cc; }
-        """
-        
-        if template == "modern":
-            return base_styles + """
-        body { background: #f5f5f5; }
-        .resume-container { background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.1); border-radius: 8px; }
-        h1 { color: #2c3e50; }
-        h2 { color: #34495e; border-color: #3498db; }
-        """
-        elif template == "classic":
-            return base_styles + """
-        body { background: white; }
-        h1 { text-align: center; border-bottom: 3px double #333; padding-bottom: 10px; }
-        h2 { text-transform: uppercase; letter-spacing: 2px; font-size: 1em; }
-        """
-        else:  # minimal
-            return base_styles + """
-        .resume-container { padding: 20px; }
-        h2 { border: none; font-weight: normal; text-transform: uppercase; color: #666; font-size: 0.9em; letter-spacing: 1px; }
         """
 
     def _resolve_path(self, path: str) -> Path:

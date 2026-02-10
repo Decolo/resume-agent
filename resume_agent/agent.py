@@ -8,7 +8,6 @@ from pathlib import Path
 
 from .llm import GeminiAgent, LLMConfig, load_config
 from .tools import (
-    BaseTool,
     FileReadTool,
     FileWriteTool,
     FileListTool,
@@ -18,6 +17,9 @@ from .tools import (
     ResumeWriterTool,
     WebFetchTool,
     WebReadTool,
+    ATSScorerTool,
+    JobMatcherTool,
+    ResumeValidatorTool,
 )
 from .skills import RESUME_EXPERT_PROMPT
 
@@ -75,6 +77,9 @@ class ResumeAgent:
             "bash": BashTool(workspace),
             "resume_parse": ResumeParserTool(workspace),
             "resume_write": ResumeWriterTool(workspace),
+            "ats_score": ATSScorerTool(workspace),
+            "job_match": JobMatcherTool(workspace),
+            "resume_validate": ResumeValidatorTool(workspace),
             "web_fetch": WebFetchTool(),
             "web_read": WebReadTool(),
         }

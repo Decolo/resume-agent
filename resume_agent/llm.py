@@ -410,6 +410,9 @@ class GeminiAgent:
             # 1. Call LLM
             try:
                 response = await self._call_llm()
+            except asyncio.CancelledError:
+                # Allow user-initiated interruption to bubble up
+                raise
             except Exception as e:
                 self.observer.log_error(
                     error_type="llm_request",
@@ -510,9 +513,12 @@ class GeminiAgent:
     async def _call_llm(self) -> types.GenerateContentResponse:
         """Call LLM with retry logic."""
         async def make_request():
-            return self.client.models.generate_content(
+            # Snapshot history to avoid concurrent mutation during cancellation
+            contents = list(self.history_manager.get_history())
+            return await asyncio.to_thread(
+                self.client.models.generate_content,
                 model=self.config.model,
-                contents=self.history_manager.get_history(),
+                contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=self.system_prompt if self.system_prompt else None,
                     tools=self._get_tools(),

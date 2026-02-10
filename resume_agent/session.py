@@ -169,26 +169,9 @@ class SessionSerializer:
         # Serialize agent stats
         agent_stats = agent.get_agent_stats() if hasattr(agent, 'get_agent_stats') else {}
 
-        # Serialize shared context
-        shared_context = {}
-        if agent.shared_context:
-            shared_context = {
-                "data": agent.shared_context._data,
-                "history": [
-                    {
-                        "timestamp": entry["timestamp"].isoformat(),
-                        "agent_id": entry["agent_id"],
-                        "key": entry["key"],
-                        "value": entry["value"],
-                    }
-                    for entry in agent.shared_context._history
-                ],
-            }
-
         return {
             "delegation_history": delegation_history,
             "agent_stats": agent_stats,
-            "shared_context": shared_context,
         }
 
 
@@ -262,7 +245,6 @@ class SessionManager:
         agent: Any,
         session_id: Optional[str] = None,
         session_name: Optional[str] = None,
-        auto_save: bool = False
     ) -> str:
         """Save current session to JSON file.
 
@@ -270,7 +252,6 @@ class SessionManager:
             agent: ResumeAgent, OrchestratorAgent, or AutoAgent instance
             session_id: Optional session ID to update existing session
             session_name: Optional custom name for the session
-            auto_save: Whether this is an auto-save (affects session ID generation)
 
         Returns:
             Session ID
@@ -349,7 +330,6 @@ class SessionManager:
                 "mode": mode,
                 "workspace_dir": str(self.workspace_dir),
                 "config": config_data,
-                "auto_save": auto_save,
             },
             "conversation": conversation_data,
             "observability": observability_data,
@@ -493,17 +473,3 @@ class SessionManager:
                     )
                     actual_agent.delegation_manager._delegation_history.append(record)
 
-            # Restore shared context
-            if actual_agent.shared_context and "shared_context" in ma_data:
-                context_data = ma_data["shared_context"]
-                actual_agent.shared_context._data = context_data.get("data", {})
-
-                # Restore history with datetime conversion
-                actual_agent.shared_context._history = []
-                for entry in context_data.get("history", []):
-                    actual_agent.shared_context._history.append({
-                        "timestamp": datetime.fromisoformat(entry["timestamp"]),
-                        "agent_id": entry["agent_id"],
-                        "key": entry["key"],
-                        "value": entry["value"],
-                    })

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -17,9 +17,6 @@ class ToolResult:
 
     # Execution metadata for observability
     execution_time_ms: float = 0.0
-    tokens_used: int = 0
-    cached: bool = False
-    retry_count: int = 0
 
     def to_message(self) -> str:
         if self.success:
@@ -38,18 +35,3 @@ class BaseTool(ABC):
     async def execute(self, **kwargs) -> ToolResult:
         """Execute the tool with given parameters."""
         pass
-
-    def to_schema(self) -> Dict[str, Any]:
-        """Convert tool to OpenAI/Anthropic function schema."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": self.parameters,
-                    "required": [k for k, v in self.parameters.items() if v.get("required", False)],
-                },
-            },
-        }

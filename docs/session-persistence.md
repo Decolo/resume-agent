@@ -6,7 +6,7 @@ Phase 3 adds conversation persistence to Resume Agent, allowing you to save and 
 
 Session persistence enables:
 - **Save/Load Sessions**: Preserve conversation history, agent state, and observability data
-- **Auto-Save**: Automatically save after tool executions (configurable)
+- **Auto-Save**: Automatically save after tool executions
 - **Session Management**: List, load, and delete sessions via CLI commands
 - **Full State Restoration**: Restore conversation history, observability events, and multi-agent state
 - **Multi-Agent Support**: Serialize delegation history, shared context, and agent statistics
@@ -40,9 +40,6 @@ You: Now improve the work experience section
 
 # Delete a session
 /delete-session session_20260202_143022
-
-# Enable auto-save
-/auto-save on
 ```
 
 ## CLI Commands
@@ -91,18 +88,6 @@ Delete a saved session.
 ```bash
 /delete-session session_20260202_143022
 ```
-
-### `/auto-save [on|off]`
-
-Toggle auto-save after tool execution.
-
-```bash
-/auto-save on     # Enable auto-save
-/auto-save off    # Disable auto-save
-/auto-save        # Show current status
-```
-
-**Note**: Auto-save triggers after each tool execution, not after every message.
 
 ## Session File Format
 
@@ -193,12 +178,13 @@ Sessions are stored as JSON files in `workspace/sessions/`:
 Edit `config/config.yaml` or `config/config.local.yaml`:
 
 ```yaml
-# Session persistence (Phase 3)
+# Session persistence
 session:
   enabled: true
-  auto_save: false  # Auto-save after tool execution
   sessions_dir: "./sessions"  # Relative to workspace_dir
 ```
+
+Auto-save is always enabled when a `SessionManager` is present.
 
 ## Architecture
 
@@ -239,7 +225,6 @@ workspace/
 1. User sends a message
 2. Agent processes and calls tools
 3. After tool execution completes:
-   - If `auto_save_enabled` is `True`
    - `SessionManager.save_session()` is called
    - Session is saved to `sessions/` directory
    - Index is updated
@@ -280,9 +265,6 @@ You: Convert to HTML format
 ### Long-Running Tasks
 
 ```bash
-# Enable auto-save for long sessions
-/auto-save on
-
 # Work on complex resume improvements
 You: Parse my resume and improve all sections
 
@@ -367,10 +349,9 @@ grep schema_version workspace/sessions/session_xyz.json
 **Symptoms**: Sessions not saving automatically
 
 **Checklist**:
-1. Verify auto-save is enabled: `/auto-save`
-2. Check if tools are being executed (auto-save triggers after tool calls)
-3. Verify `SessionManager` is initialized in CLI
-4. Check for errors in console output
+1. Check if tools are being executed (auto-save triggers after tool calls)
+2. Verify `SessionManager` is initialized in CLI
+3. Check for errors in console output
 
 ## Performance Considerations
 
@@ -439,8 +420,7 @@ Phase 3 is **fully backward compatible** with Phase 2:
 
 **To enable**:
 1. Update `config/config.yaml`: `session.enabled: true`
-2. Optionally enable auto-save: `session.auto_save: true`
-3. Use `/save`, `/load`, `/sessions` commands
+2. Use `/save`, `/load`, `/sessions` commands
 
 ## Next Steps (Phase 4)
 
@@ -484,7 +464,6 @@ session_manager = SessionManager(workspace_dir="./workspace")
 session_id = session_manager.save_session(
     agent=agent,
     session_name="my_session",
-    auto_save=False
 )
 
 # Load session

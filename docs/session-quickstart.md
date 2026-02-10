@@ -35,8 +35,6 @@
 /sessions              # List all saved sessions (sorted by most recent)
 /load <session_id>     # Restore a previous session
 /save my_custom_name   # Manually save with a custom name
-/auto-save off         # Disable auto-save (if you want)
-/auto-save on          # Re-enable auto-save
 ```
 
 ## Finding Your Latest Session
@@ -70,16 +68,13 @@ workspace/
 
 ## Configuration
 
-Auto-save is enabled by default in `config/config.yaml`:
+Auto-save is always enabled when session persistence is active:
 
 ```yaml
 session:
   enabled: true
-  auto_save: true  # ← Enabled by default
   sessions_dir: "./sessions"
 ```
-
-To disable auto-save, set `auto_save: false` in your config, or use `/auto-save off` in the CLI.
 
 ## Best Practices
 
@@ -100,25 +95,16 @@ To disable auto-save, set `auto_save: false` in your config, or use `/auto-save 
 
 ### "How do I know if auto-save is working?"
 
-```bash
-/auto-save
-# Shows: "Auto-save is currently enabled"
-```
-
-You'll also see a message when you start the agent:
-```
-✓ Auto-save enabled (sessions saved after tool execution)
-```
+You'll see sessions appearing in your `workspace/sessions/` directory after tool executions. Use `/sessions` to list them.
 
 ### "I want to disable auto-save"
 
-```bash
-# In the CLI:
-/auto-save off
+Auto-save is always on when session persistence is enabled. To stop saving sessions entirely, disable session persistence in your config:
 
-# Or in config/config.yaml:
+```yaml
+# In config/config.yaml:
 session:
-  auto_save: false
+  enabled: false
 ```
 
 ## Example Workflow

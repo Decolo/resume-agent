@@ -43,7 +43,6 @@ class DelegationConfig:
     max_depth: int = 5
     timeout_seconds: float = 300.0
     enable_cycle_detection: bool = True
-    max_delegations_per_task: int = 10
 
 
 @dataclass
@@ -285,103 +284,6 @@ class DelegationManager:
                         break
 
         return False
-
-    def get_delegation_chain(self, task_id: str) -> List[DelegationRecord]:
-        """Get the delegation chain for a task.
-
-        Args:
-            task_id: ID of the task
-
-        Returns:
-            List of delegation records in the chain
-        """
-        chain = []
-
-        # Find all records related to this task
-        for record in self._delegation_history:
-            if record.task_id == task_id:
-                chain.append(record)
-
-        # Find child delegations
-        child_task_ids = self._delegation_graph.get(task_id, [])
-        for child_id in child_task_ids:
-            chain.extend(self.get_delegation_chain(child_id))
-
-        return chain
-
-    def get_delegation_tree(self, root_task_id: str) -> Dict:
-        """Get the delegation tree as a nested dictionary.
-
-        Args:
-            root_task_id: ID of the root task
-
-        Returns:
-            Nested dictionary representing the delegation tree
-        """
-        # Find the record for this task
-        record = None
-        for r in self._delegation_history:
-            if r.task_id == root_task_id:
-                record = r
-                break
-
-        tree = {
-            "task_id": root_task_id,
-            "from_agent": record.from_agent if record else "unknown",
-            "to_agent": record.to_agent if record else "unknown",
-            "duration_ms": record.duration_ms if record else None,
-            "success": record.success if record else None,
-            "children": [],
-        }
-
-        # Add children
-        child_task_ids = self._delegation_graph.get(root_task_id, [])
-        for child_id in child_task_ids:
-            tree["children"].append(self.get_delegation_tree(child_id))
-
-        return tree
-
-    def print_delegation_tree(self, root_task_id: str, indent: int = 0) -> str:
-        """Generate ASCII representation of delegation tree.
-
-        Args:
-            root_task_id: ID of the root task
-            indent: Current indentation level
-
-        Returns:
-            ASCII tree representation
-        """
-        tree = self.get_delegation_tree(root_task_id)
-        return self._format_tree_node(tree, indent)
-
-    def _format_tree_node(self, node: Dict, indent: int = 0) -> str:
-        """Format a single tree node.
-
-        Args:
-            node: Tree node dictionary
-            indent: Current indentation level
-
-        Returns:
-            Formatted string for this node and its children
-        """
-        prefix = "│   " * indent
-        connector = "├── " if indent > 0 else ""
-
-        status = "✓" if node["success"] else "✗" if node["success"] is False else "?"
-        duration = f"[{node['duration_ms']:.0f}ms]" if node["duration_ms"] else ""
-
-        line = (
-            f"{prefix}{connector}{node['task_id']} "
-            f"({node['from_agent']} → {node['to_agent']}) "
-            f"{duration} {status}\n"
-        )
-
-        for i, child in enumerate(node["children"]):
-            is_last = i == len(node["children"]) - 1
-            child_prefix = "└── " if is_last else "├── "
-            line += self._format_tree_node(child, indent + 1)
-
-        return line
 
     def _log_delegation(self, record: DelegationRecord) -> None:
         """Log delegation to observer.
