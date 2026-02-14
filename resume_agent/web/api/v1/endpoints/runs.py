@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import AsyncGenerator, Optional
 
 from fastapi import APIRouter, Depends, Header, Response, status
@@ -14,6 +15,7 @@ from ..deps import get_store
 from ....store import InMemoryRuntimeStore, TERMINAL_RUN_STATES
 
 router = APIRouter(prefix="/sessions/{session_id}", tags=["runs"])
+logger = logging.getLogger("resume_agent.web.api")
 
 
 class CreateMessageRequest(BaseModel):
@@ -49,6 +51,16 @@ async def create_message_run(
         session_id=session_id,
         message=request.message,
         idempotency_key=request.idempotency_key,
+    )
+    meta = store.runtime_metadata()
+    logger.info(
+        "run_created session_id=%s run_id=%s provider=%s model=%s status=%s reused=%s",
+        session_id,
+        run.run_id,
+        meta["provider"],
+        meta["model"],
+        run.status,
+        _is_reused,
     )
     return CreateMessageResponse(run_id=run.run_id, status=run.status)
 

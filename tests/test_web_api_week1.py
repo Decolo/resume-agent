@@ -303,3 +303,63 @@ def test_missing_resources_return_contract_errors() -> None:
         assert missing_approval_error["code"] == "APPROVAL_NOT_FOUND"
         assert "message" in missing_approval_error
         assert "details" in missing_approval_error
+
+
+def test_upload_list_and_get_file() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        file_content = b"# Resume\nHello"
+
+        upload = client.post(
+            f"/api/v1/sessions/{session['session_id']}/files/upload",
+            files={"file": ("resume.md", file_content, "text/markdown")},
+        )
+        assert upload.status_code == 201
+        upload_body = upload.json()
+        assert upload_body["file_id"].startswith("file_")
+        assert upload_body["path"] == "resume.md"
+        assert upload_body["size"] == len(file_content)
+
+        listing = client.get(f"/api/v1/sessions/{session['session_id']}/files")
+        assert listing.status_code == 200
+        files = listing.json()["files"]
+        assert len(files) == 1
+        assert files[0]["path"] == "resume.md"
+        assert files[0]["size"] == len(file_content)
+
+        download = client.get(f"/api/v1/sessions/{session['session_id']}/files/resume.md")
+        assert download.status_code == 200
+        assert download.text == "# Resume\nHello"
+
+
+def test_get_file_rejects_path_escape() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+
+        response = client.get(
+            f"/api/v1/sessions/{session['session_id']}/files/%2E%2E/secrets.txt"
+        )
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error"]["code"] == "INVALID_PATH"
+
+
+def test_api_logs_include_observability_fields(caplog) -> None:
+    caplog.set_level("INFO", logger="resume_agent.web.api")
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        run = client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={"message": "Summarize resume content"},
+        ).json()
+        client.get(f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}")
+
+    assert caplog.records
+    # One log line for run-status request should include all key fields.
+    assert any(
+        "session_id=" in record.message
+        and "run_id=" in record.message
+        and "provider=" in record.message
+        and "model=" in record.message
+        for record in caplog.records
+    )

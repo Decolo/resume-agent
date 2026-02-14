@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .errors import APIError
+from .workspace import WorkspaceFile, WorkspaceFileContent, WorkspaceProvider
 
 TERMINAL_RUN_STATES = {"completed", "failed", "interrupted"}
 ACTIVE_RUN_STATES = {"queued", "running", "waiting_approval", "interrupting"}
@@ -76,12 +77,20 @@ class SessionRecord:
 class InMemoryRuntimeStore:
     """Runtime persistence + deterministic stub executor for web contract tests."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        workspace_provider: WorkspaceProvider,
+        provider_name: str = "stub",
+        model_name: str = "stub-model",
+    ) -> None:
         self._sessions: Dict[str, SessionRecord] = {}
         self._lock = asyncio.Lock()
         self._run_queue: asyncio.Queue[Tuple[Optional[str], Optional[str]]] = asyncio.Queue()
         self._stop_requested = False
         self._worker_task: Optional[asyncio.Task] = None
+        self._workspace_provider = workspace_provider
+        self.provider_name = provider_name
+        self.model_name = model_name
 
     async def start(self) -> None:
         """Start background run worker."""
@@ -99,6 +108,7 @@ class InMemoryRuntimeStore:
 
     async def create_session(self, workspace_name: str, auto_approve: bool) -> SessionRecord:
         session_id = make_id("sess")
+        await self._workspace_provider.create_workspace(session_id=session_id, workspace_name=workspace_name)
         session = SessionRecord(
             session_id=session_id,
             workspace_name=workspace_name,
@@ -109,6 +119,10 @@ class InMemoryRuntimeStore:
         async with self._lock:
             self._sessions[session_id] = session
         return session
+
+    def runtime_metadata(self) -> Dict[str, str]:
+        """Static provider/model values used by API observability logs."""
+        return {"provider": self.provider_name, "model": self.model_name}
 
     async def get_session(self, session_id: str) -> SessionRecord:
         async with self._lock:
@@ -186,6 +200,27 @@ class InMemoryRuntimeStore:
             if not run:
                 raise APIError(404, "RUN_NOT_FOUND", f"Run '{run_id}' not found")
             return run
+
+    async def upload_session_file(
+        self,
+        session_id: str,
+        filename: str,
+        content: bytes,
+    ) -> WorkspaceFile:
+        await self.get_session(session_id=session_id)
+        return await self._workspace_provider.save_uploaded_file(
+            session_id=session_id,
+            filename=filename,
+            content=content,
+        )
+
+    async def list_session_files(self, session_id: str) -> List[WorkspaceFile]:
+        await self.get_session(session_id=session_id)
+        return await self._workspace_provider.list_files(session_id=session_id)
+
+    async def read_session_file(self, session_id: str, file_path: str) -> WorkspaceFileContent:
+        await self.get_session(session_id=session_id)
+        return await self._workspace_provider.read_file(session_id=session_id, relative_path=file_path)
 
     async def list_pending_approvals(self, session_id: str) -> List[ApprovalRecord]:
         async with self._lock:

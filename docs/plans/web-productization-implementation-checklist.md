@@ -6,8 +6,8 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 
 ## Week 1
 - [x] Finalize API contract for session/message/approval/stream endpoints.
-- [ ] Implement `WorkspaceProvider` interface and `RemoteWorkspaceProvider` (local-disk backend first).
-- [ ] Add session lifecycle APIs (`create/get`) and file upload/list APIs.
+- [x] Implement `WorkspaceProvider` interface and `RemoteWorkspaceProvider` (local-disk backend first).
+- [x] Add session lifecycle APIs (`create/get`) and file upload/list APIs.
 - [x] Add run creation API (`POST /messages`) and run metadata model (`run_id`, status, timestamps).
 
 ## Week 2
@@ -15,7 +15,7 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 - [x] Wire approval APIs to existing pending tool-call gate.
 - [x] Implement interrupt API mapped to runtime cancellation.
 - [x] Add integration tests for: read->write approval->apply, reject path, interrupt path.
-- [ ] Add basic observability fields to API logs (`session_id`, `run_id`, provider, model).
+- [x] Add basic observability fields to API logs (`session_id`, `run_id`, provider, model).
 
 ## Phase 2 (Weeks 3-5): Minimal Web UI
 
