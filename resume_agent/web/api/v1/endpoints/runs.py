@@ -6,7 +6,7 @@ import asyncio
 import json
 from typing import AsyncGenerator, Optional
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,19 @@ class CreateMessageResponse(BaseModel):
     status: str
 
 
+class GetRunResponse(BaseModel):
+    run_id: str
+    status: str
+    started_at: Optional[str]
+    ended_at: Optional[str]
+    error: Optional[dict]
+
+
+class InterruptRunResponse(BaseModel):
+    run_id: str
+    status: str
+
+
 @router.post("/messages", response_model=CreateMessageResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_message_run(
     session_id: str,
@@ -38,6 +51,36 @@ async def create_message_run(
         idempotency_key=request.idempotency_key,
     )
     return CreateMessageResponse(run_id=run.run_id, status=run.status)
+
+
+@router.get("/runs/{run_id}", response_model=GetRunResponse)
+async def get_run(
+    session_id: str,
+    run_id: str,
+    store: InMemoryRuntimeStore = Depends(get_store),
+) -> GetRunResponse:
+    run = await store.get_run(session_id=session_id, run_id=run_id)
+    return GetRunResponse(
+        run_id=run.run_id,
+        status=run.status,
+        started_at=run.started_at,
+        ended_at=run.ended_at,
+        error=run.error,
+    )
+
+
+@router.post("/runs/{run_id}/interrupt", response_model=InterruptRunResponse)
+async def interrupt_run(
+    session_id: str,
+    run_id: str,
+    response: Response,
+    store: InMemoryRuntimeStore = Depends(get_store),
+) -> InterruptRunResponse:
+    run = await store.interrupt_run(session_id=session_id, run_id=run_id)
+    response.status_code = (
+        status.HTTP_200_OK if run.status in TERMINAL_RUN_STATES else status.HTTP_202_ACCEPTED
+    )
+    return InterruptRunResponse(run_id=run.run_id, status=run.status)
 
 
 @router.get("/runs/{run_id}/stream")
@@ -80,4 +123,3 @@ def format_sse_event(event: dict) -> str:
     """Render one event using SSE framing."""
     payload = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
     return f"id: {event['event_id']}\nevent: {event['type']}\ndata: {payload}\n\n"
-

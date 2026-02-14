@@ -5,16 +5,16 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 ## Phase 1 (Weeks 1-2): Headless API MVP
 
 ## Week 1
-- [ ] Finalize API contract for session/message/approval/stream endpoints.
+- [x] Finalize API contract for session/message/approval/stream endpoints.
 - [ ] Implement `WorkspaceProvider` interface and `RemoteWorkspaceProvider` (local-disk backend first).
 - [ ] Add session lifecycle APIs (`create/get`) and file upload/list APIs.
-- [ ] Add run creation API (`POST /messages`) and run metadata model (`run_id`, status, timestamps).
+- [x] Add run creation API (`POST /messages`) and run metadata model (`run_id`, status, timestamps).
 
 ## Week 2
-- [ ] Implement SSE stream endpoint with stable event envelope.
-- [ ] Wire approval APIs to existing pending tool-call gate.
-- [ ] Implement interrupt API mapped to runtime cancellation.
-- [ ] Add integration tests for: read->write approval->apply, reject path, interrupt path.
+- [x] Implement SSE stream endpoint with stable event envelope.
+- [x] Wire approval APIs to existing pending tool-call gate.
+- [x] Implement interrupt API mapped to runtime cancellation.
+- [x] Add integration tests for: read->write approval->apply, reject path, interrupt path.
 - [ ] Add basic observability fields to API logs (`session_id`, `run_id`, provider, model).
 
 ## Phase 2 (Weeks 3-5): Minimal Web UI

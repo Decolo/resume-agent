@@ -33,6 +33,14 @@ class GetSessionResponse(BaseModel):
     settings: dict
 
 
+class SetAutoApproveRequest(BaseModel):
+    enabled: bool = Field(default=False)
+
+
+class SetAutoApproveResponse(BaseModel):
+    enabled: bool
+
+
 @router.post("", response_model=CreateSessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_session(
     request: CreateSessionRequest,
@@ -64,3 +72,12 @@ async def get_session(
         settings=session.settings,
     )
 
+
+@router.post("/{session_id}/settings/auto-approve", response_model=SetAutoApproveResponse)
+async def set_auto_approve(
+    session_id: str,
+    request: SetAutoApproveRequest,
+    store: InMemoryRuntimeStore = Depends(get_store),
+) -> SetAutoApproveResponse:
+    updated = await store.set_auto_approve(session_id=session_id, enabled=request.enabled)
+    return SetAutoApproveResponse(enabled=updated["enabled"])
