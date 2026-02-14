@@ -10,6 +10,7 @@ from resume_agent.retry import RetryConfig, retry_with_backoff, TransientError, 
 from resume_agent.observability import AgentObserver, AgentEvent
 from resume_agent.cache import ToolCache, CacheEntry, should_cache_tool, get_tool_ttl
 from resume_agent.llm import HistoryManager
+from resume_agent.providers.types import Message, MessagePart
 from resume_agent.tools.file_tool import FileReadTool, MAX_FILE_SIZE
 from resume_agent.tools.bash_tool import BashTool
 
@@ -110,15 +111,8 @@ class TestHistoryManager:
 
     def test_history_add_and_retrieve(self):
         """Test adding and retrieving messages."""
-        from google.genai import types
-
         manager = HistoryManager(max_messages=10, max_tokens=1000)
-
-        msg = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text="Hello")]
-        )
-        manager.add_message(msg)
+        manager.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
 
         history = manager.get_history()
         assert len(history) == 1
@@ -126,34 +120,25 @@ class TestHistoryManager:
 
     def test_history_sliding_window_pruning(self):
         """Test that history is pruned to max_messages."""
-        from google.genai import types
-
         manager = HistoryManager(max_messages=5, max_tokens=100000)
 
         # Add 10 messages
         for i in range(10):
-            msg = types.Content(
-                role="user" if i % 2 == 0 else "model",
-                parts=[types.Part.from_text(text=f"Message {i}")]
-            )
-            manager.add_message(msg)
+            role = "user" if i % 2 == 0 else "assistant"
+            manager.add_message(Message(role=role, parts=[MessagePart.from_text(f"Message {i}")]))
 
         history = manager.get_history()
         assert len(history) <= 5
 
     def test_history_token_based_pruning(self):
         """Test that history is pruned based on token limit."""
-        from google.genai import types
-
         manager = HistoryManager(max_messages=100, max_tokens=100)
 
         # Add messages until token limit is exceeded
         for i in range(20):
-            msg = types.Content(
-                role="user",
-                parts=[types.Part.from_text(text="x" * 100)]  # ~25 tokens each
+            manager.add_message(
+                Message(role="user", parts=[MessagePart.from_text("x" * 100)])
             )
-            manager.add_message(msg)
 
         history = manager.get_history()
         # Should have pruned to stay under token limit
@@ -161,14 +146,8 @@ class TestHistoryManager:
 
     def test_history_clear(self):
         """Test clearing history."""
-        from google.genai import types
-
         manager = HistoryManager()
-        msg = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text="Hello")]
-        )
-        manager.add_message(msg)
+        manager.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
 
         assert len(manager.get_history()) == 1
 

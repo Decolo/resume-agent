@@ -122,6 +122,10 @@ def is_transient_error(error: Exception) -> bool:
     Returns:
         True if error is transient, False otherwise
     """
+    # Explicit transient wrapper
+    if isinstance(error, TransientError):
+        return True
+
     # Network-related errors
     if isinstance(error, (ConnectionError, TimeoutError)):
         return True

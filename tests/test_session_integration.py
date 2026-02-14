@@ -7,6 +7,7 @@ from pathlib import Path
 from resume_agent.agent import ResumeAgent, AgentConfig
 from resume_agent.llm import LLMConfig
 from resume_agent.session import SessionManager
+from resume_agent.providers.types import Message, MessagePart
 
 
 @pytest.mark.asyncio
@@ -25,16 +26,10 @@ async def test_session_save_load_integration(tmp_path):
 
     # Simulate conversation by adding messages directly
     agent.agent.history_manager.add_message(
-        type('Content', (), {
-            'role': 'user',
-            'parts': [type('Part', (), {'text': 'Hello', 'function_call': None, 'function_response': None})()]
-        })()
+        Message(role="user", parts=[MessagePart.from_text("Hello")])
     )
     agent.agent.history_manager.add_message(
-        type('Content', (), {
-            'role': 'model',
-            'parts': [type('Part', (), {'text': 'Hi there!', 'function_call': None, 'function_response': None})()]
-        })()
+        Message(role="assistant", parts=[MessagePart.from_text("Hi there!")])
     )
 
     # Save session
@@ -61,7 +56,7 @@ async def test_session_save_load_integration(tmp_path):
     restored_history = new_agent.agent.history_manager.get_history()
     assert len(restored_history) == 2
     assert restored_history[0].role == "user"
-    assert restored_history[1].role == "model"
+    assert restored_history[1].role == "assistant"
 
 
 @pytest.mark.asyncio
@@ -81,10 +76,7 @@ async def test_session_list_and_delete(tmp_path):
     session_ids = []
     for i in range(3):
         agent.agent.history_manager.add_message(
-            type('Content', (), {
-                'role': 'user',
-                'parts': [type('Part', (), {'text': f'Message {i}', 'function_call': None, 'function_response': None})()]
-            })()
+            Message(role="user", parts=[MessagePart.from_text(f"Message {i}")])
         )
         session_id = session_manager.save_session(agent, session_name=f"session_{i}")
         session_ids.append(session_id)

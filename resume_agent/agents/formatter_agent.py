@@ -9,7 +9,7 @@ from .protocol import AgentTask, AgentResult, create_result
 from ..skills.formatter_prompt import FORMATTER_AGENT_PROMPT
 
 if TYPE_CHECKING:
-    from ..llm import GeminiAgent
+    from ..llm import LLMAgent
     from ..observability import AgentObserver
 
 
@@ -31,7 +31,7 @@ class FormatterAgent(BaseAgent):
         self,
         agent_id: str = "formatter_agent",
         config: Optional[AgentConfig] = None,
-        llm_agent: Optional[GeminiAgent] = None,
+        llm_agent: Optional[LLMAgent] = None,
         observer: Optional[AgentObserver] = None,
     ):
         """Initialize the formatter agent.

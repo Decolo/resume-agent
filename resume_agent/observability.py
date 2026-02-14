@@ -28,10 +28,11 @@ class AgentObserver:
     Collects events, logs, and metrics for debugging and monitoring.
     """
 
-    def __init__(self, agent_id: Optional[str] = None):
+    def __init__(self, agent_id: Optional[str] = None, verbose: bool = False):
         self.events: List[AgentEvent] = []
         self.logger = logging.getLogger("resume_agent")
         self.agent_id = agent_id
+        self.verbose = verbose
         self._setup_logging()
 
     def _format_agent_prefix(self, agent_id: Optional[str]) -> str:
@@ -48,7 +49,7 @@ class AgentObserver:
             )
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.INFO if self.verbose else logging.WARNING)
 
     def log_tool_call(
         self,

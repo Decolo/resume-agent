@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
 from .agent import ResumeAgent, AgentConfig
-from .llm import GeminiAgent, LLMConfig, load_config, load_raw_config
+from .llm import LLMAgent, LLMConfig, load_config, load_raw_config
 from .observability import AgentObserver
 from .agents.registry import AgentRegistry
 from .agents.delegation import DelegationManager, DelegationConfig
@@ -117,6 +117,7 @@ def create_agent(
     agent_config: Optional[AgentConfig] = None,
     workspace_dir: str = ".",
     session_manager: Optional[Any] = None,
+    verbose: bool = False,
 ) -> Union[ResumeAgent, OrchestratorAgent]:
     """Factory function to create the appropriate agent.
 
@@ -147,7 +148,7 @@ def create_agent(
         logger.info("Creating auto-routing agent (single + multi)")
         single_agent = ResumeAgent(
             llm_config=llm_config,
-            agent_config=agent_config or AgentConfig(workspace_dir=workspace_dir),
+            agent_config=agent_config or AgentConfig(workspace_dir=workspace_dir, verbose=verbose),
             session_manager=session_manager,
         )
         multi_agent = create_multi_agent_system(
@@ -155,6 +156,7 @@ def create_agent(
             ma_config=ma_config,
             workspace_dir=workspace_dir,
             session_manager=session_manager,
+            verbose=verbose,
         )
         return AutoAgent(single_agent=single_agent, multi_agent=multi_agent, raw_config=raw_config)
 
@@ -163,7 +165,7 @@ def create_agent(
         logger.info("Creating single-agent ResumeAgent")
         return ResumeAgent(
             llm_config=llm_config,
-            agent_config=agent_config or AgentConfig(workspace_dir=workspace_dir),
+            agent_config=agent_config or AgentConfig(workspace_dir=workspace_dir, verbose=verbose),
             session_manager=session_manager,
         )
 
@@ -174,6 +176,7 @@ def create_agent(
         ma_config=ma_config,
         workspace_dir=workspace_dir,
         session_manager=session_manager,
+        verbose=verbose,
     )
 
 
@@ -183,13 +186,18 @@ class IntentRouter:
     def __init__(self, llm_config: LLMConfig, routing_config: Optional[Dict[str, Any]] = None):
         routing_config = routing_config or {}
         self.enabled = routing_config.get("enabled", True)
+        provider = routing_config.get("provider", llm_config.provider)
+        api_key = routing_config.get("api_key", llm_config.api_key)
+        api_base = routing_config.get("api_base", llm_config.api_base)
         model = routing_config.get("model", llm_config.model)
         max_tokens = routing_config.get("max_tokens", 64)
         temperature = routing_config.get("temperature", 0.0)
 
-        self._agent = GeminiAgent(
+        self._agent = LLMAgent(
             config=LLMConfig(
-                api_key=llm_config.api_key,
+                api_key=api_key,
+                provider=provider,
+                api_base=api_base,
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -292,6 +300,7 @@ def create_multi_agent_system(
     ma_config: MultiAgentConfig,
     workspace_dir: str = ".",
     session_manager: Optional[Any] = None,
+    verbose: bool = False,
 ) -> OrchestratorAgent:
     """Create a complete multi-agent system.
 
@@ -304,7 +313,7 @@ def create_multi_agent_system(
         Configured OrchestratorAgent with all specialized agents
     """
     # Create shared components
-    observer = AgentObserver()
+    observer = AgentObserver(verbose=verbose)
     registry = AgentRegistry()
 
     # Create history manager
@@ -350,6 +359,7 @@ def create_multi_agent_system(
         tools=tools,
         history_manager=history_manager,
         session_manager=session_manager,
+        verbose=verbose,
     )
     registry.register(parser_agent)
 
@@ -360,6 +370,7 @@ def create_multi_agent_system(
         tools=tools,
         history_manager=history_manager,
         session_manager=session_manager,
+        verbose=verbose,
     )
     registry.register(writer_agent)
 
@@ -370,6 +381,7 @@ def create_multi_agent_system(
         tools=tools,
         history_manager=history_manager,
         session_manager=session_manager,
+        verbose=verbose,
     )
     registry.register(formatter_agent)
 
@@ -383,6 +395,7 @@ def create_multi_agent_system(
         registry=registry,
         delegation_manager=delegation_manager,
         session_manager=session_manager,
+        verbose=verbose,
     )
     registry.register(orchestrator)
 
@@ -396,6 +409,28 @@ def create_multi_agent_system(
     return orchestrator
 
 
+def _build_agent_llm_config(
+    base_config: LLMConfig,
+    agent_config_data: Dict[str, Any],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+) -> LLMConfig:
+    provider = agent_config_data.get("provider", base_config.provider)
+    api_key = agent_config_data.get("api_key", base_config.api_key)
+    api_base = agent_config_data.get("api_base", base_config.api_base)
+
+    return LLMConfig(
+        api_key=api_key,
+        provider=provider,
+        api_base=api_base,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        search_grounding=getattr(base_config, "search_grounding", False),
+    )
+
+
 def _create_parser_agent(
     llm_config: LLMConfig,
     ma_config: MultiAgentConfig,
@@ -403,6 +438,7 @@ def _create_parser_agent(
     tools: Dict,
     history_manager: MultiAgentHistoryManager,
     session_manager: Optional[Any] = None,
+    verbose: bool = False,
 ) -> ParserAgent:
     """Create and configure ParserAgent."""
     # Get agent-specific config
@@ -419,17 +455,18 @@ def _create_parser_agent(
     )
 
     # Create LLM agent for parser
-    llm_agent = GeminiAgent(
-        config=LLMConfig(
-            api_key=llm_config.api_key,
+    llm_agent = LLMAgent(
+        config=_build_agent_llm_config(
+            base_config=llm_config,
+            agent_config_data=agent_config_data,
             model=agent_config.model,
-            max_tokens=agent_config.max_tokens,
             temperature=agent_config.temperature,
-            search_grounding=getattr(llm_config, "search_grounding", False),
+            max_tokens=agent_config.max_tokens,
         ),
         system_prompt=PARSER_AGENT_PROMPT,
         agent_id="parser_agent",
         session_manager=session_manager,
+        verbose=verbose,
     )
 
     # Register parser-specific tools
@@ -452,6 +489,7 @@ def _create_writer_agent(
     tools: Dict,
     history_manager: MultiAgentHistoryManager,
     session_manager: Optional[Any] = None,
+    verbose: bool = False,
 ) -> WriterAgent:
     """Create and configure WriterAgent."""
     agent_config_data = ma_config.writer_config or {}
@@ -466,17 +504,18 @@ def _create_writer_agent(
         enabled=agent_config_data.get("enabled", True),
     )
 
-    llm_agent = GeminiAgent(
-        config=LLMConfig(
-            api_key=llm_config.api_key,
+    llm_agent = LLMAgent(
+        config=_build_agent_llm_config(
+            base_config=llm_config,
+            agent_config_data=agent_config_data,
             model=agent_config.model,
-            max_tokens=agent_config.max_tokens,
             temperature=agent_config.temperature,
-            search_grounding=getattr(llm_config, "search_grounding", False),
+            max_tokens=agent_config.max_tokens,
         ),
         system_prompt=WRITER_AGENT_PROMPT,
         agent_id="writer_agent",
         session_manager=session_manager,
+        verbose=verbose,
     )
 
     _register_tools(llm_agent, tools, ["file_read", "file_write", "ats_score", "job_match"])
@@ -497,6 +536,7 @@ def _create_formatter_agent(
     tools: Dict,
     history_manager: MultiAgentHistoryManager,
     session_manager: Optional[Any] = None,
+    verbose: bool = False,
 ) -> FormatterAgent:
     """Create and configure FormatterAgent."""
     agent_config_data = ma_config.formatter_config or {}
@@ -511,17 +551,18 @@ def _create_formatter_agent(
         enabled=agent_config_data.get("enabled", True),
     )
 
-    llm_agent = GeminiAgent(
-        config=LLMConfig(
-            api_key=llm_config.api_key,
+    llm_agent = LLMAgent(
+        config=_build_agent_llm_config(
+            base_config=llm_config,
+            agent_config_data=agent_config_data,
             model=agent_config.model,
-            max_tokens=agent_config.max_tokens,
             temperature=agent_config.temperature,
-            search_grounding=getattr(llm_config, "search_grounding", False),
+            max_tokens=agent_config.max_tokens,
         ),
         system_prompt=FORMATTER_AGENT_PROMPT,
         agent_id="formatter_agent",
         session_manager=session_manager,
+        verbose=verbose,
     )
 
     _register_tools(llm_agent, tools, ["resume_write", "file_read", "file_write", "resume_validate"])
@@ -544,6 +585,7 @@ def _create_orchestrator_agent(
     registry: AgentRegistry,
     delegation_manager: DelegationManager,
     session_manager: Optional[Any] = None,
+    verbose: bool = False,
 ) -> OrchestratorAgent:
     """Create and configure OrchestratorAgent."""
     agent_config_data = ma_config.orchestrator_config or {}
@@ -559,17 +601,18 @@ def _create_orchestrator_agent(
         enabled=agent_config_data.get("enabled", True),
     )
 
-    llm_agent = GeminiAgent(
-        config=LLMConfig(
-            api_key=llm_config.api_key,
+    llm_agent = LLMAgent(
+        config=_build_agent_llm_config(
+            base_config=llm_config,
+            agent_config_data=agent_config_data,
             model=agent_config.model,
-            max_tokens=agent_config.max_tokens,
             temperature=agent_config.temperature,
-            search_grounding=getattr(llm_config, "search_grounding", False),
+            max_tokens=agent_config.max_tokens,
         ),
         system_prompt=ORCHESTRATOR_AGENT_PROMPT,
         agent_id="orchestrator_agent",
         session_manager=session_manager,
+        verbose=verbose,
     )
 
     # Orchestrator gets coordination and analysis tools
@@ -595,7 +638,7 @@ def _create_orchestrator_agent(
     return orchestrator
 
 
-def _register_tools(llm_agent: GeminiAgent, tools: Dict, tool_names: list) -> None:
+def _register_tools(llm_agent: LLMAgent, tools: Dict, tool_names: list) -> None:
     """Register specified tools with an LLM agent.
 
     Args:

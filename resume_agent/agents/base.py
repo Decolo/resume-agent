@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from .protocol import AgentTask, AgentResult, create_result
 
 if TYPE_CHECKING:
-    from ..llm import GeminiAgent
+    from ..llm import LLMAgent
     from ..observability import AgentObserver
 
 
@@ -73,7 +73,7 @@ class BaseAgent(ABC):
         agent_type: str,
         capabilities: List[str],
         config: Optional[AgentConfig] = None,
-        llm_agent: Optional[GeminiAgent] = None,
+        llm_agent: Optional[LLMAgent] = None,
         observer: Optional[AgentObserver] = None,
     ):
         """Initialize the base agent.

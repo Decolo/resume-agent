@@ -1,4 +1,4 @@
-"""Agent - Resume modification agent using Google GenAI SDK."""
+"""Agent - Resume modification agent with multi-provider LLM support."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, Any
 from pathlib import Path
 
-from .llm import GeminiAgent, LLMConfig, load_config
+from .llm import LLMAgent, LLMConfig, load_config
 from .tools import (
     FileReadTool,
     FileWriteTool,
@@ -30,7 +30,7 @@ class AgentConfig:
     workspace_dir: str = "."
     max_steps: int = 50
     system_prompt: str = RESUME_EXPERT_PROMPT
-    verbose: bool = True
+    verbose: bool = False
 
 
 class ResumeAgent:
@@ -50,11 +50,12 @@ class ResumeAgent:
 
         self.llm_config = llm_config
 
-        # Initialize Gemini agent with session manager
-        self.agent = GeminiAgent(
+        # Initialize LLM agent with session manager
+        self.agent = LLMAgent(
             config=llm_config,
             system_prompt=self.agent_config.system_prompt,
             session_manager=session_manager,
+            verbose=self.agent_config.verbose,
         )
 
         # Set parent agent reference for auto-save
@@ -85,7 +86,7 @@ class ResumeAgent:
         }
 
     def _register_tools(self):
-        """Register tools with the Gemini agent."""
+        """Register tools with the LLM agent."""
         for name, tool in self.tools.items():
             # Convert tool parameters to the format expected by register_tool
             params = {

@@ -1,20 +1,26 @@
-"""LLM Client - Uses Google GenAI SDK for Gemini with function calling."""
+"""LLM client and history management."""
 
 from __future__ import annotations
 
-import json
-import os
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable
-
-from google import genai
-from google.genai import types
 
 from .retry import retry_with_backoff, RetryConfig, TransientError
 from .observability import AgentObserver
 from .cache import ToolCache, should_cache_tool, get_tool_ttl
+from .providers import create_provider
+from .providers.types import (
+    FunctionCall,
+    FunctionResponse,
+    GenerationConfig,
+    LLMResponse,
+    Message,
+    MessagePart,
+    ToolSchema,
+    StreamDelta,
+)
 
 
 class HistoryManager:
@@ -30,9 +36,9 @@ class HistoryManager:
         """
         self.max_messages = max_messages
         self.max_tokens = max_tokens
-        self._history: List[types.Content] = []
+        self._history: List[Message] = []
 
-    def add_message(self, message: types.Content, allow_incomplete: bool = False):
+    def add_message(self, message: Message, allow_incomplete: bool = False):
         """Add a message and prune if needed.
 
         If allow_incomplete is True, skips validation/pruning to allow a
@@ -41,15 +47,12 @@ class HistoryManager:
         if message is None:
             return
         self._history.append(message)
-        # Remove any accidental None entries in history
-        if any(m is None for m in self._history):
-            self._history = [m for m in self._history if m is not None]
         if allow_incomplete:
             return
         self._ensure_valid_sequence()
         self._prune_if_needed()
 
-    def get_history(self) -> List[types.Content]:
+    def get_history(self) -> List[Message]:
         """Get current history."""
         return self._history
 
@@ -90,8 +93,8 @@ class HistoryManager:
         Check if message at index is the first part of a function call/response pair.
 
         A valid pair is:
-        - history[index] has role="model" with function_call parts
-        - history[index+1] has role="user" with function_response parts
+        - history[index] has role="assistant" with function_call parts
+        - history[index+1] has role="tool" with function_response parts
         """
         if index >= len(self._history) - 1:
             return False
@@ -111,7 +114,7 @@ class HistoryManager:
         """
         Fix broken function call/response pairs after pruning.
 
-        If history starts with an orphaned function response (user message with
+        If history starts with an orphaned function response (tool message with
         function_response but no preceding function_call), remove it.
         """
         if not self._history:
@@ -125,39 +128,43 @@ class HistoryManager:
 
         # Check if first message is an orphaned function response
         first_msg = self._history[0]
-        if (first_msg.role == "user" and
-            first_msg.parts is not None and
-            any(part.function_response for part in first_msg.parts)):
+        if (
+            first_msg.role == "tool"
+            and first_msg.parts is not None
+            and any(part.function_response for part in first_msg.parts)
+        ):
             # This is an orphaned response, remove it
             self._history.pop(0)
 
         # Check if last message is an orphaned function call
         if self._history:
             last_msg = self._history[-1]
-            if (last_msg.role == "model" and
-                last_msg.parts is not None and
-                any(part.function_call for part in last_msg.parts)):
+            if (
+                last_msg.role == "assistant"
+                and last_msg.parts is not None
+                and any(part.function_call for part in last_msg.parts)
+            ):
                 # This is an orphaned call, remove it
                 self._history.pop()
 
-    def _has_function_call(self, msg: types.Content) -> bool:
+    def _has_function_call(self, msg: Message) -> bool:
         return (
-            msg is not None and
-            msg.role == "model" and
-            msg.parts is not None and
-            any(part.function_call for part in msg.parts)
+            msg is not None
+            and msg.role == "assistant"
+            and msg.parts is not None
+            and any(part.function_call for part in msg.parts)
         )
 
-    def _has_function_response(self, msg: types.Content) -> bool:
+    def _has_function_response(self, msg: Message) -> bool:
         return (
-            msg is not None and
-            msg.role == "user" and
-            msg.parts is not None and
-            any(part.function_response for part in msg.parts)
+            msg is not None
+            and msg.role == "tool"
+            and msg.parts is not None
+            and any(part.function_response for part in msg.parts)
         )
 
     def _ensure_valid_sequence(self):
-        """Ensure history ordering is valid for Gemini function calling."""
+        """Ensure history ordering is valid for tool calling."""
         if not self._history:
             return
 
@@ -166,7 +173,7 @@ class HistoryManager:
         if not self._history:
             return
 
-        cleaned: List[types.Content] = []
+        cleaned: List[Message] = []
         for msg in self._history:
             # Drop orphaned function responses
             if self._has_function_response(msg):
@@ -174,16 +181,16 @@ class HistoryManager:
                     continue
                 if not self._has_function_call(cleaned[-1]):
                     continue
-            # Drop model function calls that do not follow a user turn
+            # Drop assistant function calls that do not follow a user turn
             if self._has_function_call(msg):
-                if not cleaned:
-                    continue
-                if cleaned[-1].role != "user":
+                # Allow a leading assistant tool call when history was truncated;
+                # the second pass still drops it if no matching tool response.
+                if cleaned and cleaned[-1].role not in {"user", "tool"}:
                     continue
             cleaned.append(msg)
 
-        # Drop model function calls not followed by a user function response
-        final: List[types.Content] = []
+        # Drop assistant function calls not followed by a tool response
+        final: List[Message] = []
         i = 0
         while i < len(cleaned):
             msg = cleaned[i]
@@ -200,7 +207,7 @@ class HistoryManager:
 
         self._history = final
 
-    def _estimate_tokens(self, message: types.Content) -> int:
+    def _estimate_tokens(self, message: Message) -> int:
         """
         Estimate token count for a message.
 
@@ -213,15 +220,13 @@ class HistoryManager:
             if part.text:
                 total_chars += len(part.text)
             elif part.function_call:
-                # Estimate function call size
                 total_chars += len(part.function_call.name) * 2
-                if part.function_call.args:
-                    total_chars += len(str(dict(part.function_call.args)))
+                if part.function_call.arguments:
+                    total_chars += len(str(dict(part.function_call.arguments)))
             elif part.function_response:
-                # Estimate function response size
                 total_chars += len(part.function_response.name) * 2
                 if part.function_response.response:
-                    total_chars += len(str(dict(part.function_response.response)))
+                    total_chars += len(str(part.function_response.response))
 
         return total_chars // 4  # Rough estimate: 4 chars per token
 
@@ -229,7 +234,9 @@ class HistoryManager:
 @dataclass
 class LLMConfig:
     """Configuration for LLM client."""
+
     api_key: str
+    provider: str = "gemini"
     model: str = "gemini-2.0-flash"
     max_tokens: int = 4096
     temperature: float = 0.7
@@ -237,8 +244,8 @@ class LLMConfig:
     search_grounding: bool = False
 
 
-class GeminiAgent:
-    """Agent using Google GenAI SDK with function calling."""
+class LLMAgent:
+    """Provider-agnostic LLM agent with tool calling."""
 
     _COST_PER_MILLION_TOKENS = 0.08
     _READ_ONLY_TOOLS = {
@@ -257,14 +264,27 @@ class GeminiAgent:
     _MAX_REPEAT_DEFAULT = 1
     _WRITE_TOOLS = {"file_write", "resume_write", "file_rename"}
 
-    def __init__(self, config: LLMConfig, system_prompt: str = "", agent_id: Optional[str] = None, session_manager: Optional[Any] = None):
+    def __init__(
+        self,
+        config: LLMConfig,
+        system_prompt: str = "",
+        agent_id: Optional[str] = None,
+        session_manager: Optional[Any] = None,
+        verbose: bool = False,
+    ):
         self.config = config
         self.system_prompt = system_prompt
         self.agent_id = agent_id
-        self._resolve_api_key()
+        self.verbose = verbose
 
-        # Initialize the client
-        self.client = genai.Client(api_key=self.config.api_key)
+        # Initialize provider
+        self.provider = create_provider(
+            provider=self.config.provider,
+            api_key=self.config.api_key,
+            model=self.config.model,
+            api_base=self.config.api_base,
+            search_grounding=self.config.search_grounding,
+        )
 
         # Tools registry: name -> (function, schema)
         self._tools: Dict[str, tuple] = {}
@@ -273,7 +293,7 @@ class GeminiAgent:
         self.history_manager = HistoryManager(max_messages=50, max_tokens=100000)
 
         # Observability for logging and metrics
-        self.observer = AgentObserver(agent_id=agent_id)
+        self.observer = AgentObserver(agent_id=agent_id, verbose=verbose)
 
         # Tool result caching
         self.cache = ToolCache()
@@ -285,42 +305,9 @@ class GeminiAgent:
         # Retry configuration for LLM calls (defaults match RetryConfig dataclass)
         self._retry_config = RetryConfig()
         # Pending tool calls that require user approval
-        self._pending_tool_calls: List[Any] = []
+        self._pending_tool_calls: List[FunctionCall] = []
         # Auto-approve tool calls that require approval
         self._auto_approve_tools = False
-
-    def _resolve_api_key(self):
-        """Resolve API key with priority: env var > config file.
-
-        Priority order:
-        1. GEMINI_API_KEY environment variable
-        2. api_key from config file
-        3. Raise error if neither is set
-        """
-        # First, try environment variable (highest priority)
-        env_key = os.environ.get("GEMINI_API_KEY", "")
-        if env_key:
-            self.config.api_key = env_key
-            return
-
-        # Second, check if config has a key (not a placeholder)
-        if self.config.api_key and not self.config.api_key.startswith("${"):
-            return
-
-        # Third, try to resolve ${VAR_NAME} placeholder in config
-        if self.config.api_key.startswith("${") and self.config.api_key.endswith("}"):
-            env_var = self.config.api_key[2:-1]
-            resolved = os.environ.get(env_var, "")
-            if resolved:
-                self.config.api_key = resolved
-                return
-
-        # No valid API key found
-        raise ValueError(
-            "GEMINI_API_KEY not set. Please either:\n"
-            "  1. Set GEMINI_API_KEY environment variable, or\n"
-            "  2. Add 'api_key: your_key' to config/config.local.yaml"
-        )
 
     def register_tool(
         self,
@@ -330,64 +317,22 @@ class GeminiAgent:
         func: Callable,
     ):
         """Register a tool that the agent can use."""
-        # Convert OpenAI-style parameters to Gemini format
-        properties = {}
-        required = parameters.get("required", [])
-        
-        for prop_name, prop_def in parameters.get("properties", {}).items():
-            prop_type = prop_def.get("type", "string").upper()
-            if prop_type == "STRING":
-                prop_type = "STRING"
-            elif prop_type == "INTEGER":
-                prop_type = "INTEGER"
-            elif prop_type == "NUMBER":
-                prop_type = "NUMBER"
-            elif prop_type == "BOOLEAN":
-                prop_type = "BOOLEAN"
-            else:
-                prop_type = "STRING"
-            
-            properties[prop_name] = types.Schema(
-                type=prop_type,
-                description=prop_def.get("description", ""),
-            )
-        
-        schema = types.FunctionDeclaration(
-            name=name,
-            description=description,
-            parameters=types.Schema(
-                type="OBJECT",
-                properties=properties,
-                required=required,
-            ),
-        )
-        
+        schema = ToolSchema(name=name, description=description, parameters=parameters)
         self._tools[name] = (func, schema)
 
-    def _get_tools(self) -> Optional[List[types.Tool]]:
-        """Get tools in Gemini format."""
-        tools: List[types.Tool] = []
+    def _get_tools(self) -> Optional[List[ToolSchema]]:
+        if not self._tools:
+            return None
+        return [schema for _, (_, schema) in self._tools.items()]
 
-        if self._tools:
-            declarations = [schema for _, (_, schema) in self._tools.items()]
-            tools.append(types.Tool(function_declarations=declarations))
-
-        if self.config.search_grounding:
-            tools.append(types.Tool(google_search=types.GoogleSearch()))
-
-        return tools or None
-
-    async def run(self, user_input: str, max_steps: int = 20) -> str:
+    async def run(self, user_input: str, max_steps: int = 20, stream: bool = False, on_stream_delta: Optional[Callable[[StreamDelta], None]] = None) -> str:
         """Run the agent with user input, handling tool calls automatically."""
         # If we already have pending tool calls, ask for approval first
         if self._pending_tool_calls:
             return "Pending tool call(s) require approval. Use /approve or /reject."
 
         # Add user message to history
-        self.history_manager.add_message(types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=user_input)],
-        ))
+        self.history_manager.add_message(Message.user(user_input))
 
         # Ensure history ordering is valid before calling the model
         self.history_manager._ensure_valid_sequence()
@@ -409,7 +354,10 @@ class GeminiAgent:
 
             # 1. Call LLM
             try:
-                response = await self._call_llm()
+                if stream:
+                    response = await self._call_llm_stream(on_stream_delta=on_stream_delta)
+                else:
+                    response = await self._call_llm()
             except asyncio.CancelledError:
                 # Allow user-initiated interruption to bubble up
                 raise
@@ -423,7 +371,7 @@ class GeminiAgent:
                 return f"Error: LLM request failed: {e}"
 
             # 2. Log LLM metrics
-            self._log_llm_metrics(step, start_time)
+            self._log_llm_metrics(step, start_time, response.usage)
 
             # 3. Parse response
             function_calls, text_parts = self._parse_response(response)
@@ -435,7 +383,7 @@ class GeminiAgent:
                 for fc in function_calls:
                     tool_calls_dump.append({
                         "name": fc.name,
-                        "args": dict(fc.args) if fc.args else {},
+                        "args": dict(fc.arguments) if fc.arguments else {},
                     })
             self.observer.log_llm_response(
                 step=step,
@@ -445,18 +393,25 @@ class GeminiAgent:
             )
 
             # 5. Add model response to history
-            self.history_manager.add_message(
-                response.candidates[0].content,
-                allow_incomplete=bool(function_calls),
-            )
+            assistant_parts: List[MessagePart] = []
+            if response_text:
+                assistant_parts.append(MessagePart.from_text(response_text))
+            for fc in function_calls:
+                assistant_parts.append(MessagePart.from_function_call(fc))
+            if assistant_parts:
+                self.history_manager.add_message(
+                    Message(role="assistant", parts=assistant_parts),
+                    allow_incomplete=bool(function_calls),
+                )
 
             # 6. If no tool calls → done
             if not function_calls:
                 step_duration = (time.time() - start_time) * 1000
                 self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                self.observer.print_session_summary()
-                self.cache.print_stats()
-                return "".join(text_parts)
+                if self.verbose:
+                    self.observer.print_session_summary()
+                    self.cache.print_stats()
+                return response_text
 
             # 7. Pause before executing any write tools (approval required)
             if self._requires_tool_approval(function_calls) and not self._auto_approve_tools:
@@ -489,16 +444,17 @@ class GeminiAgent:
             )
 
             # 9. Capture last tool result for fallback
-            if len(function_calls) == 1:
-                fr = getattr(function_responses[0], "function_response", None)
-                if fr and getattr(fr, "response", None):
+            if len(function_calls) == 1 and function_responses:
+                fr = function_responses[0]
+                if fr and fr.response:
                     loop_state["last_result"] = fr.response.get("result")
 
             # 10. Update history + auto-save
-            self.history_manager.add_message(types.Content(
-                role="user",
-                parts=function_responses,
-            ))
+            tool_message = Message(
+                role="tool",
+                parts=[MessagePart.from_function_response(fr) for fr in function_responses],
+            )
+            self.history_manager.add_message(tool_message)
             if self.session_manager:
                 await self._auto_save()
 
@@ -510,32 +466,120 @@ class GeminiAgent:
 
     # --- Extracted helper methods ---
 
-    async def _call_llm(self) -> types.GenerateContentResponse:
+    async def _call_llm(self) -> LLMResponse:
         """Call LLM with retry logic."""
         async def make_request():
-            # Snapshot history to avoid concurrent mutation during cancellation
-            contents = list(self.history_manager.get_history())
-            return await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=self.config.model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_prompt if self.system_prompt else None,
-                    tools=self._get_tools(),
-                    max_output_tokens=self.config.max_tokens,
-                    temperature=self.config.temperature,
-                ),
+            messages = list(self.history_manager.get_history())
+            return await self.provider.generate(
+                messages=messages,
+                tools=self._get_tools(),
+                config=self._build_generation_config(),
             )
 
         return await retry_with_backoff(make_request, self._retry_config)
 
-    def _log_llm_metrics(self, step: int, start_time: float) -> None:
+    async def _call_llm_stream(self, on_stream_delta: Optional[Callable[[StreamDelta], None]] = None) -> LLMResponse:
+        """Call LLM with streaming and aggregate into a final response."""
+        text_chunks: List[str] = []
+        function_calls_map: Dict[str, FunctionCall] = {}
+        function_call_order: List[str] = []
+        arg_buffers: Dict[str, str] = {}
+        last_call_key: Optional[str] = None
+        transient_counter = 0
+
+        async for delta in self.provider.generate_stream(
+            messages=list(self.history_manager.get_history()),
+            tools=self._get_tools(),
+            config=self._build_generation_config(),
+        ):
+            if on_stream_delta:
+                on_stream_delta(delta)
+            if delta.text:
+                text_chunks.append(delta.text)
+
+            if delta.function_call_start:
+                call = delta.function_call_start
+                if call.id:
+                    call_key = f"id:{call.id}"
+                elif delta.function_call_id:
+                    call_key = f"id:{delta.function_call_id}"
+                elif delta.function_call_index is not None:
+                    call_key = f"idx:{delta.function_call_index}"
+                else:
+                    transient_counter += 1
+                    call_key = f"stream:{transient_counter}"
+
+                call_id = call.id or delta.function_call_id or f"tool_{int(time.time() * 1000)}_{len(function_call_order)}"
+
+                if call_key not in function_calls_map:
+                    function_calls_map[call_key] = FunctionCall(name=call.name, arguments={}, id=call_id)
+                    function_call_order.append(call_key)
+                else:
+                    existing_call = function_calls_map[call_key]
+                    if not existing_call.name and call.name:
+                        existing_call.name = call.name
+                    if not existing_call.id:
+                        existing_call.id = call_id
+
+                arg_buffers.setdefault(call_key, "")
+                last_call_key = call_key
+
+            if delta.function_call_delta:
+                if delta.function_call_id:
+                    call_key = f"id:{delta.function_call_id}"
+                elif delta.function_call_index is not None:
+                    call_key = f"idx:{delta.function_call_index}"
+                else:
+                    call_key = last_call_key
+
+                if not call_key:
+                    transient_counter += 1
+                    call_key = f"stream:{transient_counter}"
+
+                if call_key not in function_calls_map:
+                    transient_counter += 1
+                    generated_id = delta.function_call_id or f"tool_stream_{int(time.time() * 1000)}_{transient_counter}"
+                    function_calls_map[call_key] = FunctionCall(name="", arguments={}, id=generated_id)
+                    function_call_order.append(call_key)
+
+                arg_buffers[call_key] = arg_buffers.get(call_key, "") + delta.function_call_delta
+                last_call_key = call_key
+
+        # finalize function call arguments
+        function_calls: List[FunctionCall] = []
+        for call_key in function_call_order:
+            call = function_calls_map[call_key]
+            buf = arg_buffers.get(call_key, "")
+            if buf:
+                try:
+                    import json
+                    call.arguments = json.loads(buf)
+                except Exception:
+                    call.arguments = {}
+            function_calls.append(call)
+
+        return LLMResponse(
+            text="".join(text_chunks).strip(),
+            function_calls=function_calls,
+        )
+
+    def _build_generation_config(self) -> GenerationConfig:
+        return GenerationConfig(
+            system_prompt=self.system_prompt,
+            max_tokens=self.config.max_tokens,
+            temperature=self.config.temperature,
+        )
+
+    def _log_llm_metrics(self, step: int, start_time: float, usage: Optional[Dict[str, int]] = None) -> None:
         """Log LLM request metrics (tokens, cost, duration)."""
         llm_duration = (time.time() - start_time) * 1000  # Convert to ms
-        estimated_tokens = sum(
-            self.history_manager._estimate_tokens(msg)
-            for msg in self.history_manager.get_history()
-        )
+        if usage and usage.get("total_tokens") is not None:
+            estimated_tokens = int(usage.get("total_tokens") or 0)
+        else:
+            estimated_tokens = sum(
+                self.history_manager._estimate_tokens(msg)
+                for msg in self.history_manager.get_history()
+            )
         estimated_cost = (estimated_tokens / 1_000_000) * self._COST_PER_MILLION_TOKENS
         self.observer.log_llm_request(
             model=self.config.model,
@@ -546,29 +590,12 @@ class GeminiAgent:
             agent_id=self.agent_id,
         )
 
-    def _parse_response(self, response) -> tuple[list, list[str]]:
-        """Parse LLM response into function_calls and text_parts.
+    def _parse_response(self, response: LLMResponse) -> tuple[list, list[str]]:
+        """Parse LLM response into function_calls and text_parts."""
+        function_calls = response.function_calls or []
+        text_parts = [response.text] if response.text else []
 
-        Raises TransientError if response is empty.
-        """
-        if not response.candidates:
-            raise TransientError("Empty LLM response: no candidates")
-
-        candidate = response.candidates[0]
-        parts = []
-        if candidate.content and candidate.content.parts:
-            parts = candidate.content.parts
-
-        function_calls = []
-        text_parts = []
-
-        for part in parts:
-            if part.function_call:
-                function_calls.append(part.function_call)
-            elif part.text:
-                text_parts.append(part.text)
-
-        if not parts or (not function_calls and not text_parts):
+        if not function_calls and not text_parts:
             raise TransientError("Empty LLM response: no text or tool calls")
 
         return function_calls, text_parts
@@ -590,7 +617,7 @@ class GeminiAgent:
         if tool_only and len(function_calls) == 1:
             current_call = {
                 "name": function_calls[0].name,
-                "args": dict(function_calls[0].args) if function_calls[0].args else {},
+                "args": dict(function_calls[0].arguments) if function_calls[0].arguments else {},
             }
             if state["last_call"] == current_call:
                 state["same_call_repeats"] += 1
@@ -643,7 +670,7 @@ class GeminiAgent:
         for fc in self._pending_tool_calls:
             pending.append({
                 "name": fc.name,
-                "args": dict(fc.args) if getattr(fc, "args", None) else {},
+                "args": dict(fc.arguments) if getattr(fc, "arguments", None) else {},
             })
         return pending
 
@@ -659,21 +686,20 @@ class GeminiAgent:
         )
 
         # Add function responses to history for continuity
-        self.history_manager.add_message(types.Content(
-            role="user",
-            parts=responses,
-        ))
+        tool_message = Message(
+            role="tool",
+            parts=[MessagePart.from_function_response(fr) for fr in responses],
+        )
+        self.history_manager.add_message(tool_message)
         if self.session_manager:
             await self._auto_save()
 
         results = []
-        for part in responses:
-            fr = getattr(part, "function_response", None)
-            if fr:
-                results.append({
-                    "name": fr.name,
-                    "result": fr.response.get("result") if getattr(fr, "response", None) else "",
-                })
+        for fr in responses:
+            results.append({
+                "name": fr.name,
+                "result": fr.response.get("result") if getattr(fr, "response", None) else "",
+            })
         return results
 
     def reject_pending_tool_calls(self) -> int:
@@ -681,10 +707,10 @@ class GeminiAgent:
         self._pending_tool_calls = []
         return count
 
-    async def _execute_tool(self, fc) -> types.Part:
+    async def _execute_tool(self, fc: FunctionCall) -> FunctionResponse:
         """Execute a single tool call, with caching and observability."""
         func_name = fc.name
-        func_args = dict(fc.args) if fc.args else {}
+        func_args = dict(fc.arguments) if fc.arguments else {}
 
         tool_start_time = time.time()
         success = True
@@ -764,9 +790,10 @@ class GeminiAgent:
             agent_id=self.agent_id,
         )
 
-        return types.Part.from_function_response(
+        return FunctionResponse(
             name=func_name,
             response={"result": result_str},
+            call_id=fc.id,
         )
 
     async def _auto_save(self):
@@ -775,19 +802,24 @@ class GeminiAgent:
             try:
                 # Get the agent instance (passed from parent)
                 # This will be set by ResumeAgent or OrchestratorAgent
-                if hasattr(self, '_parent_agent'):
+                if hasattr(self, "_parent_agent"):
                     self.current_session_id = self.session_manager.save_session(
                         agent=self._parent_agent,
                         session_id=self.current_session_id,
                     )
             except Exception as e:
                 # Don't crash on auto-save failure
-                print(f"Warning: Auto-save failed: {e}")
+                if self.verbose:
+                    print(f"Warning: Auto-save failed: {e}")
 
     def reset(self):
         """Reset conversation history."""
         self.history_manager.clear()
         self.current_session_id = None
+
+
+# Backwards compatibility
+GeminiAgent = LLMAgent
 
 
 def load_raw_config(config_path: str = "config/config.local.yaml") -> dict:
@@ -827,6 +859,7 @@ def load_config(config_path: str = "config/config.local.yaml") -> LLMConfig:
 
     config = LLMConfig(
         api_key=data.get("api_key", ""),
+        provider=data.get("provider", "gemini"),
         model=data.get("model", "gemini-2.0-flash"),
         max_tokens=data.get("max_tokens", 4096),
         temperature=data.get("temperature", 0.7),

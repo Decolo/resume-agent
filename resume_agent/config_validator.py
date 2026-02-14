@@ -8,6 +8,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .providers import PROVIDER_DEFAULTS
+
 
 class Severity(Enum):
     ERROR = "error"
@@ -34,13 +36,37 @@ def validate_config(raw_config: Dict[str, Any], workspace_dir: str = ".") -> Lis
     """
     errors: List[ConfigError] = []
 
+    # --- Provider ---
+    provider = raw_config.get("provider", "gemini")
+    if not isinstance(provider, str) or not provider:
+        errors.append(ConfigError(
+            field="provider",
+            message="provider must be a non-empty string",
+            severity=Severity.ERROR,
+        ))
+        provider = "gemini"
+    provider = provider.lower()
+
     # --- API Key ---
-    api_key = _resolve_api_key_value(raw_config.get("api_key", ""))
+    env_key = PROVIDER_DEFAULTS.get(provider, {}).get("env_key", "")
+    api_key = _resolve_api_key_value(raw_config.get("api_key", ""), env_key)
     if not api_key:
+        message = (
+            f"{env_key} not set. Set the env var or add api_key to config/config.local.yaml"
+            if env_key else
+            "API key not set. Set the env var or add api_key to config/config.local.yaml"
+        )
         errors.append(ConfigError(
             field="api_key",
-            message="GEMINI_API_KEY not set. Set the env var or add api_key to config/config.local.yaml",
+            message=message,
             severity=Severity.ERROR,
+        ))
+
+    if provider not in PROVIDER_DEFAULTS:
+        errors.append(ConfigError(
+            field="provider",
+            message=f"Unknown provider '{provider}'. Expected one of: {', '.join(PROVIDER_DEFAULTS.keys())}",
+            severity=Severity.WARNING,
         ))
 
     # --- Model ---
@@ -94,15 +120,16 @@ def validate_config(raw_config: Dict[str, Any], workspace_dir: str = ".") -> Lis
     return errors
 
 
-def _resolve_api_key_value(config_api_key: str) -> str:
+def _resolve_api_key_value(config_api_key: str, env_key: str = "") -> str:
     """Resolve API key from env or config value without side effects.
 
     Returns the resolved key string, or empty string if unresolvable.
     """
     # Env var takes priority
-    env_key = os.environ.get("GEMINI_API_KEY", "")
     if env_key:
-        return env_key
+        env_value = os.environ.get(env_key, "")
+        if env_value:
+            return env_value
 
     if not config_api_key:
         return ""

@@ -9,7 +9,7 @@ from .protocol import AgentTask, AgentResult, create_result
 from ..skills.parser_prompt import PARSER_AGENT_PROMPT
 
 if TYPE_CHECKING:
-    from ..llm import GeminiAgent
+    from ..llm import LLMAgent
     from ..observability import AgentObserver
 
 
@@ -31,7 +31,7 @@ class ParserAgent(BaseAgent):
         self,
         agent_id: str = "parser_agent",
         config: Optional[AgentConfig] = None,
-        llm_agent: Optional[GeminiAgent] = None,
+        llm_agent: Optional[LLMAgent] = None,
         observer: Optional[AgentObserver] = None,
     ):
         """Initialize the parser agent.

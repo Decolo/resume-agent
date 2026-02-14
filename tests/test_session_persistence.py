@@ -4,15 +4,15 @@ import json
 import pytest
 from pathlib import Path
 from datetime import datetime
-from google.genai import types
 
 from resume_agent.session import (
     SessionSerializer,
     SessionManager,
     SessionIndex,
 )
-from resume_agent.llm import HistoryManager, GeminiAgent, LLMConfig
+from resume_agent.llm import HistoryManager, LLMAgent, LLMConfig
 from resume_agent.observability import AgentObserver, AgentEvent
+from resume_agent.providers.types import Message, MessagePart, FunctionCall, FunctionResponse
 
 
 class TestSessionSerializer:
@@ -20,10 +20,7 @@ class TestSessionSerializer:
 
     def test_serialize_text_message(self):
         """Test serializing a text message."""
-        msg = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text="Hello, world!")]
-        )
+        msg = Message(role="user", parts=[MessagePart.from_text("Hello, world!")])
 
         serialized = SessionSerializer.serialize_message(msg)
 
@@ -34,17 +31,18 @@ class TestSessionSerializer:
 
     def test_serialize_function_call(self):
         """Test serializing a function call message."""
-        msg = types.Content(
-            role="model",
-            parts=[types.Part.from_function_call(
-                name="file_read",
-                args={"file_path": "test.txt"}
-            )]
+        msg = Message(
+            role="assistant",
+            parts=[
+                MessagePart.from_function_call(
+                    FunctionCall(name="file_read", arguments={"file_path": "test.txt"})
+                )
+            ],
         )
 
         serialized = SessionSerializer.serialize_message(msg)
 
-        assert serialized["role"] == "model"
+        assert serialized["role"] == "assistant"
         assert len(serialized["parts"]) == 1
         assert serialized["parts"][0]["type"] == "function_call"
         assert serialized["parts"][0]["name"] == "file_read"
@@ -52,17 +50,18 @@ class TestSessionSerializer:
 
     def test_serialize_function_response(self):
         """Test serializing a function response message."""
-        msg = types.Content(
-            role="user",
-            parts=[types.Part.from_function_response(
-                name="file_read",
-                response={"result": "File contents"}
-            )]
+        msg = Message(
+            role="tool",
+            parts=[
+                MessagePart.from_function_response(
+                    FunctionResponse(name="file_read", response={"result": "File contents"})
+                )
+            ],
         )
 
         serialized = SessionSerializer.serialize_message(msg)
 
-        assert serialized["role"] == "user"
+        assert serialized["role"] == "tool"
         assert len(serialized["parts"]) == 1
         assert serialized["parts"][0]["type"] == "function_response"
         assert serialized["parts"][0]["name"] == "file_read"
@@ -85,7 +84,7 @@ class TestSessionSerializer:
     def test_deserialize_function_call(self):
         """Test deserializing a function call message."""
         data = {
-            "role": "model",
+            "role": "assistant",
             "parts": [
                 {
                     "type": "function_call",
@@ -97,22 +96,16 @@ class TestSessionSerializer:
 
         msg = SessionSerializer.deserialize_message(data)
 
-        assert msg.role == "model"
+        assert msg.role == "assistant"
         assert len(msg.parts) == 1
         assert msg.parts[0].function_call.name == "file_read"
-        assert dict(msg.parts[0].function_call.args)["file_path"] == "test.txt"
+        assert dict(msg.parts[0].function_call.arguments)["file_path"] == "test.txt"
 
     def test_serialize_history(self):
         """Test serializing conversation history."""
         history_manager = HistoryManager(max_messages=50, max_tokens=100000)
-        history_manager.add_message(types.Content(
-            role="user",
-            parts=[types.Part.from_text(text="Hello")]
-        ))
-        history_manager.add_message(types.Content(
-            role="model",
-            parts=[types.Part.from_text(text="Hi there!")]
-        ))
+        history_manager.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
+        history_manager.add_message(Message(role="assistant", parts=[MessagePart.from_text("Hi there!")]))
 
         serialized = SessionSerializer.serialize_history(history_manager)
 
@@ -129,7 +122,7 @@ class TestSessionSerializer:
                     "parts": [{"type": "text", "content": "Hello"}]
                 },
                 {
-                    "role": "model",
+                    "role": "assistant",
                     "parts": [{"type": "text", "content": "Hi there!"}]
                 }
             ],
@@ -142,7 +135,7 @@ class TestSessionSerializer:
         assert len(messages) == 2
         assert messages[0].role == "user"
         assert messages[0].parts[0].text == "Hello"
-        assert messages[1].role == "model"
+        assert messages[1].role == "assistant"
         assert messages[1].parts[0].text == "Hi there!"
 
     def test_serialize_observability(self):
@@ -260,17 +253,11 @@ class TestSessionManager:
         """Test saving and loading a session."""
         # Create a mock agent with history
         config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
-        agent = GeminiAgent(config=config, system_prompt="Test prompt")
+        agent = LLMAgent(config=config, system_prompt="Test prompt")
 
         # Add some history
-        agent.history_manager.add_message(types.Content(
-            role="user",
-            parts=[types.Part.from_text(text="Hello")]
-        ))
-        agent.history_manager.add_message(types.Content(
-            role="model",
-            parts=[types.Part.from_text(text="Hi there!")]
-        ))
+        agent.history_manager.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
+        agent.history_manager.add_message(Message(role="assistant", parts=[MessagePart.from_text("Hi there!")]))
 
         # Create a mock parent agent
         class MockAgent:
@@ -298,7 +285,7 @@ class TestSessionManager:
     def test_list_sessions(self, tmp_path):
         """Test listing sessions."""
         config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
-        agent = GeminiAgent(config=config, system_prompt="Test prompt")
+        agent = LLMAgent(config=config, system_prompt="Test prompt")
 
         class MockAgent:
             def __init__(self):
@@ -313,10 +300,7 @@ class TestSessionManager:
         # Save multiple sessions
         session_ids = []
         for i in range(3):
-            agent.history_manager.add_message(types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=f"Message {i}")]
-            ))
+            agent.history_manager.add_message(Message(role="user", parts=[MessagePart.from_text(f"Message {i}")]))
             session_id = session_manager.save_session(mock_agent)
             session_ids.append(session_id)
 
@@ -327,7 +311,7 @@ class TestSessionManager:
     def test_delete_session(self, tmp_path):
         """Test deleting a session."""
         config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
-        agent = GeminiAgent(config=config, system_prompt="Test prompt")
+        agent = LLMAgent(config=config, system_prompt="Test prompt")
 
         class MockAgent:
             def __init__(self):
@@ -351,17 +335,11 @@ class TestSessionManager:
     def test_restore_agent_state(self, tmp_path):
         """Test restoring agent state from session."""
         config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
-        agent = GeminiAgent(config=config, system_prompt="Test prompt")
+        agent = LLMAgent(config=config, system_prompt="Test prompt")
 
         # Add history
-        agent.history_manager.add_message(types.Content(
-            role="user",
-            parts=[types.Part.from_text(text="Hello")]
-        ))
-        agent.history_manager.add_message(types.Content(
-            role="model",
-            parts=[types.Part.from_text(text="Hi there!")]
-        ))
+        agent.history_manager.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
+        agent.history_manager.add_message(Message(role="assistant", parts=[MessagePart.from_text("Hi there!")]))
 
         class MockAgent:
             def __init__(self):
@@ -376,7 +354,7 @@ class TestSessionManager:
         session_id = session_manager.save_session(mock_agent)
 
         # Create new agent and restore
-        new_agent = GeminiAgent(config=config, system_prompt="Test prompt")
+        new_agent = LLMAgent(config=config, system_prompt="Test prompt")
         new_mock_agent = MockAgent()
         new_mock_agent.agent = new_agent
 
@@ -388,5 +366,5 @@ class TestSessionManager:
         assert len(restored_history) == 2
         assert restored_history[0].role == "user"
         assert restored_history[0].parts[0].text == "Hello"
-        assert restored_history[1].role == "model"
+        assert restored_history[1].role == "assistant"
         assert restored_history[1].parts[0].text == "Hi there!"

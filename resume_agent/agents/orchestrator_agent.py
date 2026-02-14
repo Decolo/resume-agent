@@ -9,7 +9,7 @@ from .protocol import AgentTask, AgentResult, create_result
 from ..skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
 
 if TYPE_CHECKING:
-    from ..llm import GeminiAgent
+    from ..llm import LLMAgent
     from ..observability import AgentObserver
     from .delegation import DelegationManager
     from .registry import AgentRegistry
@@ -41,7 +41,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         agent_id: str = "orchestrator_agent",
         config: Optional[AgentConfig] = None,
-        llm_agent: Optional[GeminiAgent] = None,
+        llm_agent: Optional[LLMAgent] = None,
         observer: Optional[AgentObserver] = None,
         registry: Optional[AgentRegistry] = None,
         delegation_manager: Optional[DelegationManager] = None,

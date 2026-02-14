@@ -164,7 +164,7 @@ Files are saved to `exports/conversation_YYYYMMDD_HHMMSS[_verbose].{ext}`
 
 
 def _get_llm_agents(agent: Union[ResumeAgent, OrchestratorAgent]):
-    """Return list of GeminiAgent instances for pending tool approvals."""
+    """Return list of LLMAgent instances for pending tool approvals."""
     from .agent_factory import AutoAgent
     agents = []
     if isinstance(agent, AutoAgent):
@@ -631,7 +631,7 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
         elif isinstance(agent, OrchestratorAgent):
             llm_agent = agent.llm_agent
         else:
-            llm_agent = agent.agent  # ResumeAgent uses self.agent for GeminiAgent
+            llm_agent = agent.agent  # ResumeAgent uses self.agent for LLMAgent
 
         if not llm_agent or not llm_agent.history_manager:
             console.print("No conversation history available.", style="yellow")
@@ -669,19 +669,21 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                 }
                 if msg.parts:
                     for part in msg.parts:
-                        if hasattr(part, 'text') and part.text:
+                        if part.text:
                             msg_data["parts"].append({"type": "text", "content": part.text})
-                        elif hasattr(part, 'function_call') and part.function_call:
+                        elif part.function_call:
                             msg_data["parts"].append({
                                 "type": "function_call",
                                 "name": part.function_call.name,
-                                "args": dict(part.function_call.args) if part.function_call.args else {}
+                                "args": dict(part.function_call.arguments) if part.function_call.arguments else {},
+                                "id": part.function_call.id,
                             })
-                        elif hasattr(part, 'function_response') and part.function_response:
+                        elif part.function_response:
                             msg_data["parts"].append({
                                 "type": "function_response",
                                 "name": part.function_response.name,
-                                "response": str(part.function_response.response)
+                                "response": part.function_response.response,
+                                "call_id": part.function_response.call_id,
                             })
                 export_data["messages"].append(msg_data)
 
@@ -707,18 +709,18 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
         elif format_type == "text":
             lines = []
             for msg in history:
-                role_label = "User" if msg.role == "user" else "Assistant" if msg.role == "model" else "Tool"
+                role_label = "User" if msg.role == "user" else "Assistant" if msg.role == "assistant" else "Tool"
                 lines.append(f"\n{'='*60}")
                 lines.append(f"{role_label}:")
                 lines.append('='*60)
 
                 if msg.parts:
                     for part in msg.parts:
-                        if hasattr(part, 'text') and part.text:
+                        if part.text:
                             lines.append(part.text)
-                        elif hasattr(part, 'function_call') and part.function_call:
+                        elif part.function_call:
                             lines.append(f"[Tool Call: {part.function_call.name}]")
-                        elif hasattr(part, 'function_response') and part.function_response:
+                        elif part.function_response:
                             lines.append(f"[Tool Response: {part.function_response.name}]")
 
             # Add observability events if verbose
@@ -774,18 +776,18 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
             for msg in history:
                 if msg.role == "user":
                     lines.append("## 👤 User\n")
-                elif msg.role == "model":
+                elif msg.role == "assistant":
                     lines.append("## 🤖 Assistant\n")
                 else:
                     lines.append("## 🔧 Tool\n")
 
                 if msg.parts:
                     for part in msg.parts:
-                        if hasattr(part, 'text') and part.text:
+                        if part.text:
                             lines.append(part.text + "\n")
-                        elif hasattr(part, 'function_call') and part.function_call:
+                        elif part.function_call:
                             lines.append(f"**Tool Call:** `{part.function_call.name}`\n")
-                        elif hasattr(part, 'function_response') and part.function_response:
+                        elif part.function_response:
                             lines.append(f"**Tool Response:** `{part.function_response.name}`\n")
 
                 lines.append("---\n")
@@ -1026,8 +1028,8 @@ async def run_interactive(agent: Union[ResumeAgent, OrchestratorAgent], session_
                     await esc_future
 
                 response = await agent_task
-                console.print("\n🤖 Assistant:", style="bold green")
-                console.print(Markdown(response))
+                console.print()
+                console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
 
                 # Auto-prompt if tool approvals are pending
                 if _list_pending_tool_calls(agent):
@@ -1074,13 +1076,8 @@ def main():
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        default=True,
-        help="Verbose output (show tool executions)",
-    )
-    parser.add_argument(
-        "--quiet", "-q",
-        action="store_true",
-        help="Quiet mode (minimal output)",
+        default=False,
+        help="Verbose output (show tool executions, session summary, cache stats)",
     )
     parser.add_argument(
         "--multi-agent", "-m",
@@ -1137,7 +1134,7 @@ def main():
         # Force single-agent mode
         agent_config = AgentConfig(
             workspace_dir=args.workspace,
-            verbose=not args.quiet,
+            verbose=args.verbose,
         )
         session_manager = SessionManager(args.workspace)
         agent = ResumeAgent(llm_config=llm_config, agent_config=agent_config, session_manager=session_manager)
@@ -1148,6 +1145,7 @@ def main():
             llm_config=llm_config,
             workspace_dir=args.workspace,
             session_manager=session_manager,
+            verbose=args.verbose,
         )
         # Ensure it's multi-agent
         if isinstance(agent, ResumeAgent):
@@ -1159,6 +1157,7 @@ def main():
             llm_config=llm_config,
             workspace_dir=args.workspace,
             session_manager=session_manager,
+            verbose=args.verbose,
         )
 
     # Run
@@ -1169,7 +1168,7 @@ def main():
                 response = await agent.run(args.prompt)
             else:
                 response = await agent.run(args.prompt)
-            console.print(Markdown(response))
+            console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
 
             if _list_pending_tool_calls(agent):
                 import sys

@@ -41,7 +41,7 @@ def mock_agent():
 
     # Mock assistant message
     assistant_msg = Mock()
-    assistant_msg.role = "model"
+    assistant_msg.role = "assistant"
     assistant_msg.parts = [Mock(text="Hi there!", function_call=None, function_response=None)]
     mock_history.append(assistant_msg)
 
@@ -87,7 +87,7 @@ def test_export_markdown_verbose_format(mock_agent):
     for msg in history:
         if msg.role == "user":
             lines.append("## 👤 User\n")
-        elif msg.role == "model":
+        elif msg.role == "assistant":
             lines.append("## 🤖 Assistant\n")
 
         if msg.parts:

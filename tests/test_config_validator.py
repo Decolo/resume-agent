@@ -20,6 +20,7 @@ class TestValidateConfig:
         """Return a minimal valid config."""
         return {
             "api_key": "test-key-123",
+            "provider": "gemini",
             "model": "gemini-2.5-flash",
             "temperature": 0.7,
             "max_tokens": 4096,
@@ -124,23 +125,23 @@ class TestResolveApiKeyValue:
 
     @patch.dict(os.environ, {"GEMINI_API_KEY": "env-key"}, clear=True)
     def test_env_var_priority(self):
-        assert _resolve_api_key_value("config-key") == "env-key"
+        assert _resolve_api_key_value("config-key", "GEMINI_API_KEY") == "env-key"
 
     @patch.dict(os.environ, {}, clear=True)
     def test_config_key_fallback(self):
-        assert _resolve_api_key_value("config-key") == "config-key"
+        assert _resolve_api_key_value("config-key", "GEMINI_API_KEY") == "config-key"
 
     @patch.dict(os.environ, {}, clear=True)
     def test_empty_returns_empty(self):
-        assert _resolve_api_key_value("") == ""
+        assert _resolve_api_key_value("", "GEMINI_API_KEY") == ""
 
     @patch.dict(os.environ, {"MY_KEY": "resolved"}, clear=True)
     def test_placeholder_resolved(self):
-        assert _resolve_api_key_value("${MY_KEY}") == "resolved"
+        assert _resolve_api_key_value("${MY_KEY}", "GEMINI_API_KEY") == "resolved"
 
     @patch.dict(os.environ, {}, clear=True)
     def test_placeholder_unresolved(self):
-        assert _resolve_api_key_value("${MISSING_KEY}") == ""
+        assert _resolve_api_key_value("${MISSING_KEY}", "GEMINI_API_KEY") == ""
 
 
 class TestHasErrors:

@@ -8,9 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from google.genai import types
-
-from .llm import HistoryManager, GeminiAgent
+from .llm import HistoryManager
+from .providers.types import Message, MessagePart, FunctionCall, FunctionResponse
 from .observability import AgentObserver, AgentEvent
 
 
@@ -18,8 +17,8 @@ class SessionSerializer:
     """Serialize/deserialize agent state to/from JSON."""
 
     @staticmethod
-    def serialize_message(msg: types.Content) -> dict:
-        """Convert Gemini types.Content to JSON dict.
+    def serialize_message(msg: Message) -> dict:
+        """Convert Message to JSON dict.
 
         Pattern from cli.py /export command (lines 266-287).
         """
@@ -27,60 +26,75 @@ class SessionSerializer:
 
         if msg.parts:
             for part in msg.parts:
-                if hasattr(part, 'text') and part.text:
+                if part.text:
                     msg_data["parts"].append({
                         "type": "text",
                         "content": part.text
                     })
-                elif hasattr(part, 'function_call') and part.function_call:
+                elif part.function_call:
                     msg_data["parts"].append({
                         "type": "function_call",
                         "name": part.function_call.name,
-                        "args": dict(part.function_call.args) if part.function_call.args else {}
+                        "args": dict(part.function_call.arguments) if part.function_call.arguments else {},
+                        "id": part.function_call.id,
                     })
-                elif hasattr(part, 'function_response') and part.function_response:
+                elif part.function_response:
                     # Serialize function response - store the actual response dict
                     response_value = part.function_response.response
-                    # If response is a dict-like object, convert to dict
-                    if hasattr(response_value, '__dict__'):
-                        response_value = dict(response_value)
-                    elif not isinstance(response_value, dict):
+                    if not isinstance(response_value, dict):
                         # If it's not a dict, convert to string and wrap
                         response_value = str(response_value)
 
                     msg_data["parts"].append({
                         "type": "function_response",
                         "name": part.function_response.name,
-                        "response": response_value
+                        "response": response_value,
+                        "call_id": part.function_response.call_id,
                     })
 
         return msg_data
 
     @staticmethod
-    def deserialize_message(data: dict) -> types.Content:
-        """Reconstruct types.Content from JSON dict."""
-        parts = []
+    def deserialize_message(data: dict) -> Message:
+        """Reconstruct Message from JSON dict."""
+        parts: List[MessagePart] = []
 
         for part_data in data.get("parts", []):
             if part_data["type"] == "text":
-                parts.append(types.Part.from_text(text=part_data["content"]))
+                parts.append(MessagePart.from_text(text=part_data["content"]))
             elif part_data["type"] == "function_call":
-                parts.append(types.Part.from_function_call(
-                    name=part_data["name"],
-                    args=part_data["args"]
-                ))
+                parts.append(
+                    MessagePart.from_function_call(
+                        FunctionCall(
+                            name=part_data["name"],
+                            arguments=part_data.get("args", {}) or {},
+                            id=part_data.get("id"),
+                        )
+                    )
+                )
             elif part_data["type"] == "function_response":
                 # Function response expects a dict, not a string
                 response_data = part_data["response"]
                 if isinstance(response_data, str):
                     # If it's a string, wrap it in a dict
                     response_data = {"result": response_data}
-                parts.append(types.Part.from_function_response(
-                    name=part_data["name"],
-                    response=response_data
-                ))
+                parts.append(
+                    MessagePart.from_function_response(
+                        FunctionResponse(
+                            name=part_data["name"],
+                            response=response_data,
+                            call_id=part_data.get("call_id"),
+                        )
+                    )
+                )
 
-        return types.Content(role=data["role"], parts=parts)
+        role = data.get("role", "user")
+        if role == "model":
+            role = "assistant"
+        if role == "user" and any(part.function_response for part in parts):
+            role = "tool"
+
+        return Message(role=role, parts=parts)
 
     @staticmethod
     def serialize_history(history_manager: HistoryManager) -> dict:
@@ -95,7 +109,7 @@ class SessionSerializer:
         }
 
     @staticmethod
-    def deserialize_history(data: dict) -> List[types.Content]:
+    def deserialize_history(data: dict) -> List[Message]:
         """Deserialize conversation history."""
         return [
             SessionSerializer.deserialize_message(msg_data)
@@ -472,4 +486,3 @@ class SessionManager:
                         success=record_data.get("success"),
                     )
                     actual_agent.delegation_manager._delegation_history.append(record)
-

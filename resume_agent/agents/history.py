@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from google.genai import types
     from ..llm import HistoryManager
+    from ..providers.types import Message
 
 
 @dataclass
@@ -86,7 +86,7 @@ class MultiAgentHistoryManager:
 
         return self._master_history
 
-    def add_to_agent(self, agent_id: str, message: types.Content) -> None:
+    def add_to_agent(self, agent_id: str, message: Message) -> None:
         """Add a message to an agent's history.
 
         Args:
@@ -96,7 +96,7 @@ class MultiAgentHistoryManager:
         history = self.get_agent_history(agent_id)
         history.add_message(message)
 
-    def add_to_master(self, message: types.Content) -> None:
+    def add_to_master(self, message: Message) -> None:
         """Add a message to the master history.
 
         Args:
