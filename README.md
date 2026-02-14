@@ -14,9 +14,9 @@ An AI-powered resume modification agent built on open-source LLM agent technolog
 
 Complete documentation is available in the `/docs` directory:
 
-- **[Quick Start](./docs/quick-start.md)** - Get running in 3 steps
-- **[Getting Started Guide](./docs/getting-started.md)** - Comprehensive setup and configuration
-- **[How to Run](./docs/how-to-run.md)** - Multiple ways to launch the agent
+- **[Environment Setup](./docs/setup/environment-setup.md)** - API keys and local config
+- **[Session Persistence](./docs/sessions/session-persistence.md)** - Save and restore sessions
+- **[Export History](./docs/usage/export-history.md)** - Save or copy conversation history
 - **[Architecture Overview](./.claude/CLAUDE.md)** - System design and components (Claude Code instructions)
 - **[Phase 1 Improvements](./docs/architecture/phase1-improvements.md)** - Technical improvements
 - **[API Reference](./docs/api-reference/phase1-quick-reference.md)** - Code examples and API usage
@@ -57,7 +57,7 @@ uv run python -m resume_agent.cli
 uv run resume-agent --prompt "Parse my resume and analyze it"
 ```
 
-For detailed instructions, see [Quick Start Guide](./docs/quick-start.md).
+For detailed instructions, see [Documentation Index](./docs/README.md).
 
 ## Usage Examples
 

@@ -1,214 +1,84 @@
 # Resume Agent Documentation
 
-Welcome to the Resume Agent documentation! This guide will help you get started with the AI-powered resume modification assistant.
+This index organizes the docs by task so you can find things quickly.
 
-## 📚 Documentation Structure
+## Start Here
+- **[Environment Setup](./setup/environment-setup.md)** - Configure API keys and local config
+- **[Session Persistence](./sessions/session-persistence.md)** - Save and restore sessions
+- **[Export History](./usage/export-history.md)** - Save or copy conversation history
 
-### Getting Started
-- **[Quick Start](./quick-start.md)** - Get up and running in 3 steps
-- **[Getting Started Guide](./getting-started.md)** - Comprehensive setup and configuration
-- **[How to Run](./how-to-run.md)** - Multiple ways to launch the agent
+## Structure
 
-### Architecture & Development
-- **[Architecture Overview](../.claude/CLAUDE.md)** - System design and components (Claude Code instructions)
-- **[Phase 1 Improvements](./architecture/phase1-improvements.md)** - Detailed technical improvements
+### Setup
+- **[Environment Setup](./setup/environment-setup.md)** - API keys and config priority
+
+### Usage
+- **[Export History](./usage/export-history.md)** - Export conversation history
+- **[Export Verbose Example](./usage/export-verbose-example.md)** - Sample verbose export output
+
+### Sessions
+- **[Session Persistence](./sessions/session-persistence.md)** - Save/load sessions and architecture
+
+### Reference
 - **[API Reference](./api-reference/phase1-quick-reference.md)** - Code examples and API usage
+- **[Web API v1 Contract](./api-reference/web-api-v1.md)** - Headless web backend API contract
+- **[SSE Event Contract v1](./api-reference/sse-events-v1.md)** - Streaming event schema
 
-### Workspace & Examples
-- **Examples Folder** - Sample resumes and outputs live in `../examples/`
+### Architecture
+- **[Phase 1 Improvements](./architecture/phase1-improvements.md)** - Technical improvements
+- **[Run State Machine v1](./architecture/run-state-machine.md)** - Run/approval lifecycle and transitions
 
----
+### Learn
+- **[Event Loop & Async Patterns](./learn/event-loop-async-patterns.md)** - Async concepts and patterns
 
-## 🚀 Quick Navigation
+### Research
+- (Archived) Vercel AI SDK analysis moved to `./archive/research/`
 
-### I want to...
+### Product
+- **[Productization Checklist](./product/productization-checklist.md)** - Product readiness notes
 
-**Start using the agent immediately**
-→ Go to [Quick Start](./quick-start.md)
+### Plans
+- **[Web Productization Roadmap v2](./plans/web-productization-roadmap-v2.md)** - Active execution roadmap
+- **[Web Productization Implementation Checklist](./plans/web-productization-implementation-checklist.md)** - Week-by-week and module checklist
+- **[Web Phase 1 Acceptance](./plans/web-phase1-acceptance.md)** - Integration acceptance scenarios
+- **[Product Direction Ideas](./plans/product-direction-ideas.md)** - Active exploration notes
 
-**Understand how to set up and configure**
-→ Go to [Getting Started Guide](./getting-started.md)
+### Archive
+- **[Archive Index](./archive/README.md)** - Completed or outdated docs retained for reference
 
-**Learn about different ways to run the agent**
-→ Go to [How to Run](./how-to-run.md)
+## Doc Lifecycle Rules
 
-**Understand the system architecture**
-→ Go to [Architecture Overview](../.claude/CLAUDE.md)
+- Keep only authoritative, currently-used guides in active folders.
+- Move completed design docs and one-off implementation notes into `docs/archive/`.
+- Keep troubleshooting content in archive unless it reflects current behavior and is actively maintained.
 
-**Learn about Phase 1 improvements (retry, caching, etc.)**
-→ Go to [Phase 1 Improvements](./architecture/phase1-improvements.md)
-
-**See code examples and API usage**
-→ Go to [API Reference](./api-reference/phase1-quick-reference.md)
-
-**Use the example workspace with your resume**
-→ See the `../examples/` folder for sample inputs
-
----
-
-## 📋 What is Resume Agent?
-
-Resume Agent is an AI-powered assistant that helps you:
-
-- **Parse** resumes in multiple formats (PDF, DOCX, Markdown, JSON, TXT)
-- **Analyze** your resume for strengths and weaknesses
-- **Improve** content with stronger action verbs and metrics
-- **Tailor** your resume for specific job positions
-- **Convert** between different formats (HTML, JSON, Markdown)
-- **Save** multiple versions for different applications
-
-### Supported Formats
-
-**Input:** PDF, DOCX, Markdown, TXT, JSON
-**Output:** Markdown, HTML, JSON, TXT
-
----
-
-## ⚡ Phase 1 Features
-
-The agent now includes powerful improvements:
-
-1. **Automatic Retry Logic** - Handles temporary failures gracefully
-2. **Parallel Execution** - Multiple operations run concurrently (2-3x faster)
-3. **Smart Caching** - Remembers previous results (10x+ faster for repeated ops)
-4. **History Management** - Automatic conversation pruning
-5. **Structured Observability** - Detailed logging and session statistics
-6. **Enhanced Security** - File size limits, binary detection, command blocklist
-
----
-
-## 🎯 Common Workflows
-
-### Workflow 1: Analyze and Improve
-```
-1. Parse your resume
-2. Get analysis and feedback
-3. Improve specific sections
-4. Save the improved version
-```
-
-### Workflow 2: Tailor for Job
-```
-1. Parse your resume
-2. Provide job description
-3. Tailor resume for the role
-4. Save tailored version
-```
-
-### Workflow 3: Format Conversion
-```
-1. Parse your resume
-2. Convert to desired format
-3. Save in new format
-```
-
----
-
-## 🔧 Available Commands
+## CLI Commands (Quick View)
 
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands and example prompts |
-| `/files` | List all files in workspace |
 | `/reset` | Clear conversation history |
+| `/save [name]` | Save current session (optional custom name) |
+| `/load [number]` | Load a saved session (shows picker if no number) |
+| `/sessions` | List all saved sessions with numbers |
+| `/delete-session <number>` | Delete a saved session by number |
+| `/files` | List all files in workspace |
 | `/config` | Show current configuration |
+| `/export [target] [format]` | Export conversation history |
+| `/approve` | Approve pending tool call(s) |
+| `/reject` | Reject pending tool call(s) |
+| `/pending` | List pending tool approvals |
+| `/auto-approve [on|off|status]` | Control auto-approval for write tools |
+| `/agents` | Show agent statistics (multi-agent mode) |
+| `/trace` | Show delegation trace (multi-agent mode) |
+| `/delegation-tree` | Show delegation stats (multi-agent mode) |
 | `/quit` or `/exit` | Exit the agent |
 
----
+## Next Steps
 
-## 📊 Session Statistics
+1. **Configure the environment**: [Environment Setup](./setup/environment-setup.md)
+2. **Run the agent** and try a small task
+3. **Enable session workflow**: [Session Persistence](./sessions/session-persistence.md)
+4. **Export when needed**: [Export History](./usage/export-history.md)
 
-After each session, you'll see detailed statistics:
-
-```
-============================================================
-SESSION SUMMARY
-============================================================
-Total Events:     15
-Tool Calls:       8 (cache hit: 37.5%)
-LLM Requests:     2
-Errors:           0
-Total Tokens:     2,450
-Total Cost:       $0.0196
-Total Duration:   3,245.67ms
-============================================================
-
-============================================================
-CACHE STATISTICS
-============================================================
-Cache Hits:       3
-Cache Misses:     5
-Hit Rate:         37.5%
-Cache Size:       3 entries
-============================================================
-```
-
----
-
-## 🆘 Troubleshooting
-
-### Command not found: resume-agent
-Use `uv run` prefix:
-```bash
-uv run resume-agent --workspace ./examples/my_resume
-```
-
-### File not found
-Make sure your resume is in the workspace directory:
-```bash
-cp /path/to/your/resume.pdf ./examples/my_resume/resume.pdf
-```
-
-### File too large
-Files must be under 10MB. Convert to text if needed:
-```bash
-pdftotext resume.pdf resume.txt
-```
-
-### Command blocked for safety
-Some bash commands are blocked for security. Use only safe commands like `ls`, `cat`, `grep`.
-
----
-
-## 📖 Documentation Files
-
-- **docs/README.md** - This file (main index)
-- **docs/quick-start.md** - 3-step quick start guide
-- **docs/getting-started.md** - Comprehensive setup guide
-- **docs/how-to-run.md** - Multiple ways to run the agent
-- **.claude/CLAUDE.md** - Architecture and technical details
-- **docs/architecture/phase1-improvements.md** - Phase 1 improvements details
-- **docs/api-reference/phase1-quick-reference.md** - API reference with code examples
-- **examples/** - Sample resumes and example workspace
-
----
-
-## 🚀 Next Steps
-
-1. **Start with [Quick Start](./quick-start.md)** - Get running in 3 steps
-2. **Copy your resume** to the workspace
-3. **Run the agent** and start improving your resume
-4. **Review [Getting Started Guide](./getting-started.md)** for more details
-5. **Check [Architecture Overview](../.claude/CLAUDE.md)** to understand how it works
-
----
-
-## 💡 Tips for Best Results
-
-1. **Start with Analysis** - Ask the agent to parse and analyze your resume first
-2. **Be Specific** - Instead of "improve my resume", say "improve my work experience section"
-3. **Use Multiple Turns** - Break tasks into steps: analyze → improve → format → save
-4. **Provide Context** - Include job descriptions when tailoring
-5. **Review Changes** - Always review the agent's suggestions
-6. **Save Versions** - Keep different versions for different roles
-
----
-
-## 📞 Support
-
-For issues or questions:
-- Check `/help` command in the agent
-- Review the relevant documentation file
-- Check the troubleshooting section above
-
-Happy resume improving! 🎉
+If you need deeper details, jump to the appropriate section above.
