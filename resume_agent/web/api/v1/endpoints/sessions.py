@@ -7,7 +7,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from pydantic import BaseModel, Field
 
-from ..deps import get_store
+from ..deps import get_store, get_tenant_id
+from ..upload import read_upload_with_limit
 from ....store import InMemoryRuntimeStore
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -67,10 +68,12 @@ class SubmitJDResponse(BaseModel):
 async def create_session(
     request: CreateSessionRequest,
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> CreateSessionResponse:
     session = await store.create_session(
         workspace_name=request.workspace_name,
         auto_approve=request.auto_approve,
+        tenant_id=tenant_id,
     )
     return CreateSessionResponse(
         session_id=session.session_id,
@@ -84,8 +87,9 @@ async def create_session(
 async def get_session(
     session_id: str,
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> GetSessionResponse:
-    session = await store.get_session(session_id)
+    session = await store.get_session(session_id, tenant_id=tenant_id)
     return GetSessionResponse(
         session_id=session.session_id,
         workflow_state=session.workflow_state,
@@ -104,8 +108,13 @@ async def set_auto_approve(
     session_id: str,
     request: SetAutoApproveRequest,
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> SetAutoApproveResponse:
-    updated = await store.set_auto_approve(session_id=session_id, enabled=request.enabled)
+    updated = await store.set_auto_approve(
+        session_id=session_id,
+        enabled=request.enabled,
+        tenant_id=tenant_id,
+    )
     return SetAutoApproveResponse(enabled=updated["enabled"])
 
 
@@ -114,14 +123,17 @@ async def upload_resume(
     session_id: str,
     file: UploadFile = File(...),
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> UploadResumeResponse:
-    content = await file.read()
+    content = await read_upload_with_limit(file=file, max_bytes=store.max_upload_bytes)
     metadata = await store.upload_resume(
         session_id=session_id,
         filename=file.filename or "",
         content=content,
+        mime_type=file.content_type,
+        tenant_id=tenant_id,
     )
-    session = await store.get_session(session_id=session_id)
+    session = await store.get_session(session_id=session_id, tenant_id=tenant_id)
     return UploadResumeResponse(
         path=metadata.path,
         size=metadata.size,
@@ -135,11 +147,13 @@ async def submit_jd(
     session_id: str,
     request: SubmitJDRequest,
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> SubmitJDResponse:
     result = await store.submit_jd(
         session_id=session_id,
         text=request.text,
         url=request.url,
+        tenant_id=tenant_id,
     )
     return SubmitJDResponse(
         workflow_state=result["workflow_state"],

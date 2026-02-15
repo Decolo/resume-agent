@@ -460,3 +460,121 @@ def test_web_ui_page_served() -> None:
         response = client.get("/web")
         assert response.status_code == 200
         assert "Phase 2" in response.text
+
+
+def test_tenant_isolation_blocks_cross_tenant_access() -> None:
+    with TestClient(create_app()) as client:
+        create = client.post(
+            "/api/v1/sessions",
+            json={},
+            headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert create.status_code == 201
+        session_id = create.json()["session_id"]
+
+        own = client.get(
+            f"/api/v1/sessions/{session_id}",
+            headers={"X-Tenant-ID": "tenant-a"},
+        )
+        assert own.status_code == 200
+
+        cross = client.get(
+            f"/api/v1/sessions/{session_id}",
+            headers={"X-Tenant-ID": "tenant-b"},
+        )
+        assert cross.status_code == 404
+        assert cross.json()["error"]["code"] == "SESSION_NOT_FOUND"
+
+
+def test_token_auth_mode_requires_bearer_and_tenant(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_AUTH_MODE", "token")
+    monkeypatch.setenv("RESUME_AGENT_WEB_API_TOKEN", "secret-token")
+    with TestClient(create_app()) as client:
+        missing = client.post("/api/v1/sessions", json={})
+        assert missing.status_code == 401
+        assert missing.json()["error"]["code"] == "UNAUTHORIZED"
+
+        no_tenant = client.post(
+            "/api/v1/sessions",
+            json={},
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        assert no_tenant.status_code == 400
+
+        ok = client.post(
+            "/api/v1/sessions",
+            json={},
+            headers={
+                "Authorization": "Bearer secret-token",
+                "X-Tenant-ID": "tenant-a",
+            },
+        )
+        assert ok.status_code == 201
+
+
+def test_rate_limit_returns_429(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_RATE_LIMIT_RPM", "1")
+    with TestClient(create_app()) as client:
+        create = client.post("/api/v1/sessions", json={})
+        assert create.status_code == 201
+        second = client.get(f"/api/v1/sessions/{create.json()['session_id']}")
+        assert second.status_code == 429
+        assert second.json()["error"]["code"] == "RATE_LIMITED"
+
+
+def test_session_run_quota_enforced(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_MAX_RUNS_PER_SESSION", "1")
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        run = client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={"message": "Summarize resume content"},
+        )
+        assert run.status_code == 202
+        _stream_envelopes(client, session["session_id"], run.json()["run_id"])
+
+        second = client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={"message": "Another run"},
+        )
+        assert second.status_code == 429
+        assert second.json()["error"]["code"] == "SESSION_RUN_QUOTA_EXCEEDED"
+
+
+def test_idempotency_reuse_works_even_after_session_quota_reached(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_MAX_RUNS_PER_SESSION", "1")
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        first = client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={"message": "Summarize resume content", "idempotency_key": "msg-1"},
+        )
+        assert first.status_code == 202
+        run_id = first.json()["run_id"]
+        _stream_envelopes(client, session["session_id"], run_id)
+
+        reused = client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={"message": "Summarize resume content", "idempotency_key": "msg-1"},
+        )
+        assert reused.status_code == 202
+        assert reused.json()["run_id"] == run_id
+
+
+def test_upload_constraints_enforced(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_MAX_UPLOAD_BYTES", "8")
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        too_large = client.post(
+            f"/api/v1/sessions/{session['session_id']}/files/upload",
+            files={"file": ("resume.md", b"123456789", "text/markdown")},
+        )
+        assert too_large.status_code == 422
+        assert too_large.json()["error"]["code"] == "UPLOAD_TOO_LARGE"
+
+        bad_type = client.post(
+            f"/api/v1/sessions/{session['session_id']}/files/upload",
+            files={"file": ("resume.png", b"abc", "image/png")},
+        )
+        assert bad_type.status_code == 422
+        assert bad_type.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import defaultdict, deque
+from hmac import compare_digest
 from pathlib import Path
 from time import perf_counter
 from contextlib import asynccontextmanager
+from time import monotonic
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.v1.router import api_v1_router
@@ -21,9 +24,47 @@ from .workspace import RemoteWorkspaceProvider
 logger = logging.getLogger("resume_agent.web.api")
 
 
+class InMemoryRateLimiter:
+    """Simple fixed-window limiter keyed by tenant id."""
+
+    def __init__(self, max_requests_per_minute: int) -> None:
+        self._max_requests = max_requests_per_minute
+        self._events: dict[str, deque[float]] = defaultdict(deque)
+
+    def allow(self, tenant_id: str) -> bool:
+        now = monotonic()
+        window_start = now - 60
+        queue = self._events[tenant_id]
+        while queue and queue[0] < window_start:
+            queue.popleft()
+        if len(queue) >= self._max_requests:
+            return False
+        queue.append(now)
+        return True
+
+
+def _api_error_response(status_code: int, code: str, message: str, details: dict | None = None) -> JSONResponse:
+    err = APIError(status_code=status_code, code=code, message=message, details=details)
+    return JSONResponse(status_code=err.status_code, content=err.to_dict())
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     ui_dir = Path(__file__).resolve().parent / "ui"
+    auth_mode = os.getenv("RESUME_AGENT_WEB_AUTH_MODE", "off").strip().lower()
+    api_token = os.getenv("RESUME_AGENT_WEB_API_TOKEN", "").strip()
+    max_requests_per_minute = int(os.getenv("RESUME_AGENT_WEB_RATE_LIMIT_RPM", "300"))
+    max_runs_per_session = int(os.getenv("RESUME_AGENT_WEB_MAX_RUNS_PER_SESSION", "100"))
+    max_upload_bytes = int(os.getenv("RESUME_AGENT_WEB_MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
+    allowed_upload_mime_types = [
+        item.strip()
+        for item in os.getenv(
+            "RESUME_AGENT_WEB_ALLOWED_UPLOAD_MIME_TYPES",
+            "text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ).split(",")
+        if item.strip()
+    ]
+
     workspace_root = Path(
         os.getenv("RESUME_AGENT_WEB_WORKSPACE_ROOT", "workspace/web_sessions")
     ).resolve()
@@ -32,7 +73,11 @@ def create_app() -> FastAPI:
         workspace_provider=workspace_provider,
         provider_name=os.getenv("RESUME_AGENT_DEFAULT_PROVIDER", "stub"),
         model_name=os.getenv("RESUME_AGENT_DEFAULT_MODEL", "stub-model"),
+        max_runs_per_session=max_runs_per_session,
+        max_upload_bytes=max_upload_bytes,
+        allowed_upload_mime_types=allowed_upload_mime_types,
     )
+    rate_limiter = InMemoryRateLimiter(max_requests_per_minute=max_requests_per_minute)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -46,6 +91,42 @@ def create_app() -> FastAPI:
     app.state.runtime_store = store
     app.include_router(api_v1_router)
     app.mount("/web/static", StaticFiles(directory=ui_dir), name="web_static")
+
+    @app.middleware("http")
+    async def auth_and_tenant_middleware(request: Request, call_next):
+        if not request.url.path.startswith("/api/v1"):
+            return await call_next(request)
+
+        tenant_id = (request.headers.get("X-Tenant-ID") or "").strip()
+        if auth_mode == "token":
+            if not api_token:
+                return _api_error_response(
+                    500,
+                    "SERVER_MISCONFIGURED",
+                    "API token auth is enabled but token is missing",
+                )
+
+            auth_header = (request.headers.get("Authorization") or "").strip()
+            if not auth_header.startswith("Bearer "):
+                return _api_error_response(401, "UNAUTHORIZED", "Missing bearer token")
+            token = auth_header[len("Bearer ") :].strip()
+            if not compare_digest(token, api_token):
+                return _api_error_response(401, "UNAUTHORIZED", "Invalid bearer token")
+            if not tenant_id:
+                return _api_error_response(400, "BAD_REQUEST", "X-Tenant-ID header is required")
+        else:
+            tenant_id = tenant_id or "local-dev"
+
+        if not rate_limiter.allow(tenant_id):
+            return _api_error_response(
+                429,
+                "RATE_LIMITED",
+                "Request rate limit exceeded",
+                {"limit_per_minute": max_requests_per_minute},
+            )
+
+        request.state.tenant_id = tenant_id
+        return await call_next(request)
 
     @app.middleware("http")
     async def request_logging_middleware(request: Request, call_next):

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..deps import get_store
+from ..deps import get_store, get_tenant_id
 from ....store import InMemoryRuntimeStore, TERMINAL_RUN_STATES
 
 router = APIRouter(prefix="/sessions/{session_id}", tags=["runs"])
@@ -46,11 +46,13 @@ async def create_message_run(
     session_id: str,
     request: CreateMessageRequest,
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> CreateMessageResponse:
     run, _is_reused = await store.create_run(
         session_id=session_id,
         message=request.message,
         idempotency_key=request.idempotency_key,
+        tenant_id=tenant_id,
     )
     meta = store.runtime_metadata()
     logger.info(
@@ -70,8 +72,9 @@ async def get_run(
     session_id: str,
     run_id: str,
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> GetRunResponse:
-    run = await store.get_run(session_id=session_id, run_id=run_id)
+    run = await store.get_run(session_id=session_id, run_id=run_id, tenant_id=tenant_id)
     return GetRunResponse(
         run_id=run.run_id,
         status=run.status,
@@ -87,8 +90,9 @@ async def interrupt_run(
     run_id: str,
     response: Response,
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> InterruptRunResponse:
-    run = await store.interrupt_run(session_id=session_id, run_id=run_id)
+    run = await store.interrupt_run(session_id=session_id, run_id=run_id, tenant_id=tenant_id)
     response.status_code = (
         status.HTTP_200_OK if run.status in TERMINAL_RUN_STATES else status.HTTP_202_ACCEPTED
     )
@@ -100,20 +104,26 @@ async def stream_run_events(
     session_id: str,
     run_id: str,
     store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
     last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     # Validate run existence before opening stream.
-    await store.get_run(session_id=session_id, run_id=run_id)
+    await store.get_run(session_id=session_id, run_id=run_id, tenant_id=tenant_id)
     start_index = await store.event_index_after(
         session_id=session_id,
         run_id=run_id,
         last_event_id=last_event_id,
+        tenant_id=tenant_id,
     )
 
     async def event_stream() -> AsyncGenerator[str, None]:
         cursor = start_index
         while True:
-            events, run_status = await store.snapshot_events(session_id=session_id, run_id=run_id)
+            events, run_status = await store.snapshot_events(
+                session_id=session_id,
+                run_id=run_id,
+                tenant_id=tenant_id,
+            )
             if cursor < len(events):
                 for event in events[cursor:]:
                     yield format_sse_event(event)

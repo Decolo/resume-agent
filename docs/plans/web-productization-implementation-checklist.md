@@ -38,9 +38,9 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 ## Phase 3 (Weeks 6-8): Production Hardening
 
 ## Week 6
-- [ ] Add authentication and tenant scoping model.
-- [ ] Add rate limit and per-session quota controls.
-- [ ] Add strict upload constraints (size/type/path validation).
+- [x] Add authentication and tenant scoping model.
+- [x] Add rate limit and per-session quota controls.
+- [x] Add strict upload constraints (size/type/path validation).
 
 ## Week 7
 - [ ] Add object storage backend and lifecycle cleanup (TTL).
@@ -70,7 +70,7 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
   - [ ] Ensure backwards compatibility of session schema versions.
 
 - **Security**
-  - [ ] File path sandbox enforcement in remote workspace.
+  - [x] File path sandbox enforcement in remote workspace.
   - [ ] Audit log for approvals and file mutations.
   - [ ] Redaction policy for sensitive user content in logs.
 

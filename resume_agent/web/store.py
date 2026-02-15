@@ -25,6 +25,12 @@ WORKFLOW_ORDER = {
     "exported": 5,
     "cancelled": 6,
 }
+DEFAULT_ALLOWED_UPLOAD_MIME_TYPES = (
+    "text/markdown",
+    "text/plain",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+)
 
 
 def utc_now_iso() -> str:
@@ -73,6 +79,7 @@ class RunRecord:
 @dataclass
 class SessionRecord:
     session_id: str
+    tenant_id: str
     workspace_name: str
     created_at: str
     workflow_state: str
@@ -96,6 +103,9 @@ class InMemoryRuntimeStore:
         workspace_provider: WorkspaceProvider,
         provider_name: str = "stub",
         model_name: str = "stub-model",
+        max_runs_per_session: int = 100,
+        max_upload_bytes: int = 5 * 1024 * 1024,
+        allowed_upload_mime_types: Optional[List[str]] = None,
     ) -> None:
         self._sessions: Dict[str, SessionRecord] = {}
         self._lock = asyncio.Lock()
@@ -105,6 +115,9 @@ class InMemoryRuntimeStore:
         self._workspace_provider = workspace_provider
         self.provider_name = provider_name
         self.model_name = model_name
+        self.max_runs_per_session = max_runs_per_session
+        self.max_upload_bytes = max_upload_bytes
+        self.allowed_upload_mime_types = set(allowed_upload_mime_types or DEFAULT_ALLOWED_UPLOAD_MIME_TYPES)
 
     async def start(self) -> None:
         """Start background run worker."""
@@ -120,11 +133,12 @@ class InMemoryRuntimeStore:
             await self._worker_task
             self._worker_task = None
 
-    async def create_session(self, workspace_name: str, auto_approve: bool) -> SessionRecord:
+    async def create_session(self, workspace_name: str, auto_approve: bool, tenant_id: str) -> SessionRecord:
         session_id = make_id("sess")
         await self._workspace_provider.create_workspace(session_id=session_id, workspace_name=workspace_name)
         session = SessionRecord(
             session_id=session_id,
+            tenant_id=tenant_id,
             workspace_name=workspace_name,
             created_at=utc_now_iso(),
             workflow_state="draft",
@@ -138,18 +152,19 @@ class InMemoryRuntimeStore:
         """Static provider/model values used by API observability logs."""
         return {"provider": self.provider_name, "model": self.model_name}
 
-    async def get_session(self, session_id: str) -> SessionRecord:
+    async def get_session(self, session_id: str, tenant_id: Optional[str] = None) -> SessionRecord:
         async with self._lock:
-            session = self._sessions.get(session_id)
-        if not session:
-            raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
         return session
 
-    async def set_auto_approve(self, session_id: str, enabled: bool) -> Dict[str, bool]:
+    async def set_auto_approve(
+        self,
+        session_id: str,
+        enabled: bool,
+        tenant_id: Optional[str] = None,
+    ) -> Dict[str, bool]:
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             session.settings["auto_approve"] = enabled
         return {"enabled": enabled}
 
@@ -158,26 +173,36 @@ class InMemoryRuntimeStore:
         session_id: str,
         filename: str,
         content: bytes,
+        mime_type: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> WorkspaceFile:
-        metadata = await self.upload_session_file(session_id=session_id, filename=filename, content=content)
+        metadata = await self.upload_session_file(
+            session_id=session_id,
+            filename=filename,
+            content=content,
+            mime_type=mime_type,
+            tenant_id=tenant_id,
+        )
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             session.resume_path = metadata.path
             self._promote_workflow_locked(session, "resume_uploaded")
         return metadata
 
-    async def submit_jd(self, session_id: str, text: Optional[str], url: Optional[str]) -> Dict[str, Optional[str]]:
+    async def submit_jd(
+        self,
+        session_id: str,
+        text: Optional[str],
+        url: Optional[str],
+        tenant_id: Optional[str] = None,
+    ) -> Dict[str, Optional[str]]:
         normalized_text = (text or "").strip()
         normalized_url = (url or "").strip()
         if not normalized_text and not normalized_url:
             raise APIError(400, "BAD_REQUEST", "Either jd text or jd url is required")
 
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             if not session.resume_path:
                 raise APIError(
                     409,
@@ -193,16 +218,20 @@ class InMemoryRuntimeStore:
                 "jd_url": session.jd_url,
             }
 
-    async def export_session(self, session_id: str) -> WorkspaceFile:
-        session = await self.get_session(session_id=session_id)
+    async def export_session(self, session_id: str, tenant_id: Optional[str] = None) -> WorkspaceFile:
+        session = await self.get_session(session_id=session_id, tenant_id=tenant_id)
         source_path = session.resume_path
         if not source_path:
-            files = await self.list_session_files(session_id=session_id)
+            files = await self.list_session_files(session_id=session_id, tenant_id=tenant_id)
             if not files:
                 raise APIError(409, "INVALID_STATE", "No files available to export")
             source_path = files[0].path
 
-        source_content = await self.read_session_file(session_id=session_id, file_path=source_path)
+        source_content = await self.read_session_file(
+            session_id=session_id,
+            file_path=source_path,
+            tenant_id=tenant_id,
+        )
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         export_name = f"exports/{Path(source_path).stem}-export-{timestamp}.md"
         export_content = self._build_export_content(source_content.content)
@@ -213,9 +242,7 @@ class InMemoryRuntimeStore:
         )
 
         async with self._lock:
-            session_locked = self._sessions.get(session_id)
-            if not session_locked:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session_locked = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             session_locked.latest_export_path = artifact.path
             self._promote_workflow_locked(session_locked, "exported")
 
@@ -226,24 +253,12 @@ class InMemoryRuntimeStore:
         session_id: str,
         message: str,
         idempotency_key: Optional[str],
+        tenant_id: Optional[str] = None,
     ) -> Tuple[RunRecord, bool]:
         message_fingerprint = message.strip()
 
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
-
-            if session.active_run_id:
-                active_run = session.runs.get(session.active_run_id)
-                if active_run and active_run.status in ACTIVE_RUN_STATES:
-                    raise APIError(
-                        409,
-                        "ACTIVE_RUN_EXISTS",
-                        "Session already has an active run",
-                        {"run_id": active_run.run_id, "status": active_run.status},
-                    )
-
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             if idempotency_key:
                 existing = session.idempotency_keys.get(idempotency_key)
                 if existing:
@@ -256,6 +271,24 @@ class InMemoryRuntimeStore:
                         )
                     existing_run = session.runs[existing_run_id]
                     return existing_run, True
+
+            if session.active_run_id:
+                active_run = session.runs.get(session.active_run_id)
+                if active_run and active_run.status in ACTIVE_RUN_STATES:
+                    raise APIError(
+                        409,
+                        "ACTIVE_RUN_EXISTS",
+                        "Session already has an active run",
+                        {"run_id": active_run.run_id, "status": active_run.status},
+                    )
+
+            if len(session.runs) >= self.max_runs_per_session:
+                raise APIError(
+                    429,
+                    "SESSION_RUN_QUOTA_EXCEEDED",
+                    "Per-session run quota exceeded",
+                    {"limit": self.max_runs_per_session},
+                )
 
             run_id = make_id("run")
             run = RunRecord(
@@ -273,11 +306,14 @@ class InMemoryRuntimeStore:
         await self._run_queue.put((session_id, run_id))
         return run, False
 
-    async def get_run(self, session_id: str, run_id: str) -> RunRecord:
+    async def get_run(
+        self,
+        session_id: str,
+        run_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> RunRecord:
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             run = session.runs.get(run_id)
             if not run:
                 raise APIError(404, "RUN_NOT_FOUND", f"Run '{run_id}' not found")
@@ -288,27 +324,41 @@ class InMemoryRuntimeStore:
         session_id: str,
         filename: str,
         content: bytes,
+        mime_type: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> WorkspaceFile:
-        await self.get_session(session_id=session_id)
+        await self.get_session(session_id=session_id, tenant_id=tenant_id)
+        self._validate_upload(content=content, mime_type=mime_type)
         return await self._workspace_provider.save_uploaded_file(
             session_id=session_id,
             filename=filename,
             content=content,
         )
 
-    async def list_session_files(self, session_id: str) -> List[WorkspaceFile]:
-        await self.get_session(session_id=session_id)
+    async def list_session_files(
+        self,
+        session_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> List[WorkspaceFile]:
+        await self.get_session(session_id=session_id, tenant_id=tenant_id)
         return await self._workspace_provider.list_files(session_id=session_id)
 
-    async def read_session_file(self, session_id: str, file_path: str) -> WorkspaceFileContent:
-        await self.get_session(session_id=session_id)
+    async def read_session_file(
+        self,
+        session_id: str,
+        file_path: str,
+        tenant_id: Optional[str] = None,
+    ) -> WorkspaceFileContent:
+        await self.get_session(session_id=session_id, tenant_id=tenant_id)
         return await self._workspace_provider.read_file(session_id=session_id, relative_path=file_path)
 
-    async def list_pending_approvals(self, session_id: str) -> List[ApprovalRecord]:
+    async def list_pending_approvals(
+        self,
+        session_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> List[ApprovalRecord]:
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             items = [approval for approval in session.approvals.values() if approval.status == "pending"]
         items.sort(key=lambda item: item.created_at)
         return items
@@ -318,11 +368,10 @@ class InMemoryRuntimeStore:
         session_id: str,
         approval_id: str,
         apply_to_future: bool,
+        tenant_id: Optional[str] = None,
     ) -> ApprovalRecord:
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
 
             approval = session.approvals.get(approval_id)
             if not approval:
@@ -352,11 +401,14 @@ class InMemoryRuntimeStore:
         run.wait_event.set()
         return approval
 
-    async def reject_approval(self, session_id: str, approval_id: str) -> ApprovalRecord:
+    async def reject_approval(
+        self,
+        session_id: str,
+        approval_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> ApprovalRecord:
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
 
             approval = session.approvals.get(approval_id)
             if not approval:
@@ -384,11 +436,14 @@ class InMemoryRuntimeStore:
         run.wait_event.set()
         return approval
 
-    async def interrupt_run(self, session_id: str, run_id: str) -> RunRecord:
+    async def interrupt_run(
+        self,
+        session_id: str,
+        run_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> RunRecord:
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
 
             run = session.runs.get(run_id)
             if not run:
@@ -402,8 +457,13 @@ class InMemoryRuntimeStore:
             run.wait_event.set()
             return run
 
-    async def snapshot_events(self, session_id: str, run_id: str) -> Tuple[List[Dict[str, Any]], str]:
-        run = await self.get_run(session_id=session_id, run_id=run_id)
+    async def snapshot_events(
+        self,
+        session_id: str,
+        run_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        run = await self.get_run(session_id=session_id, run_id=run_id, tenant_id=tenant_id)
         async with self._lock:
             # Return a copy so stream consumers can iterate without lock contention.
             return list(run.events), run.status
@@ -413,11 +473,12 @@ class InMemoryRuntimeStore:
         session_id: str,
         run_id: str,
         last_event_id: Optional[str],
+        tenant_id: Optional[str] = None,
     ) -> int:
         if not last_event_id:
             return 0
 
-        run = await self.get_run(session_id=session_id, run_id=run_id)
+        run = await self.get_run(session_id=session_id, run_id=run_id, tenant_id=tenant_id)
         async with self._lock:
             for idx, event in enumerate(run.events):
                 if event["event_id"] == last_event_id:
@@ -679,6 +740,33 @@ class InMemoryRuntimeStore:
                     "ts": utc_now_iso(),
                     "payload": payload,
                 }
+            )
+
+    def _session_for_tenant_locked(self, session_id: str, tenant_id: Optional[str]) -> SessionRecord:
+        session = self._sessions.get(session_id)
+        if not session:
+            raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+        if tenant_id and session.tenant_id != tenant_id:
+            # Hide cross-tenant existence.
+            raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+        return session
+
+    def _validate_upload(self, content: bytes, mime_type: Optional[str]) -> None:
+        if len(content) > self.max_upload_bytes:
+            raise APIError(
+                422,
+                "UPLOAD_TOO_LARGE",
+                "Uploaded file exceeds size limit",
+                {"max_upload_bytes": self.max_upload_bytes},
+            )
+
+        normalized = (mime_type or "").strip().lower()
+        if normalized and normalized not in self.allowed_upload_mime_types:
+            raise APIError(
+                422,
+                "UNSUPPORTED_FILE_TYPE",
+                "Uploaded file type is not allowed",
+                {"mime_type": normalized, "allowed": sorted(self.allowed_upload_mime_types)},
             )
 
     async def _promote_workflow(self, session_id: str, state: str) -> None:

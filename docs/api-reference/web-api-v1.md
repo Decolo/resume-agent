@@ -10,6 +10,14 @@ It is intentionally minimal and decision-complete for implementation.
 - Time format: ISO 8601 UTC (`2026-02-14T21:00:00Z`)
 - IDs are opaque strings (`sess_*`, `run_*`, `appr_*`, `evt_*`)
 
+## Auth and Tenant Headers
+
+- Development mode (default): no auth required, implicit tenant `local-dev`
+- Token mode (`RESUME_AGENT_WEB_AUTH_MODE=token`):
+  - `Authorization: Bearer <token>`
+  - `X-Tenant-ID: <tenant>`
+- Cross-tenant resource access returns `404` (`SESSION_NOT_FOUND`) to avoid leakage.
+
 ## Common Error Shape
 
 ```json
@@ -25,6 +33,7 @@ It is intentionally minimal and decision-complete for implementation.
 ## Error Codes
 
 - `400` bad request (schema/validation)
+- `401` unauthorized
 - `404` resource not found
 - `409` state conflict / already processed
 - `422` policy violation (file/path constraints)
@@ -70,6 +79,10 @@ Response `200`:
   "workflow_state": "jd_provided",
   "active_run_id": "run_01HAAA",
   "pending_approvals_count": 1,
+  "resume_path": "frontend-resume-improved-2026-02-03.md",
+  "jd_text": "We need a frontend engineer...",
+  "jd_url": null,
+  "latest_export_path": null,
   "settings": {
     "auto_approve": false
   }
