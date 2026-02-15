@@ -20,19 +20,19 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 ## Phase 2 (Weeks 3-5): Minimal Web UI
 
 ## Week 3
-- [ ] Build chat panel + message timeline consuming SSE events.
-- [ ] Build file panel (upload/list/open/download).
-- [ ] Show pending approvals as explicit UI state.
+- [x] Build chat panel + message timeline consuming SSE events.
+- [x] Build file panel (upload/list/open/download).
+- [x] Show pending approvals as explicit UI state.
 
 ## Week 4
-- [ ] Build guided workflow sidebar (5 states).
-- [ ] Add JD input UX (text/link) and stage transitions.
-- [ ] Build approval modal (approve/reject/auto-approve toggle).
+- [x] Build guided workflow sidebar (5 states).
+- [x] Add JD input UX (text/link) and stage transitions.
+- [x] Build approval modal (approve/reject/auto-approve toggle).
 
 ## Week 5
-- [ ] Build preview pane and diff view for rewritten resume.
-- [ ] Implement export UX and artifact download.
-- [ ] Add refresh-safe session restore (resume active session state on reload).
+- [x] Build preview pane and diff view for rewritten resume.
+- [x] Implement export UX and artifact download.
+- [x] Add refresh-safe session restore (resume active session state on reload).
 - [ ] Run manual E2E acceptance flow and fix critical UX blockers.
 
 ## Phase 3 (Weeks 6-8): Production Hardening

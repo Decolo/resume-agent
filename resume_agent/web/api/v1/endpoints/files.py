@@ -31,6 +31,13 @@ class ListFilesResponse(BaseModel):
     files: list[FileItem]
 
 
+class ExportResponse(BaseModel):
+    artifact_path: str
+    size: int
+    mime_type: str
+    workflow_state: str
+
+
 @router.post("/files/upload", response_model=UploadFileResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file(
     session_id: str,
@@ -73,3 +80,18 @@ async def get_file(
 ) -> Response:
     content = await store.read_session_file(session_id=session_id, file_path=file_path)
     return Response(content=content.content, media_type=content.mime_type)
+
+
+@router.post("/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED)
+async def export_resume(
+    session_id: str,
+    store: InMemoryRuntimeStore = Depends(get_store),
+) -> ExportResponse:
+    artifact = await store.export_session(session_id=session_id)
+    session = await store.get_session(session_id=session_id)
+    return ExportResponse(
+        artifact_path=artifact.path,
+        size=artifact.size,
+        mime_type=artifact.mime_type,
+        workflow_state=session.workflow_state,
+    )

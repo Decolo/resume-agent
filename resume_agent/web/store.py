@@ -7,6 +7,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .errors import APIError
@@ -15,6 +16,15 @@ from .workspace import WorkspaceFile, WorkspaceFileContent, WorkspaceProvider
 TERMINAL_RUN_STATES = {"completed", "failed", "interrupted"}
 ACTIVE_RUN_STATES = {"queued", "running", "waiting_approval", "interrupting"}
 WRITE_INTENT_KEYWORDS = ("write", "update", "modify", "edit", "create", "copy")
+WORKFLOW_ORDER = {
+    "draft": 0,
+    "resume_uploaded": 1,
+    "jd_provided": 2,
+    "gap_analyzed": 3,
+    "rewrite_applied": 4,
+    "exported": 5,
+    "cancelled": 6,
+}
 
 
 def utc_now_iso() -> str:
@@ -69,6 +79,10 @@ class SessionRecord:
     settings: Dict[str, Any]
     active_run_id: Optional[str] = None
     pending_approvals_count: int = 0
+    resume_path: Optional[str] = None
+    jd_text: Optional[str] = None
+    jd_url: Optional[str] = None
+    latest_export_path: Optional[str] = None
     runs: Dict[str, RunRecord] = field(default_factory=dict)
     approvals: Dict[str, ApprovalRecord] = field(default_factory=dict)
     idempotency_keys: Dict[str, Tuple[str, str]] = field(default_factory=dict)
@@ -138,6 +152,74 @@ class InMemoryRuntimeStore:
                 raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
             session.settings["auto_approve"] = enabled
         return {"enabled": enabled}
+
+    async def upload_resume(
+        self,
+        session_id: str,
+        filename: str,
+        content: bytes,
+    ) -> WorkspaceFile:
+        metadata = await self.upload_session_file(session_id=session_id, filename=filename, content=content)
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session.resume_path = metadata.path
+            self._promote_workflow_locked(session, "resume_uploaded")
+        return metadata
+
+    async def submit_jd(self, session_id: str, text: Optional[str], url: Optional[str]) -> Dict[str, Optional[str]]:
+        normalized_text = (text or "").strip()
+        normalized_url = (url or "").strip()
+        if not normalized_text and not normalized_url:
+            raise APIError(400, "BAD_REQUEST", "Either jd text or jd url is required")
+
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            if not session.resume_path:
+                raise APIError(
+                    409,
+                    "INVALID_STATE",
+                    "Resume must be uploaded before submitting JD",
+                )
+            session.jd_text = normalized_text or None
+            session.jd_url = normalized_url or None
+            self._promote_workflow_locked(session, "jd_provided")
+            return {
+                "workflow_state": session.workflow_state,
+                "jd_text": session.jd_text,
+                "jd_url": session.jd_url,
+            }
+
+    async def export_session(self, session_id: str) -> WorkspaceFile:
+        session = await self.get_session(session_id=session_id)
+        source_path = session.resume_path
+        if not source_path:
+            files = await self.list_session_files(session_id=session_id)
+            if not files:
+                raise APIError(409, "INVALID_STATE", "No files available to export")
+            source_path = files[0].path
+
+        source_content = await self.read_session_file(session_id=session_id, file_path=source_path)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        export_name = f"exports/{Path(source_path).stem}-export-{timestamp}.md"
+        export_content = self._build_export_content(source_content.content)
+        artifact = await self._workspace_provider.write_file(
+            session_id=session_id,
+            relative_path=export_name,
+            content=export_content,
+        )
+
+        async with self._lock:
+            session_locked = self._sessions.get(session_id)
+            if not session_locked:
+                raise APIError(404, "SESSION_NOT_FOUND", f"Session '{session_id}' not found")
+            session_locked.latest_export_path = artifact.path
+            self._promote_workflow_locked(session_locked, "exported")
+
+        return artifact
 
     async def create_run(
         self,
@@ -368,6 +450,7 @@ class InMemoryRuntimeStore:
             )
 
             message = await self._get_run_message(session_id, run_id)
+            normalized_message = message.lower()
             if "long" in message.lower():
                 if not await self._sleep_with_interrupt(session_id, run_id, 1.0):
                     return
@@ -375,10 +458,15 @@ class InMemoryRuntimeStore:
                 if not await self._sleep_with_interrupt(session_id, run_id, 0.05):
                     return
 
+            if "gap" in normalized_message or "analy" in normalized_message:
+                await self._promote_workflow(session_id, "gap_analyzed")
+
             if self._message_requires_write(message):
                 target_path = self._extract_target_path(message)
                 auto_approve = await self._get_session_auto_approve(session_id)
                 if auto_approve:
+                    await self._apply_stub_file_write(session_id, target_path, message, run_id)
+                    await self._promote_workflow(session_id, "rewrite_applied")
                     await self._append_event(
                         session_id,
                         run_id,
@@ -422,6 +510,8 @@ class InMemoryRuntimeStore:
                         return
 
                     await self._set_run_status(session_id, run_id, "running")
+                    await self._apply_stub_file_write(session_id, target_path, message, run_id)
+                    await self._promote_workflow(session_id, "rewrite_applied")
                     await self._append_event(
                         session_id,
                         run_id,
@@ -590,6 +680,66 @@ class InMemoryRuntimeStore:
                     "payload": payload,
                 }
             )
+
+    async def _promote_workflow(self, session_id: str, state: str) -> None:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return
+            self._promote_workflow_locked(session, state)
+
+    def _promote_workflow_locked(self, session: SessionRecord, state: str) -> None:
+        current = WORKFLOW_ORDER.get(session.workflow_state, -1)
+        target = WORKFLOW_ORDER.get(state)
+        if target is None:
+            return
+        if target >= current:
+            session.workflow_state = state
+
+    async def _apply_stub_file_write(
+        self,
+        session_id: str,
+        target_path: str,
+        message: str,
+        run_id: str,
+    ) -> WorkspaceFile:
+        normalized_path = Path(target_path).as_posix()
+        content_hint = f"Updated by run {run_id}: {message.strip()}"
+        try:
+            existing = await self.read_session_file(session_id=session_id, file_path=normalized_path)
+            try:
+                base_text = existing.content.decode("utf-8")
+            except UnicodeDecodeError:
+                base_text = ""
+            if base_text and not base_text.endswith("\n"):
+                base_text += "\n"
+            next_text = f"{base_text}\n- {content_hint}\n"
+        except APIError as exc:
+            if exc.code != "FILE_NOT_FOUND":
+                raise
+            next_text = f"# Resume Draft\n\n- {content_hint}\n"
+
+        written = await self._workspace_provider.write_file(
+            session_id=session_id,
+            relative_path=normalized_path,
+            content=next_text.encode("utf-8"),
+        )
+
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session and (session.resume_path is None or session.resume_path == normalized_path):
+                session.resume_path = normalized_path
+        return written
+
+    @staticmethod
+    def _build_export_content(source: bytes) -> bytes:
+        try:
+            text = source.decode("utf-8")
+        except UnicodeDecodeError:
+            text = source.decode("utf-8", errors="replace")
+
+        header = "# Exported Resume\n\nGenerated by Resume Agent Web UI.\n\n---\n\n"
+        return f"{header}{text}".encode("utf-8")
 
     @staticmethod
     def _message_requires_write(message: str) -> bool:

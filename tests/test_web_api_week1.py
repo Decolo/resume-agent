@@ -363,3 +363,100 @@ def test_api_logs_include_observability_fields(caplog) -> None:
         and "model=" in record.message
         for record in caplog.records
     )
+
+
+def test_resume_and_jd_workflow_transitions() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        session_id = session["session_id"]
+
+        resume_upload = client.post(
+            f"/api/v1/sessions/{session_id}/resume",
+            files={"file": ("resume.md", b"# Resume", "text/markdown")},
+        )
+        assert resume_upload.status_code == 201
+        assert resume_upload.json()["workflow_state"] == "resume_uploaded"
+
+        jd_submit = client.post(
+            f"/api/v1/sessions/{session_id}/jd",
+            json={"text": "Looking for frontend engineer with TypeScript skills"},
+        )
+        assert jd_submit.status_code == 200
+        assert jd_submit.json()["workflow_state"] == "jd_provided"
+
+        state = client.get(f"/api/v1/sessions/{session_id}").json()
+        assert state["workflow_state"] == "jd_provided"
+        assert state["resume_path"] == "resume.md"
+        assert state["jd_text"] is not None
+
+
+def test_jd_requires_resume_upload_first() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        response = client.post(
+            f"/api/v1/sessions/{session['session_id']}/jd",
+            json={"text": "Frontend JD"},
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "INVALID_STATE"
+
+
+def test_write_run_updates_file_and_workflow_state() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={"auto_approve": True}).json()
+        session_id = session["session_id"]
+
+        client.post(
+            f"/api/v1/sessions/{session_id}/resume",
+            files={"file": ("resume.md", b"# Resume\\nOriginal", "text/markdown")},
+        )
+        client.post(
+            f"/api/v1/sessions/{session_id}/jd",
+            json={"text": "Frontend engineer JD"},
+        )
+
+        run = client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={"message": "Update resume.md to add impact metrics"},
+        ).json()
+        envelopes = _stream_envelopes(client, session_id, run["run_id"])
+        assert any(event["type"] == "tool_result" for event in envelopes)
+
+        updated = client.get(f"/api/v1/sessions/{session_id}/files/resume.md")
+        assert updated.status_code == 200
+        assert "Updated by run" in updated.text
+
+        state = client.get(f"/api/v1/sessions/{session_id}").json()
+        assert state["workflow_state"] == "rewrite_applied"
+
+
+def test_export_endpoint_creates_artifact_and_marks_exported() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        session_id = session["session_id"]
+
+        client.post(
+            f"/api/v1/sessions/{session_id}/resume",
+            files={"file": ("resume.md", b"# Resume\\nSample", "text/markdown")},
+        )
+        export = client.post(f"/api/v1/sessions/{session_id}/export")
+        assert export.status_code == 201
+        body = export.json()
+        assert body["artifact_path"].startswith("exports/")
+        assert body["workflow_state"] == "exported"
+
+        encoded = body["artifact_path"].replace("/", "%2F")
+        artifact = client.get(f"/api/v1/sessions/{session_id}/files/{encoded}")
+        assert artifact.status_code == 200
+        assert artifact.text.startswith("# Exported Resume")
+
+        state = client.get(f"/api/v1/sessions/{session_id}").json()
+        assert state["latest_export_path"] == body["artifact_path"]
+        assert state["workflow_state"] == "exported"
+
+
+def test_web_ui_page_served() -> None:
+    with TestClient(create_app()) as client:
+        response = client.get("/web")
+        assert response.status_code == 200
+        assert "Phase 2" in response.text

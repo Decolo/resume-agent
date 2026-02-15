@@ -56,6 +56,10 @@ class WorkspaceProvider(ABC):
     async def read_file(self, session_id: str, relative_path: str) -> WorkspaceFileContent:
         """Read a file from a session workspace."""
 
+    @abstractmethod
+    async def write_file(self, session_id: str, relative_path: str, content: bytes) -> WorkspaceFile:
+        """Write or overwrite a file in a session workspace."""
+
 
 class RemoteWorkspaceProvider(WorkspaceProvider):
     """Remote-workspace abstraction backed by local disk for Phase 1."""
@@ -72,22 +76,7 @@ class RemoteWorkspaceProvider(WorkspaceProvider):
         clean_name = Path(filename).name.strip()
         if not clean_name:
             raise APIError(400, "BAD_REQUEST", "Uploaded file must include a filename")
-
-        target = self._resolve_session_path(session_id, clean_name)
-
-        def _write_file() -> WorkspaceFile:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
-            stat = target.stat()
-            mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-            return WorkspaceFile(
-                path=clean_name,
-                size=stat.st_size,
-                updated_at=_utc_iso_from_epoch(stat.st_mtime),
-                mime_type=mime_type,
-            )
-
-        return await asyncio.to_thread(_write_file)
+        return await self.write_file(session_id=session_id, relative_path=clean_name, content=content)
 
     async def list_files(self, session_id: str) -> List[WorkspaceFile]:
         session_root = await asyncio.to_thread(self._ensure_session_dir, session_id)
@@ -124,6 +113,24 @@ class RemoteWorkspaceProvider(WorkspaceProvider):
             return WorkspaceFileContent(path=relative_path, content=content, mime_type=mime_type)
 
         return await asyncio.to_thread(_read)
+
+    async def write_file(self, session_id: str, relative_path: str, content: bytes) -> WorkspaceFile:
+        target = self._resolve_session_path(session_id, relative_path)
+
+        def _write() -> WorkspaceFile:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            stat = target.stat()
+            mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            normalized_path = Path(relative_path).as_posix()
+            return WorkspaceFile(
+                path=normalized_path,
+                size=stat.st_size,
+                updated_at=_utc_iso_from_epoch(stat.st_mtime),
+                mime_type=mime_type,
+            )
+
+        return await asyncio.to_thread(_write)
 
     def _ensure_session_dir(self, session_id: str) -> Path:
         session_root = (self.root_dir / session_id).resolve()
