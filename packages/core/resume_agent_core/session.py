@@ -8,9 +8,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
-from resume_agent.llm import HistoryManager
-from resume_agent.observability import AgentEvent, AgentObserver
-from resume_agent.providers.types import FunctionCall, FunctionResponse, Message, MessagePart
+from packages.providers.resume_agent_providers.types import (
+    FunctionCall,
+    FunctionResponse,
+    Message,
+    MessagePart,
+)
+
+from .llm import HistoryManager
+from .observability import AgentEvent, AgentObserver
 
 
 class SessionSerializer:
@@ -264,8 +270,9 @@ class SessionManager:
         Returns:
             Session ID
         """
-        from resume_agent.agent_factory import AutoAgent
         from resume_agent.agents.orchestrator_agent import OrchestratorAgent
+
+        from .agent_factory import AutoAgent
 
         # Generate or reuse session ID
         if session_id is None:
@@ -428,9 +435,10 @@ class SessionManager:
             agent: ResumeAgent, OrchestratorAgent, or AutoAgent instance
             session_data: Session data dictionary from load_session()
         """
-        from resume_agent.agent_factory import AutoAgent
         from resume_agent.agents.delegation import DelegationRecord
         from resume_agent.agents.orchestrator_agent import OrchestratorAgent
+
+        from .agent_factory import AutoAgent
 
         # Handle AutoAgent
         if isinstance(agent, AutoAgent):

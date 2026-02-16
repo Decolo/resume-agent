@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from resume_agent.llm import LLMAgent, LLMConfig, load_config
 from resume_agent.skills import RESUME_EXPERT_PROMPT
 from resume_agent.tools import (
     ATSScorerTool,
@@ -21,6 +20,8 @@ from resume_agent.tools import (
     WebFetchTool,
     WebReadTool,
 )
+
+from .llm import LLMAgent, LLMConfig, load_config
 
 
 @dataclass

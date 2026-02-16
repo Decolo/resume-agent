@@ -29,6 +29,7 @@ Automated boundary checks:
 
 - `tests/test_architecture_boundaries.py`
 - `tests/test_ci_guardrails.py`
+- `tests/test_shim_retirement_guardrails.py`
 
 ## Runtime Paths
 

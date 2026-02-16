@@ -7,10 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from resume_agent.cache import ToolCache, get_tool_ttl, should_cache_tool
-from resume_agent.observability import AgentObserver
-from resume_agent.providers import create_provider
-from resume_agent.providers.types import (
+from packages.providers.resume_agent_providers import create_provider
+from packages.providers.resume_agent_providers.types import (
     FunctionCall,
     FunctionResponse,
     GenerationConfig,
@@ -20,7 +18,10 @@ from resume_agent.providers.types import (
     StreamDelta,
     ToolSchema,
 )
-from resume_agent.retry import RetryConfig, TransientError, retry_with_backoff
+
+from .cache import ToolCache, get_tool_ttl, should_cache_tool
+from .observability import AgentObserver
+from .retry import RetryConfig, TransientError, retry_with_backoff
 
 
 class HistoryManager:

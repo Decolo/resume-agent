@@ -17,10 +17,10 @@ from rich.table import Table
 
 from packages.core.resume_agent_core.agent import AgentConfig, ResumeAgent
 from packages.core.resume_agent_core.agent_factory import create_agent
+from packages.core.resume_agent_core.llm import LLMConfig, load_config, load_raw_config
+from packages.core.resume_agent_core.session import SessionManager
 from resume_agent.agents.orchestrator_agent import OrchestratorAgent
 from resume_agent.config_validator import Severity, has_errors, validate_config
-from resume_agent.llm import LLMConfig, load_config, load_raw_config
-from resume_agent.session import SessionManager
 
 console = Console()
 

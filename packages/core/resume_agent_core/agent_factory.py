@@ -7,7 +7,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
-from resume_agent.agent import AgentConfig, ResumeAgent
 from resume_agent.agents.base import AgentConfig as SpecializedAgentConfig
 from resume_agent.agents.delegation import DelegationConfig, DelegationManager
 from resume_agent.agents.formatter_agent import FormatterAgent
@@ -16,8 +15,6 @@ from resume_agent.agents.orchestrator_agent import OrchestratorAgent
 from resume_agent.agents.parser_agent import ParserAgent
 from resume_agent.agents.registry import AgentRegistry
 from resume_agent.agents.writer_agent import WriterAgent
-from resume_agent.llm import LLMAgent, LLMConfig, load_config, load_raw_config
-from resume_agent.observability import AgentObserver
 from resume_agent.skills.formatter_prompt import FORMATTER_AGENT_PROMPT
 from resume_agent.skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
 from resume_agent.skills.parser_prompt import PARSER_AGENT_PROMPT
@@ -36,6 +33,10 @@ from resume_agent.tools import (
     WebFetchTool,
     WebReadTool,
 )
+
+from .agent import AgentConfig, ResumeAgent
+from .llm import LLMAgent, LLMConfig, load_config, load_raw_config
+from .observability import AgentObserver
 
 logger = logging.getLogger(__name__)
 
