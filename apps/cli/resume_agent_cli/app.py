@@ -31,6 +31,7 @@ _STREAM_RENDER_MODES = {"raw", "md", "hybrid"}
 _ANSI_CSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _ANSI_OSC_RE = re.compile(r"\x1B\][^\x1b\x07]*(?:\x07|\x1b\\)")
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_MD_RENDER_BOUNDARY_RE = re.compile(r"[\n。！？!?]|```")
 
 
 def _sanitize_stream_text(text: str) -> str:
@@ -49,7 +50,8 @@ class StreamOutputRenderer:
         self.started = False
         self.last_newline = True
         self.last_update = 0.0
-        self.update_interval = 0.08
+        self.boundary_update_interval = 0.06
+        self.max_update_interval = 0.35
         self.buffer_parts: list[str] = []
         self.live: Optional[Live] = None
 
@@ -73,7 +75,16 @@ class StreamOutputRenderer:
             if self.mode == "md":
                 self.buffer_parts.append(text)
                 now = time.monotonic()
-                if now - self.last_update >= self.update_interval or text.endswith("\n"):
+                elapsed = now - self.last_update
+                has_boundary = bool(_MD_RENDER_BOUNDARY_RE.search(text))
+                # Reduce Markdown reflow jitter by preferring sentence/line boundaries,
+                # while still forcing periodic refresh on long continuous tokens.
+                should_refresh = False
+                if has_boundary and elapsed >= self.boundary_update_interval:
+                    should_refresh = True
+                elif elapsed >= self.max_update_interval:
+                    should_refresh = True
+                if should_refresh:
                     assert self.live is not None
                     self.live.update(Markdown("".join(self.buffer_parts)))
                     self.last_update = now
@@ -91,7 +102,7 @@ class StreamOutputRenderer:
             note = f"\n\n*Tool call proposed:* `{tool_name}`\n\n"
             self.buffer_parts.append(note)
             now = time.monotonic()
-            if now - self.last_update >= self.update_interval and self.live is not None:
+            if self.live is not None:
                 self.live.update(Markdown("".join(self.buffer_parts)))
                 self.last_update = now
             return
