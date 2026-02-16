@@ -4,6 +4,8 @@
 
 **Date**: 2024-01 (retroactive documentation)
 
+**Path Update** (2026-02-16): implementation moved from legacy `resume_agent/*` to `apps/*` + `packages/*`.
+
 ## Context
 
 Resume-agent uses Google Gemini API for LLM capabilities with function calling. The codebase needed to support multiple LLM providers while maintaining a consistent tool interface.
@@ -39,6 +41,6 @@ Breaking function call/response pairs in history causes Gemini API errors. The `
 2. **Abstraction layer**: Would add another layer of indirection without clear benefits
 
 ## References
-- `resume_agent/tools/base.py` - Tool schema definition
-- `resume_agent/llm.py` - HistoryManager with pair-aware pruning
-- `resume_agent/agent.py` - Format conversion in `_register_tools()`
+- `packages/core/resume_agent_core/tools/base.py` - Tool schema definition
+- `packages/core/resume_agent_core/llm.py` - HistoryManager with pair-aware pruning
+- `packages/core/resume_agent_core/agent.py` - Format conversion in `_register_tools()`

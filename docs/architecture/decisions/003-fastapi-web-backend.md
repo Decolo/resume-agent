@@ -4,6 +4,8 @@
 
 **Date**: 2024-02 (Web productization Phase 1)
 
+**Path Update** (2026-02-16): implementation moved from legacy `resume_agent/*` to `apps/*` + `packages/*`.
+
 ## Context
 
 Resume-agent needed a headless web API for:
@@ -40,9 +42,9 @@ Use **FastAPI** as the web framework for the headless backend.
 - **Breaking changes**: FastAPI is pre-1.0, though API is stable
 
 ### Implementation Details
-- `resume_agent/web/app.py` - FastAPI application with lifespan management
-- `resume_agent/web/api/v1/` - Versioned API endpoints
-- `resume_agent/web/store.py` - In-memory runtime store with async locks
+- `apps/api/resume_agent_api/app.py` - FastAPI application with lifespan management
+- `apps/api/resume_agent_api/api/v1/` - Versioned API endpoints
+- `apps/api/resume_agent_api/store.py` - In-memory runtime store with async locks
 - SSE streaming via `EventSourceResponse` for run events
 
 ## Alternatives Considered
@@ -53,6 +55,6 @@ Use **FastAPI** as the web framework for the headless backend.
 4. **aiohttp**: Lower-level, would require more boilerplate
 
 ## References
-- `resume_agent/web/app.py` - FastAPI application
+- `apps/api/resume_agent_api/app.py` - FastAPI application
 - `docs/api-reference/web-api-v1.md` - API contract
 - `docs/api-reference/sse-events-v1.md` - SSE event schema

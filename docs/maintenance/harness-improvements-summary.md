@@ -29,12 +29,12 @@ This document tracks improvements made to resume-agent based on the OpenAI Harne
 **Impact**: Automated quality gates, catches regressions before merge
 
 ### ✅ #3: AGENTS.md Structure
-**Status**: Already optimal, no changes needed
-**Files**: `AGENTS.md` (95 lines), `.claude/CLAUDE.md` (108 lines)
+**Status**: Updated for monorepo cutover
+**Files**: `AGENTS.md`, `.claude/CLAUDE.md`
 
-- AGENTS.md is concise quick reference
+- AGENTS.md keeps concise quick reference and points to `apps/*` + `packages/*`
 - CLAUDE.md has detailed architecture
-- No context crowding issue
+- No context crowding issue after path updates
 
 **Impact**: N/A - already follows best practices
 
@@ -71,7 +71,7 @@ This document tracks improvements made to resume-agent based on the OpenAI Harne
 **Status**: Complete
 **Files**: `.github/workflows/ci.yml`
 
-- Added `--cov=resume_agent --cov-report=term-missing --cov-fail-under=50`
+- Added `--cov=apps --cov=packages --cov-report=term-missing --cov-fail-under=50`
 - Current coverage: 53%
 - Threshold set at 50% to avoid blocking, can be raised incrementally
 
@@ -79,7 +79,7 @@ This document tracks improvements made to resume-agent based on the OpenAI Harne
 
 ### ⚠️ #8: Decompose store.py
 **Status**: Deferred (risky)
-**Files**: `resume_agent/web/store.py` (990 lines)
+**Files**: `apps/api/resume_agent_api/store.py` (migrated from legacy path)
 
 **Decision**: Skip for now. The file is large but cohesive. It's a single stateful coordinator with:
 - Shared mutable state (`_sessions` dict, `_lock`)

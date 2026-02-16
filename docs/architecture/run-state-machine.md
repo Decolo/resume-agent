@@ -70,7 +70,7 @@ Terminal approval states:
 
 ## Mapping to Existing Runtime
 
-Current behavior in `resume_agent/llm.py` already supports:
+Current behavior in `packages/core/resume_agent_core/llm.py` already supports:
 - pending write tool call pause (`_pending_tool_calls`)
 - explicit approve/reject actions (`approve_pending_tool_calls`, `reject_pending_tool_calls`)
 - cancellation propagation (`asyncio.CancelledError`)

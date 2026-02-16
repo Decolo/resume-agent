@@ -6,9 +6,9 @@ This document tracks quality trends over time using stable, low-noise metrics.
 
 | Metric | Value | Source |
 |---|---:|---|
-| Python LOC (app + tests) | 16,370 | `wc -l` over `resume_agent/**/*.py` + `tests/**/*.py` |
-| Largest module | `resume_agent/cli.py` (1,221 LOC) | size scan |
-| Test suite status | 234 passed | `uv run --extra dev pytest -q` |
+| Python LOC (app + tests) | 16,616 | `wc -l` over `apps/**/*.py` + `packages/**/*.py` + `tests/**/*.py` |
+| Largest module | `apps/cli/resume_agent_cli/app.py` (1,222 LOC) | size scan |
+| Test suite status | 239 passed | `uv run --extra dev pytest -q` |
 | Required CI checks | `test`, `lint`, `typecheck` | `.github/workflows/ci.yml` |
 | Architecture boundary test | enabled | `tests/test_architecture_boundaries.py` |
 
@@ -28,7 +28,7 @@ Start at 100. Apply penalties:
 - Score: **95/100**
 - Notes:
   - No CI failures observed in current baseline.
-  - Largest module (`cli.py`) is high but below 1,500 LOC threshold.
+  - Largest module (`apps/cli/resume_agent_cli/app.py`) is high but below 1,500 LOC threshold.
   - Staging cost guardrail validation is still pending.
 
 ## Update Cadence
@@ -41,6 +41,6 @@ Update this file:
 
 ## Next Improvement Targets
 
-1. Reduce `resume_agent/cli.py` below 1,000 LOC.
+1. Reduce `apps/cli/resume_agent_cli/app.py` below 1,000 LOC.
 2. Add load/perf metric tracking once Week 8 ops work starts.
 3. Add trend history section (weekly snapshots).

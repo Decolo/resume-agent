@@ -22,10 +22,10 @@ uv run ruff check --select F401 .
 
 ```bash
 # Run coverage and identify untested code
-uv run pytest --cov=resume_agent --cov-report=term-missing
+uv run pytest --cov=apps --cov=packages --cov-report=term-missing
 
 # Focus on new files or recently modified code
-git diff main --name-only | grep "\.py$" | xargs uv run pytest --cov-report=term-missing --cov=
+git diff main --name-only | grep "\.py$" | xargs -r uv run pytest -q
 ```
 
 ### 3. Dependency Audit (monthly)
