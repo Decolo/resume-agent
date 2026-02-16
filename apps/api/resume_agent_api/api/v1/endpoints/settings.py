@@ -7,10 +7,13 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends
 
 from packages.contracts.resume_agent_contracts.web.settings import (
+    AlertItemResponse,
+    AlertsResponse,
     CleanupResponse,
     FallbackModelResponse,
     ProviderPolicyResponse,
     RetryPolicyResponse,
+    RuntimeMetricsResponse,
 )
 
 from ....store import InMemoryRuntimeStore
@@ -49,3 +52,19 @@ async def run_cleanup(
 ) -> CleanupResponse:
     result = await store.cleanup_expired_resources()
     return CleanupResponse(**result)
+
+
+@router.get("/metrics", response_model=RuntimeMetricsResponse)
+async def get_runtime_metrics(
+    store: InMemoryRuntimeStore = Depends(get_store),
+) -> RuntimeMetricsResponse:
+    metrics = await store.get_runtime_metrics()
+    return RuntimeMetricsResponse(**metrics)
+
+
+@router.get("/alerts", response_model=AlertsResponse)
+async def get_alerts(
+    store: InMemoryRuntimeStore = Depends(get_store),
+) -> AlertsResponse:
+    alerts = await store.get_alerts()
+    return AlertsResponse(items=[AlertItemResponse(**item) for item in alerts])

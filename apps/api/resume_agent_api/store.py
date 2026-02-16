@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
@@ -21,10 +22,13 @@ from packages.contracts.resume_agent_contracts.web.runtime import (
 
 from .artifact_storage import ArtifactStorageProvider
 from .errors import APIError
+from .redaction import redact_for_log
 from .workspace import WorkspaceFile, WorkspaceFileContent, WorkspaceProvider
 
 WRITE_INTENT_KEYWORDS = ("write", "update", "modify", "edit", "create", "copy")
+STATE_SCHEMA_VERSION = 1
 logger = logging.getLogger("resume_agent.web.api")
+audit_logger = logging.getLogger("resume_agent.web.audit")
 
 
 def utc_now_iso() -> str:
@@ -109,9 +113,12 @@ class InMemoryRuntimeStore:
         artifact_ttl_seconds: int = 0,
         cleanup_interval_seconds: int = 300,
         provider_error_policy: Optional[Dict[str, Any]] = None,
+        state_file: Optional[Path] = None,
+        alert_thresholds: Optional[Dict[str, float]] = None,
     ) -> None:
         self._sessions: Dict[str, SessionRecord] = {}
         self._lock = asyncio.Lock()
+        self._persist_lock = asyncio.Lock()
         self._run_queue: asyncio.Queue[Tuple[Optional[str], Optional[str]]] = asyncio.Queue()
         self._stop_requested = False
         self._worker_task: Optional[asyncio.Task] = None
@@ -131,9 +138,17 @@ class InMemoryRuntimeStore:
             "retry": {"max_attempts": 3, "base_delay_seconds": 1.0, "max_delay_seconds": 30.0},
             "fallback_chain": [],
         }
+        self.state_file = state_file.resolve() if state_file else None
+        self.alert_thresholds = alert_thresholds or {
+            "max_error_rate": 0.2,
+            "max_p95_latency_ms": 15_000.0,
+            "max_total_cost_usd": 10.0,
+            "max_queue_depth": 50.0,
+        }
 
     async def start(self) -> None:
         """Start background run worker."""
+        await self._load_state()
         if self._worker_task is None:
             self._stop_requested = False
             self._worker_task = asyncio.create_task(self._run_worker())
@@ -154,6 +169,7 @@ class InMemoryRuntimeStore:
             except asyncio.CancelledError:
                 pass
             self._cleanup_task = None
+        await self._persist_state()
 
     async def create_session(self, workspace_name: str, auto_approve: bool, tenant_id: str) -> SessionRecord:
         session_id = make_id("sess")
@@ -168,6 +184,7 @@ class InMemoryRuntimeStore:
         )
         async with self._lock:
             self._sessions[session_id] = session
+        await self._persist_state()
         return session
 
     def runtime_metadata(self) -> Dict[str, str]:
@@ -178,6 +195,26 @@ class InMemoryRuntimeStore:
             "retry_max_attempts": str(self.provider_error_policy.get("retry", {}).get("max_attempts", 0)),
             "fallback_chain_size": str(len(self.provider_error_policy.get("fallback_chain", []))),
         }
+
+    async def _audit(
+        self,
+        action: str,
+        session_id: str,
+        run_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            tenant_id = session.tenant_id if session else "-"
+        safe_details = redact_for_log(details or {})
+        audit_logger.info(
+            "audit action=%s tenant_id=%s session_id=%s run_id=%s details=%s",
+            action,
+            tenant_id,
+            session_id,
+            run_id or "-",
+            safe_details,
+        )
 
     async def get_session(self, session_id: str, tenant_id: Optional[str] = None) -> SessionRecord:
         async with self._lock:
@@ -193,6 +230,7 @@ class InMemoryRuntimeStore:
         async with self._lock:
             session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             session.settings["auto_approve"] = enabled
+        await self._persist_state()
         return {"enabled": enabled}
 
     async def upload_resume(
@@ -214,6 +252,7 @@ class InMemoryRuntimeStore:
             session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             session.resume_path = metadata.path
             self._promote_workflow_locked(session, "resume_uploaded")
+        await self._persist_state()
         return metadata
 
     async def submit_jd(
@@ -239,11 +278,13 @@ class InMemoryRuntimeStore:
             session.jd_text = normalized_text or None
             session.jd_url = normalized_url or None
             self._promote_workflow_locked(session, "jd_provided")
-            return {
+            response = {
                 "workflow_state": session.workflow_state,
                 "jd_text": session.jd_text,
                 "jd_url": session.jd_url,
             }
+        await self._persist_state()
+        return response
 
     async def export_session(self, session_id: str, tenant_id: Optional[str] = None) -> WorkspaceFile:
         session = await self.get_session(session_id=session_id, tenant_id=tenant_id)
@@ -279,7 +320,12 @@ class InMemoryRuntimeStore:
             session_locked = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
             session_locked.latest_export_path = artifact.path
             self._promote_workflow_locked(session_locked, "exported")
-
+        await self._persist_state()
+        await self._audit(
+            action="file_exported",
+            session_id=session_id,
+            details={"artifact_path": artifact.path, "size": artifact.size, "mime_type": artifact.mime_type},
+        )
         return artifact
 
     async def create_run(
@@ -338,6 +384,7 @@ class InMemoryRuntimeStore:
                 session.idempotency_keys[idempotency_key] = (message_fingerprint, run_id)
 
         await self._run_queue.put((session_id, run_id))
+        await self._persist_state()
         return run, False
 
     async def get_run(
@@ -372,6 +419,93 @@ class InMemoryRuntimeStore:
             "total_estimated_cost_usd": round(total_cost, 8),
         }
 
+    async def get_runtime_metrics(self) -> Dict[str, Any]:
+        async with self._lock:
+            sessions = list(self._sessions.values())
+            queue_depth = self._run_queue.qsize()
+
+        runs: List[RunRecord] = []
+        pending_approvals = 0
+        for session in sessions:
+            runs.extend(session.runs.values())
+            pending_approvals += session.pending_approvals_count
+
+        runs_total = len(runs)
+        runs_active = sum(1 for run in runs if run.status in ACTIVE_RUN_STATES)
+        runs_completed = sum(1 for run in runs if run.status == "completed")
+        runs_failed = sum(1 for run in runs if run.status == "failed")
+        runs_interrupted = sum(1 for run in runs if run.status == "interrupted")
+
+        terminal_runs = [run for run in runs if run.status in TERMINAL_RUN_STATES]
+        error_rate = (runs_failed / len(terminal_runs)) if terminal_runs else 0.0
+
+        durations_ms: List[float] = []
+        for run in terminal_runs:
+            if not run.started_at or not run.ended_at:
+                continue
+            start = self._iso_to_epoch(run.started_at)
+            end = self._iso_to_epoch(run.ended_at)
+            if start is None or end is None:
+                continue
+            durations_ms.append(max(0.0, (end - start) * 1000.0))
+
+        avg_latency_ms = (sum(durations_ms) / len(durations_ms)) if durations_ms else 0.0
+        p95_latency_ms = 0.0
+        if durations_ms:
+            durations_ms.sort()
+            idx = max(0, int((len(durations_ms) - 1) * 0.95))
+            p95_latency_ms = durations_ms[idx]
+
+        total_tokens = sum(max(run.usage_tokens, 0) for run in runs)
+        total_cost = sum(max(run.estimated_cost_usd, 0.0) for run in runs)
+
+        return {
+            "sessions": len(sessions),
+            "queue_depth": queue_depth,
+            "pending_approvals": pending_approvals,
+            "runs_total": runs_total,
+            "runs_active": runs_active,
+            "runs_completed": runs_completed,
+            "runs_failed": runs_failed,
+            "runs_interrupted": runs_interrupted,
+            "error_rate": round(error_rate, 6),
+            "avg_latency_ms": round(avg_latency_ms, 3),
+            "p95_latency_ms": round(p95_latency_ms, 3),
+            "total_tokens": total_tokens,
+            "total_estimated_cost_usd": round(total_cost, 8),
+        }
+
+    async def get_alerts(self) -> List[Dict[str, Any]]:
+        metrics = await self.get_runtime_metrics()
+        checks = [
+            ("error_rate", metrics["error_rate"], float(self.alert_thresholds.get("max_error_rate", 0.2))),
+            ("p95_latency_ms", metrics["p95_latency_ms"], float(self.alert_thresholds.get("max_p95_latency_ms", 0.0))),
+            (
+                "total_estimated_cost_usd",
+                metrics["total_estimated_cost_usd"],
+                float(self.alert_thresholds.get("max_total_cost_usd", 0.0)),
+            ),
+            ("queue_depth", float(metrics["queue_depth"]), float(self.alert_thresholds.get("max_queue_depth", 0.0))),
+        ]
+        alerts: List[Dict[str, Any]] = []
+        for name, value, threshold in checks:
+            status = "alert" if value > threshold else "ok"
+            message = (
+                f"{name}={value} exceeds threshold={threshold}"
+                if status == "alert"
+                else f"{name}={value} within threshold={threshold}"
+            )
+            alerts.append(
+                {
+                    "name": name,
+                    "status": status,
+                    "value": float(value),
+                    "threshold": float(threshold),
+                    "message": message,
+                }
+            )
+        return alerts
+
     def get_provider_policy(self) -> Dict[str, Any]:
         """Return effective provider retry/fallback policy."""
         return self.provider_error_policy
@@ -386,11 +520,17 @@ class InMemoryRuntimeStore:
     ) -> WorkspaceFile:
         await self.get_session(session_id=session_id, tenant_id=tenant_id)
         self._validate_upload(content=content, mime_type=mime_type)
-        return await self._workspace_provider.save_uploaded_file(
+        saved = await self._workspace_provider.save_uploaded_file(
             session_id=session_id,
             filename=filename,
             content=content,
         )
+        await self._audit(
+            action="file_uploaded",
+            session_id=session_id,
+            details={"path": saved.path, "size": saved.size, "mime_type": saved.mime_type},
+        )
+        return saved
 
     async def list_session_files(
         self,
@@ -475,6 +615,13 @@ class InMemoryRuntimeStore:
             {"approval_id": approval_id},
         )
         run.wait_event.set()
+        await self._persist_state()
+        await self._audit(
+            action="approval_decided",
+            session_id=session_id,
+            run_id=run.run_id,
+            details={"approval_id": approval_id, "decision": "approved", "apply_to_future": apply_to_future},
+        )
         return approval
 
     async def reject_approval(
@@ -510,6 +657,13 @@ class InMemoryRuntimeStore:
             {"approval_id": approval_id, "reason": "user_rejected"},
         )
         run.wait_event.set()
+        await self._persist_state()
+        await self._audit(
+            action="approval_decided",
+            session_id=session_id,
+            run_id=run.run_id,
+            details={"approval_id": approval_id, "decision": "rejected"},
+        )
         return approval
 
     async def interrupt_run(
@@ -531,7 +685,8 @@ class InMemoryRuntimeStore:
             run.interrupt_requested = True
             run.status = "interrupting"
             run.wait_event.set()
-            return run
+        await self._persist_state()
+        return run
 
     async def snapshot_events(
         self,
@@ -718,7 +873,8 @@ class InMemoryRuntimeStore:
             session.pending_approvals_count += 1
             run.pending_approval_id = approval_id
             run.wait_event.clear()
-            return approval
+        await self._persist_state()
+        return approval
 
     async def _get_approval_status(self, session_id: str, approval_id: str) -> str:
         async with self._lock:
@@ -791,6 +947,7 @@ class InMemoryRuntimeStore:
                 run.pending_approval_id = None
                 if session.active_run_id == run_id:
                     session.active_run_id = None
+        await self._persist_state()
 
     async def _append_event(
         self,
@@ -819,6 +976,7 @@ class InMemoryRuntimeStore:
                     "payload": payload,
                 }
             )
+        await self._persist_state()
 
     def _finalize_run_usage_locked(self, run: RunRecord) -> None:
         text_size = len(run.message or "")
@@ -906,7 +1064,283 @@ class InMemoryRuntimeStore:
             session = self._sessions.get(session_id)
             if session and (session.resume_path is None or session.resume_path == normalized_path):
                 session.resume_path = normalized_path
+        await self._persist_state()
+        await self._audit(
+            action="file_written",
+            session_id=session_id,
+            run_id=run_id,
+            details={
+                "path": normalized_path,
+                "bytes": written.size,
+                "message_preview": message,
+            },
+        )
         return written
+
+    async def _persist_state(self) -> None:
+        if not self.state_file:
+            return
+        try:
+            async with self._persist_lock:
+                async with self._lock:
+                    payload = self._serialize_state_locked()
+                await asyncio.to_thread(self._write_state_file, payload)
+        except Exception as exc:
+            logger.warning("state_persist_failed path=%s error=%s", self.state_file, exc)
+
+    def _serialize_state_locked(self) -> Dict[str, Any]:
+        sessions_payload = [self._serialize_session_locked(session) for session in self._sessions.values()]
+        sessions_payload.sort(key=lambda item: item["session_id"])
+        return {
+            "schema_version": STATE_SCHEMA_VERSION,
+            "saved_at": utc_now_iso(),
+            "sessions": sessions_payload,
+        }
+
+    def _serialize_session_locked(self, session: SessionRecord) -> Dict[str, Any]:
+        runs = [self._serialize_run_locked(run) for run in session.runs.values()]
+        runs.sort(key=lambda item: item["created_at"])
+        approvals = [self._serialize_approval_locked(approval) for approval in session.approvals.values()]
+        approvals.sort(key=lambda item: item["created_at"])
+        return {
+            "session_id": session.session_id,
+            "tenant_id": session.tenant_id,
+            "workspace_name": session.workspace_name,
+            "created_at": session.created_at,
+            "workflow_state": session.workflow_state,
+            "settings": dict(session.settings),
+            "active_run_id": session.active_run_id,
+            "pending_approvals_count": session.pending_approvals_count,
+            "resume_path": session.resume_path,
+            "jd_text": session.jd_text,
+            "jd_url": session.jd_url,
+            "latest_export_path": session.latest_export_path,
+            "runs": runs,
+            "approvals": approvals,
+            "idempotency_keys": dict(session.idempotency_keys),
+        }
+
+    def _serialize_run_locked(self, run: RunRecord) -> Dict[str, Any]:
+        return {
+            "run_id": run.run_id,
+            "session_id": run.session_id,
+            "message": run.message,
+            "status": run.status,
+            "created_at": run.created_at,
+            "started_at": run.started_at,
+            "ended_at": run.ended_at,
+            "error": run.error,
+            "events": list(run.events),
+            "event_seq": run.event_seq,
+            "interrupt_requested": run.interrupt_requested,
+            "pending_approval_id": run.pending_approval_id,
+            "usage_tokens": run.usage_tokens,
+            "estimated_cost_usd": run.estimated_cost_usd,
+            "usage_finalized": run.usage_finalized,
+        }
+
+    def _serialize_approval_locked(self, approval: ApprovalRecord) -> Dict[str, Any]:
+        return {
+            "approval_id": approval.approval_id,
+            "session_id": approval.session_id,
+            "run_id": approval.run_id,
+            "tool_name": approval.tool_name,
+            "args": dict(approval.args),
+            "created_at": approval.created_at,
+            "status": approval.status,
+            "decided_at": approval.decided_at,
+        }
+
+    def _write_state_file(self, payload: Dict[str, Any]) -> None:
+        if not self.state_file:
+            return
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.state_file)
+
+    async def _load_state(self) -> None:
+        if not self.state_file or not self.state_file.exists():
+            return
+        try:
+            raw = await asyncio.to_thread(self.state_file.read_text, "utf-8")
+            payload = json.loads(raw)
+        except Exception as exc:
+            logger.warning("state_load_failed path=%s error=%s", self.state_file, exc)
+            return
+
+        sessions = self._deserialize_sessions(payload)
+        async with self._lock:
+            self._sessions = sessions
+
+        # Persist any startup normalization so subsequent restarts are deterministic.
+        await self._persist_state()
+
+    def _deserialize_sessions(self, payload: Dict[str, Any]) -> Dict[str, SessionRecord]:
+        schema_version = int(payload.get("schema_version", 1))
+        if schema_version > STATE_SCHEMA_VERSION:
+            logger.warning(
+                "state_schema_unsupported file_schema=%s current_schema=%s",
+                schema_version,
+                STATE_SCHEMA_VERSION,
+            )
+            return {}
+
+        raw_sessions = payload.get("sessions", [])
+        if isinstance(raw_sessions, dict):
+            raw_sessions = list(raw_sessions.values())
+        if not isinstance(raw_sessions, list):
+            return {}
+
+        loaded: Dict[str, SessionRecord] = {}
+        for raw_session in raw_sessions:
+            if not isinstance(raw_session, dict):
+                continue
+            session = self._deserialize_session(raw_session)
+            if session:
+                loaded[session.session_id] = session
+        return loaded
+
+    def _deserialize_session(self, data: Dict[str, Any]) -> Optional[SessionRecord]:
+        session_id = str(data.get("session_id", "")).strip()
+        tenant_id = str(data.get("tenant_id", "")).strip() or "local-dev"
+        if not session_id:
+            return None
+
+        raw_settings = data.get("settings", {})
+        settings = dict(raw_settings) if isinstance(raw_settings, dict) else {}
+
+        raw_idempotency = data.get("idempotency_keys", {})
+        idempotency_keys: Dict[str, Tuple[str, str]] = {}
+        if isinstance(raw_idempotency, dict):
+            for key, value in raw_idempotency.items():
+                if (
+                    isinstance(key, str)
+                    and isinstance(value, (list, tuple))
+                    and len(value) == 2
+                    and isinstance(value[0], str)
+                    and isinstance(value[1], str)
+                ):
+                    idempotency_keys[key] = (value[0], value[1])
+
+        session = SessionRecord(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            workspace_name=str(data.get("workspace_name", "default-workspace")),
+            created_at=str(data.get("created_at", utc_now_iso())),
+            workflow_state=str(data.get("workflow_state", "draft")),
+            settings=settings,
+            active_run_id=data.get("active_run_id"),
+            pending_approvals_count=int(data.get("pending_approvals_count", 0) or 0),
+            resume_path=data.get("resume_path"),
+            jd_text=data.get("jd_text"),
+            jd_url=data.get("jd_url"),
+            latest_export_path=data.get("latest_export_path"),
+            idempotency_keys=idempotency_keys,
+        )
+
+        for run_data in data.get("runs", []):
+            run = self._deserialize_run(run_data, session_id=session_id)
+            if run:
+                session.runs[run.run_id] = run
+
+        for approval_data in data.get("approvals", []):
+            approval = self._deserialize_approval(approval_data, session_id=session_id)
+            if approval:
+                session.approvals[approval.approval_id] = approval
+
+        self._normalize_loaded_session(session)
+        return session
+
+    def _deserialize_run(self, data: Any, session_id: str) -> Optional[RunRecord]:
+        if not isinstance(data, dict):
+            return None
+        run_id = str(data.get("run_id", "")).strip()
+        if not run_id:
+            return None
+        raw_events = data.get("events", [])
+        events = [event for event in raw_events if isinstance(event, dict)] if isinstance(raw_events, list) else []
+        return RunRecord(
+            run_id=run_id,
+            session_id=session_id,
+            message=str(data.get("message", "")),
+            status=str(data.get("status", "completed")),
+            created_at=str(data.get("created_at", utc_now_iso())),
+            started_at=data.get("started_at"),
+            ended_at=data.get("ended_at"),
+            error=data.get("error"),
+            events=events,
+            event_seq=int(data.get("event_seq", len(events)) or 0),
+            interrupt_requested=bool(data.get("interrupt_requested", False)),
+            pending_approval_id=data.get("pending_approval_id"),
+            usage_tokens=int(data.get("usage_tokens", 0) or 0),
+            estimated_cost_usd=float(data.get("estimated_cost_usd", 0.0) or 0.0),
+            usage_finalized=bool(data.get("usage_finalized", False)),
+        )
+
+    def _deserialize_approval(self, data: Any, session_id: str) -> Optional[ApprovalRecord]:
+        if not isinstance(data, dict):
+            return None
+        approval_id = str(data.get("approval_id", "")).strip()
+        if not approval_id:
+            return None
+        return ApprovalRecord(
+            approval_id=approval_id,
+            session_id=session_id,
+            run_id=str(data.get("run_id", "")),
+            tool_name=str(data.get("tool_name", "file_write")),
+            args=dict(data.get("args", {})),
+            created_at=str(data.get("created_at", utc_now_iso())),
+            status=str(data.get("status", "pending")),
+            decided_at=data.get("decided_at"),
+        )
+
+    def _normalize_loaded_session(self, session: SessionRecord) -> None:
+        now = utc_now_iso()
+
+        for run in session.runs.values():
+            # We cannot resume in-flight jobs across process restarts in the in-memory worker,
+            # so active runs are deterministically marked interrupted.
+            if run.status in ACTIVE_RUN_STATES:
+                run.status = "interrupted"
+                run.interrupt_requested = True
+                run.pending_approval_id = None
+                if not run.started_at:
+                    run.started_at = run.created_at
+                if not run.ended_at:
+                    run.ended_at = now
+                if not any(event.get("type") == "run_interrupted" for event in run.events):
+                    run.event_seq = max(run.event_seq, len(run.events))
+                    run.event_seq += 1
+                    run.events.append(
+                        {
+                            "event_id": f"evt_{run.run_id}_{run.event_seq:04d}",
+                            "session_id": session.session_id,
+                            "run_id": run.run_id,
+                            "type": "run_interrupted",
+                            "ts": now,
+                            "payload": {"status": "interrupted", "reason": "process_restarted"},
+                        }
+                    )
+            if run.event_seq < len(run.events):
+                run.event_seq = len(run.events)
+            if run.status in TERMINAL_RUN_STATES and not run.usage_finalized:
+                self._finalize_run_usage_locked(run)
+
+        for approval in session.approvals.values():
+            run = session.runs.get(approval.run_id)
+            is_orphaned = run is None
+            is_inactive = run and run.status in TERMINAL_RUN_STATES
+            no_longer_pending = run and run.pending_approval_id != approval.approval_id
+            if approval.status == "pending" and (is_orphaned or is_inactive or no_longer_pending):
+                approval.status = "rejected"
+                approval.decided_at = now
+
+        session.pending_approvals_count = sum(1 for item in session.approvals.values() if item.status == "pending")
+        if session.active_run_id:
+            active = session.runs.get(session.active_run_id)
+            if not active or active.status in TERMINAL_RUN_STATES:
+                session.active_run_id = None
 
     async def cleanup_expired_resources(self) -> Dict[str, int]:
         """Cleanup expired session/workspace/artifact resources."""
@@ -944,6 +1378,9 @@ class InMemoryRuntimeStore:
                 ttl_seconds=self.artifact_ttl_seconds
             )
 
+        if removed_sessions or removed_artifact_files:
+            await self._persist_state()
+
         return {
             "removed_sessions": len(removed_sessions),
             "removed_workspace_files": removed_workspace_files,
@@ -966,6 +1403,13 @@ class InMemoryRuntimeStore:
 
         header = "# Exported Resume\n\nGenerated by Resume Agent Web UI.\n\n---\n\n"
         return f"{header}{text}".encode("utf-8")
+
+    @staticmethod
+    def _iso_to_epoch(value: str) -> Optional[float]:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return None
 
     @staticmethod
     def _message_requires_write(message: str) -> bool:

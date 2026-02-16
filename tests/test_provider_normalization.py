@@ -5,8 +5,60 @@ from types import SimpleNamespace
 import pytest
 
 from packages.core.resume_agent_core.llm import LLMAgent, LLMConfig
+from packages.providers.resume_agent_providers.gemini import GeminiProvider
 from packages.providers.resume_agent_providers.openai_compat import OpenAICompatibleProvider
 from packages.providers.resume_agent_providers.types import FunctionCall, GenerationConfig, StreamDelta
+
+
+def test_gemini_completion_normalizes_text_and_tool_calls():
+    provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
+
+    response = SimpleNamespace(
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(text="hello", function_call=None),
+                        SimpleNamespace(
+                            text=None, function_call=SimpleNamespace(name="file_read", args={"path": "a.md"})
+                        ),
+                        SimpleNamespace(text="world", function_call=None),
+                    ]
+                )
+            )
+        ]
+    )
+
+    normalized = provider._from_gemini_response(response)
+    assert normalized.text == "hello world"
+    assert len(normalized.function_calls) == 1
+    assert normalized.function_calls[0].name == "file_read"
+    assert normalized.function_calls[0].arguments == {"path": "a.md"}
+
+
+def test_gemini_stream_deltas_normalize_text_and_function_call_start():
+    provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
+    chunk = SimpleNamespace(
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(text="partial", function_call=None),
+                        SimpleNamespace(
+                            text=None, function_call=SimpleNamespace(name="file_write", args={"path": "b.md"})
+                        ),
+                    ]
+                )
+            )
+        ]
+    )
+
+    deltas = provider._iter_stream_deltas(chunk)
+    assert len(deltas) == 2
+    assert deltas[0].text == "partial"
+    assert deltas[1].function_call_start is not None
+    assert deltas[1].function_call_start.name == "file_write"
+    assert deltas[1].function_call_start.arguments == {"path": "b.md"}
 
 
 def test_openai_completion_normalizes_list_content_and_tool_calls():
@@ -144,6 +196,22 @@ def test_openai_kwargs_disable_thinking_for_kimi_tool_calls():
     assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+def test_openai_kwargs_do_not_force_thinking_for_non_kimi_models():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="gpt-4o-mini",
+        api_base="https://api.openai.com/v1",
+    )
+    kwargs = provider._build_chat_kwargs(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[{"type": "function", "function": {"name": "file_read", "parameters": {}}}],
+        config=GenerationConfig(system_prompt="", max_tokens=128, temperature=0.2),
+        stream=False,
+    )
+
+    assert "extra_body" not in kwargs
+
+
 def test_extract_allowed_temperature_from_error_message():
     provider = OpenAICompatibleProvider(
         api_key="test-key",
@@ -154,6 +222,45 @@ def test_extract_allowed_temperature_from_error_message():
         "Error code: 400 - {'error': {'message': 'invalid temperature: only 0.6 is allowed for this model'}}"
     )
     assert provider._extract_allowed_temperature(error) == 0.6
+
+
+@pytest.mark.asyncio
+async def test_openai_temperature_retry_persists_allowed_temperature(monkeypatch):
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2.5",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    calls = {"count": 0}
+
+    async def fake_create(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError(
+                "Error code: 400 - {'error': {'message': 'invalid temperature: only 0.6 is allowed for this model'}}"
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))], usage=None
+        )
+
+    monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
+
+    first_kwargs = provider._build_chat_kwargs(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=None,
+        config=GenerationConfig(system_prompt="", max_tokens=128, temperature=0.2),
+        stream=False,
+    )
+    await provider._create_with_temperature_retry(first_kwargs)
+    assert calls["count"] == 2
+
+    second_kwargs = provider._build_chat_kwargs(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=None,
+        config=GenerationConfig(system_prompt="", max_tokens=128, temperature=0.2),
+        stream=False,
+    )
+    assert second_kwargs["temperature"] == 0.6
 
 
 @pytest.mark.asyncio

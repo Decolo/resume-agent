@@ -86,10 +86,15 @@ def create_app() -> FastAPI:
     session_ttl_seconds = int(os.getenv("RESUME_AGENT_WEB_SESSION_TTL_SECONDS", "0"))
     artifact_ttl_seconds = int(os.getenv("RESUME_AGENT_WEB_ARTIFACT_TTL_SECONDS", "0"))
     cleanup_interval_seconds = int(os.getenv("RESUME_AGENT_WEB_CLEANUP_INTERVAL_SECONDS", "300"))
+    state_file_env = os.getenv("RESUME_AGENT_WEB_STATE_FILE", "").strip()
     provider_retry_max_attempts = int(os.getenv("RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_ATTEMPTS", "3"))
     provider_retry_base_delay_seconds = float(os.getenv("RESUME_AGENT_WEB_PROVIDER_RETRY_BASE_DELAY_SECONDS", "1.0"))
     provider_retry_max_delay_seconds = float(os.getenv("RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_DELAY_SECONDS", "30.0"))
     provider_fallback_chain = _parse_fallback_chain(os.getenv("RESUME_AGENT_WEB_PROVIDER_FALLBACK_CHAIN", ""))
+    alert_max_error_rate = float(os.getenv("RESUME_AGENT_WEB_ALERT_MAX_ERROR_RATE", "0.2"))
+    alert_max_p95_latency_ms = float(os.getenv("RESUME_AGENT_WEB_ALERT_MAX_P95_LATENCY_MS", "15000"))
+    alert_max_total_cost_usd = float(os.getenv("RESUME_AGENT_WEB_ALERT_MAX_TOTAL_COST_USD", "10"))
+    alert_max_queue_depth = float(os.getenv("RESUME_AGENT_WEB_ALERT_MAX_QUEUE_DEPTH", "50"))
     allowed_upload_mime_types = [
         item.strip()
         for item in os.getenv(
@@ -101,6 +106,7 @@ def create_app() -> FastAPI:
 
     workspace_root = Path(os.getenv("RESUME_AGENT_WEB_WORKSPACE_ROOT", "workspace/web_sessions")).resolve()
     artifact_root = Path(os.getenv("RESUME_AGENT_WEB_ARTIFACT_ROOT", "workspace/web_artifacts")).resolve()
+    state_file = Path(state_file_env).resolve() if state_file_env else None
     workspace_provider = RemoteWorkspaceProvider(workspace_root)
     artifact_provider = LocalArtifactStorageProvider(artifact_root)
     provider_error_policy: Dict[str, Any] = {
@@ -110,6 +116,12 @@ def create_app() -> FastAPI:
             "max_delay_seconds": max(provider_retry_max_delay_seconds, 0.0),
         },
         "fallback_chain": provider_fallback_chain,
+    }
+    alert_thresholds: Dict[str, float] = {
+        "max_error_rate": max(alert_max_error_rate, 0.0),
+        "max_p95_latency_ms": max(alert_max_p95_latency_ms, 0.0),
+        "max_total_cost_usd": max(alert_max_total_cost_usd, 0.0),
+        "max_queue_depth": max(alert_max_queue_depth, 0.0),
     }
     store = InMemoryRuntimeStore(
         workspace_provider=workspace_provider,
@@ -124,6 +136,8 @@ def create_app() -> FastAPI:
         artifact_ttl_seconds=artifact_ttl_seconds,
         cleanup_interval_seconds=cleanup_interval_seconds,
         provider_error_policy=provider_error_policy,
+        state_file=state_file,
+        alert_thresholds=alert_thresholds,
     )
     rate_limiter = InMemoryRateLimiter(max_requests_per_minute=max_requests_per_minute)
 

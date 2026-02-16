@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ....redaction import redact_text
 from ....store import TERMINAL_RUN_STATES, InMemoryRuntimeStore
 from ..deps import get_store, get_tenant_id
 
@@ -58,13 +59,14 @@ async def create_message_run(
     )
     meta = store.runtime_metadata()
     logger.info(
-        "run_created session_id=%s run_id=%s provider=%s model=%s status=%s reused=%s",
+        "run_created session_id=%s run_id=%s provider=%s model=%s status=%s reused=%s message_preview=%s",
         session_id,
         run.run_id,
         meta["provider"],
         meta["model"],
         run.status,
         _is_reused,
+        redact_text(request.message, max_length=120),
     )
     return CreateMessageResponse(run_id=run.run_id, status=run.status)
 
