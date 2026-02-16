@@ -71,15 +71,32 @@ def test_architecture_boundaries() -> None:
         "resume_agent.agent",
         "resume_agent.agent_factory",
     )
+    web_adapter_allowed_dependents = ("resume_agent.web", "apps.api")
 
     for file_path in py_files:
         module = _module_name(file_path)
         imports = _imported_modules(file_path, module)
 
-        if not module.startswith("resume_agent.web"):
+        if not module.startswith(web_adapter_allowed_dependents):
             for imported in imports:
                 if imported.startswith("resume_agent.web"):
-                    violations.append(f"{module} imports {imported}; only web package may depend on web adapters")
+                    violations.append(
+                        f"{module} imports {imported}; only web package and apps.api may depend on web adapters"
+                    )
+
+        if module.startswith("apps.api"):
+            for imported in imports:
+                if imported.startswith("resume_agent.web.app"):
+                    violations.append(
+                        f"{module} imports {imported}; apps.api must not depend on compatibility shim modules"
+                    )
+
+        if module.startswith("resume_agent.web") and module != "resume_agent.web.app":
+            for imported in imports:
+                if imported.startswith("apps.api"):
+                    violations.append(
+                        f"{module} imports {imported}; only compatibility wrapper resume_agent.web.app may depend on apps.api"
+                    )
 
         if module.startswith(("resume_agent.providers", "packages.providers")):
             for imported in imports:

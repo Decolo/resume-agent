@@ -70,7 +70,7 @@ Exit criteria:
 
 ### Phase 3 (app split)
 
-1. Move web/api app scaffolding to `apps/api` and frontend to `apps/web`.
+1. Move web/api app scaffolding to `apps/api` and frontend to `apps/web`. (Slice D completed 2026-02-16; frontend pending)
 2. Move CLI command app to `apps/cli`.
 3. Keep legacy command aliases until one release cycle completes.
 
