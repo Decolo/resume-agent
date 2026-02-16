@@ -1,9 +1,9 @@
 # packages/core
 
-Phase 2 (Slice C) scaffold for runtime orchestration and session core in the target monorepo layout.
+Core runtime/orchestration package.
 
-Current compatibility policy:
+Ownership:
 
-1. Runtime may still import from `resume_agent/*`.
-2. `resume_agent/{agent,agent_factory,llm,session,retry,observability,cache,preview}.py` are compatibility shims that forward to this package.
-3. Follow-up slices can switch runtime imports to `packages/core/resume_agent_core/*` directly.
+1. Runtime code lives in `packages/core/resume_agent_core/*`.
+2. Core modules must not depend on `apps/*`.
+3. Legacy `resume_agent/*` compatibility wrappers have been retired.

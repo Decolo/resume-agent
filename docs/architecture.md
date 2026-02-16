@@ -7,13 +7,12 @@ Deep design details stay in specialized docs under `docs/architecture/`.
 
 The repository has one core runtime and multiple entry adapters:
 
-1. CLI adapter (source: `apps/cli/*`, compatibility path: `resume_agent/cli.py`)
-2. Web/API adapter (sources: `apps/api/*` and `apps/web/*`, compatibility path: `resume_agent/web/*`)
-3. Core runtime (`resume_agent/llm.py`, `resume_agent/agent.py`, `resume_agent/agent_factory.py`; mirrored target: `packages/core/*`)
-4. Domain tools (`resume_agent/tools/*`)
-5. Multi-agent orchestration (`resume_agent/agents/*`)
-6. Provider adapters (`resume_agent/providers/*`, mirrored target: `packages/providers/*`)
-7. Shared contracts (`resume_agent/contracts/*`, mirrored target: `packages/contracts/*`)
+1. CLI adapter (`apps/cli/resume_agent_cli/*`)
+2. Web/API adapter (`apps/api/resume_agent_api/*`)
+3. Web static assets (`apps/web/ui/*`)
+4. Core runtime (`packages/core/resume_agent_core/*`)
+5. Provider adapters (`packages/providers/resume_agent_providers/*`)
+6. Shared contracts (`packages/contracts/resume_agent_contracts/*`)
 
 ## Dependency Direction
 
@@ -35,11 +34,11 @@ Automated boundary checks:
 
 ### CLI Path
 
-`apps/cli/resume_agent_cli/app.py` (compat: `resume_agent/cli.py`) -> `agent_factory.py` -> `ResumeAgent`/`OrchestratorAgent` -> `LLMAgent` -> tools/providers.
+`apps/cli/resume_agent_cli/app.py` -> `packages/core/resume_agent_core/agent_factory.py` -> `ResumeAgent`/`OrchestratorAgent` -> `LLMAgent` -> tools/providers.
 
 ### Web Path
 
-`apps/api/resume_agent_api/app.py` (compat: `resume_agent/web/app.py`) -> API routers -> `InMemoryRuntimeStore` -> workspace/artifact providers + runtime control. Static UI assets are served from `apps/web/ui` with legacy fallback to `resume_agent/web/ui`.
+`apps/api/resume_agent_api/app.py` -> API routers -> `InMemoryRuntimeStore` -> workspace/artifact providers + runtime control. Static UI assets are served from `apps/web/ui`.
 
 ## Key Constraints
 

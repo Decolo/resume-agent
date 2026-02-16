@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from resume_agent.tools.resume_validator import ResumeValidatorTool
+from packages.core.resume_agent_core.tools.resume_validator import ResumeValidatorTool
 
 
 @pytest.fixture

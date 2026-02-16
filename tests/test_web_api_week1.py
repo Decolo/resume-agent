@@ -7,7 +7,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from resume_agent.web.app import create_app
+from apps.api.resume_agent_api.app import create_app
 
 
 def _extract_envelopes(raw_stream: str) -> list[dict]:

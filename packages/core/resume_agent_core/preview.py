@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from resume_agent.tools.base import ToolResult
+from .tools.base import ToolResult
 
 
 @dataclass

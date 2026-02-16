@@ -1,7 +1,7 @@
 """Tests for multi-agent core components."""
 
-from resume_agent.agents.context import SharedContext
-from resume_agent.agents.protocol import (
+from packages.core.resume_agent_core.agents.context import SharedContext
+from packages.core.resume_agent_core.agents.protocol import (
     AgentResult,
     AgentTask,
     create_result,

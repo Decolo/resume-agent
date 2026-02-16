@@ -16,11 +16,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from resume_agent.web.api.v1.router import api_v1_router
-from resume_agent.web.artifact_storage import LocalArtifactStorageProvider
-from resume_agent.web.errors import APIError, api_error_handler, validation_error_handler
-from resume_agent.web.store import InMemoryRuntimeStore
-from resume_agent.web.workspace import RemoteWorkspaceProvider
+from .api.v1.router import api_v1_router
+from .artifact_storage import LocalArtifactStorageProvider
+from .errors import APIError, api_error_handler, validation_error_handler
+from .store import InMemoryRuntimeStore
+from .workspace import RemoteWorkspaceProvider
 
 logger = logging.getLogger("resume_agent.web.api")
 
@@ -66,14 +66,11 @@ def _parse_fallback_chain(value: str) -> List[Dict[str, str]]:
 
 
 def _resolve_ui_dir() -> Path:
-    """Resolve UI directory with apps/web as source and legacy fallback."""
+    """Resolve UI directory from monorepo apps/web source."""
     repo_root = Path(__file__).resolve().parents[3]
     apps_web_ui_dir = repo_root / "apps" / "web" / "ui"
     if apps_web_ui_dir.exists():
         return apps_web_ui_dir
-    legacy_ui_dir = repo_root / "resume_agent" / "web" / "ui"
-    if legacy_ui_dir.exists():
-        return legacy_ui_dir
     return Path(__file__).resolve().parent / "ui"
 
 

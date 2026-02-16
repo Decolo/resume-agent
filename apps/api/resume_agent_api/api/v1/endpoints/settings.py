@@ -6,12 +6,13 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
 
-from .....contracts.web.settings import (
+from packages.contracts.resume_agent_contracts.web.settings import (
     CleanupResponse,
     FallbackModelResponse,
     ProviderPolicyResponse,
     RetryPolicyResponse,
 )
+
 from ....store import InMemoryRuntimeStore
 from ..deps import get_store
 

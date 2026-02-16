@@ -1,7 +1,4 @@
-"""Architecture boundary tests.
-
-These tests enforce dependency direction mechanically so drift is caught in CI.
-"""
+"""Architecture boundary tests for monorepo final topology."""
 
 from __future__ import annotations
 
@@ -10,7 +7,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOTS = (
-    REPO_ROOT / "resume_agent",
     REPO_ROOT / "packages",
     REPO_ROOT / "apps",
 )
@@ -40,8 +36,6 @@ def _imported_modules(file_path: Path, current_module: str) -> set[str]:
                 imported.add(node.module)
             continue
 
-        # Relative import resolution:
-        # level=1 means current package, level=2 means parent package, etc.
         ascend = max(node.level - 1, 0)
         if ascend > len(package_parts):
             continue
@@ -63,80 +57,39 @@ def test_architecture_boundaries() -> None:
         if root.exists():
             py_files.extend(sorted(root.rglob("*.py")))
 
-    provider_forbidden_prefixes = (
-        "resume_agent.agents",
-        "resume_agent.tools",
-        "resume_agent.web",
-        "resume_agent.cli",
-        "resume_agent.agent",
-        "resume_agent.agent_factory",
-    )
-    web_adapter_allowed_dependents = ("resume_agent.web", "apps.api")
-    cli_adapter_allowed_dependents = ("resume_agent.cli", "apps.cli")
-
     for file_path in py_files:
         module = _module_name(file_path)
         imports = _imported_modules(file_path, module)
 
-        if not module.startswith(web_adapter_allowed_dependents):
-            for imported in imports:
-                if imported.startswith("resume_agent.web"):
-                    violations.append(
-                        f"{module} imports {imported}; only web package and apps.api may depend on web adapters"
-                    )
-
-        if module.startswith("apps.api"):
-            for imported in imports:
-                if imported.startswith("resume_agent.web.app"):
-                    violations.append(
-                        f"{module} imports {imported}; apps.api must not depend on compatibility shim modules"
-                    )
-
-        if module.startswith("resume_agent.web") and module != "resume_agent.web.app":
-            for imported in imports:
-                if imported.startswith("apps.api"):
-                    violations.append(
-                        f"{module} imports {imported}; only compatibility wrapper resume_agent.web.app may depend on apps.api"
-                    )
-
-        if not module.startswith(cli_adapter_allowed_dependents):
-            for imported in imports:
-                if imported.startswith("resume_agent.cli"):
-                    violations.append(
-                        f"{module} imports {imported}; only cli package and apps.cli may depend on cli adapters"
-                    )
-
-        if module.startswith("apps.cli"):
-            for imported in imports:
-                if imported.startswith("resume_agent.cli"):
-                    violations.append(
-                        f"{module} imports {imported}; apps.cli must not depend on compatibility shim modules"
-                    )
-
-        if module.startswith("resume_agent") and module != "resume_agent.cli":
-            for imported in imports:
-                if imported.startswith("apps.cli"):
-                    violations.append(
-                        f"{module} imports {imported}; only compatibility wrapper resume_agent.cli may depend on apps.cli"
-                    )
-
-        if module.startswith(("resume_agent.providers", "packages.providers")):
-            for imported in imports:
-                if imported.startswith(provider_forbidden_prefixes):
-                    violations.append(
-                        f"{module} imports {imported}; providers must stay isolated from app/web/tool layers"
-                    )
+        for imported in imports:
+            if imported.startswith("resume_agent"):
+                violations.append(f"{module} imports {imported}; implementation must live under apps/* or packages/*")
 
         if module.startswith("packages."):
             for imported in imports:
                 if imported.startswith("apps."):
                     violations.append(f"{module} imports {imported}; packages layer must not depend on apps layer")
 
-        if module.startswith("packages.core"):
+        if module.startswith("packages.providers"):
             for imported in imports:
-                if imported.startswith(("resume_agent.web", "resume_agent.cli")):
+                if imported.startswith(("packages.core", "apps.")):
                     violations.append(
-                        f"{module} imports {imported}; core package must stay isolated from app adapter layers"
+                        f"{module} imports {imported}; providers must remain isolated from core/app layers"
                     )
+
+        if module.startswith("packages.contracts"):
+            for imported in imports:
+                if imported.startswith(("packages.core", "packages.providers", "apps.")):
+                    violations.append(f"{module} imports {imported}; contracts must be app/core agnostic")
+
+        if module.startswith("apps.api"):
+            for imported in imports:
+                if imported.startswith("apps.cli"):
+                    violations.append(f"{module} imports {imported}; api app must not depend on cli app")
+
+        if module.startswith("apps.cli"):
+            for imported in imports:
+                if imported.startswith("apps.api"):
+                    violations.append(f"{module} imports {imported}; cli app must not depend on api app")
 
     assert not violations, "Architecture boundary violation(s):\n" + "\n".join(sorted(violations))

@@ -3,7 +3,7 @@
 import os
 from unittest.mock import patch
 
-from resume_agent.config_validator import (
+from apps.cli.resume_agent_cli.config_validator import (
     ConfigError,
     Severity,
     _resolve_api_key_value,

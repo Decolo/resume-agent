@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..contracts.web.runtime import (
+from packages.contracts.resume_agent_contracts.web.runtime import (
     ACTIVE_RUN_STATES,
     DEFAULT_ALLOWED_UPLOAD_MIME_TYPES,
     DEFAULT_COST_PER_MILLION_TOKENS,
     TERMINAL_RUN_STATES,
     WORKFLOW_ORDER,
 )
+
 from .artifact_storage import ArtifactStorageProvider
 from .errors import APIError
 from .workspace import WorkspaceFile, WorkspaceFileContent, WorkspaceProvider

@@ -18,10 +18,10 @@ def test_wheel_includes_monorepo_namespaces() -> None:
     pyproject = _load_pyproject()
     wheel_cfg = pyproject.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("wheel", {})
     packages = set(wheel_cfg.get("packages", []))
-    assert {"resume_agent", "apps", "packages"} <= packages
+    assert {"apps", "packages"} <= packages
 
 
 def test_cli_entrypoint_remains_stable() -> None:
     pyproject = _load_pyproject()
     scripts = pyproject.get("project", {}).get("scripts", {})
-    assert scripts.get("resume-agent") == "resume_agent.cli:main"
+    assert scripts.get("resume-agent") == "apps.cli.resume_agent_cli.app:main"

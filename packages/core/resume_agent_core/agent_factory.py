@@ -7,19 +7,22 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
-from resume_agent.agents.base import AgentConfig as SpecializedAgentConfig
-from resume_agent.agents.delegation import DelegationConfig, DelegationManager
-from resume_agent.agents.formatter_agent import FormatterAgent
-from resume_agent.agents.history import HistoryConfig, MultiAgentHistoryManager
-from resume_agent.agents.orchestrator_agent import OrchestratorAgent
-from resume_agent.agents.parser_agent import ParserAgent
-from resume_agent.agents.registry import AgentRegistry
-from resume_agent.agents.writer_agent import WriterAgent
-from resume_agent.skills.formatter_prompt import FORMATTER_AGENT_PROMPT
-from resume_agent.skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
-from resume_agent.skills.parser_prompt import PARSER_AGENT_PROMPT
-from resume_agent.skills.writer_prompt import WRITER_AGENT_PROMPT
-from resume_agent.tools import (
+from .agent import AgentConfig, ResumeAgent
+from .agents.base import AgentConfig as SpecializedAgentConfig
+from .agents.delegation import DelegationConfig, DelegationManager
+from .agents.formatter_agent import FormatterAgent
+from .agents.history import HistoryConfig, MultiAgentHistoryManager
+from .agents.orchestrator_agent import OrchestratorAgent
+from .agents.parser_agent import ParserAgent
+from .agents.registry import AgentRegistry
+from .agents.writer_agent import WriterAgent
+from .llm import LLMAgent, LLMConfig, load_config, load_raw_config
+from .observability import AgentObserver
+from .skills.formatter_prompt import FORMATTER_AGENT_PROMPT
+from .skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
+from .skills.parser_prompt import PARSER_AGENT_PROMPT
+from .skills.writer_prompt import WRITER_AGENT_PROMPT
+from .tools import (
     ATSScorerTool,
     BashTool,
     FileListTool,
@@ -33,10 +36,6 @@ from resume_agent.tools import (
     WebFetchTool,
     WebReadTool,
 )
-
-from .agent import AgentConfig, ResumeAgent
-from .llm import LLMAgent, LLMConfig, load_config, load_raw_config
-from .observability import AgentObserver
 
 logger = logging.getLogger(__name__)
 

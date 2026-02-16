@@ -1,9 +1,9 @@
 # packages/contracts
 
-Phase 1 (Slice A) scaffold for shared API/session contracts in the target monorepo layout.
+Shared contract package for API/session schemas and constants.
 
-Current compatibility policy:
+Ownership:
 
-1. Runtime continues to import from `resume_agent/contracts/*`.
-2. This folder mirrors contract modules for phased extraction.
-3. Follow-up slices can switch adapters to import directly from this package path.
+1. Contract modules live in `packages/contracts/resume_agent_contracts/*`.
+2. Contracts are intentionally app/core/provider agnostic.
+3. Legacy `resume_agent/contracts/*` compatibility wrappers have been retired.

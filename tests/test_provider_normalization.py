@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from resume_agent.llm import LLMAgent, LLMConfig
-from resume_agent.providers.openai_compat import OpenAICompatibleProvider
-from resume_agent.providers.types import FunctionCall, GenerationConfig, StreamDelta
+from packages.core.resume_agent_core.llm import LLMAgent, LLMConfig
+from packages.providers.resume_agent_providers.openai_compat import OpenAICompatibleProvider
+from packages.providers.resume_agent_providers.types import FunctionCall, GenerationConfig, StreamDelta
 
 
 def test_openai_completion_normalizes_list_content_and_tool_calls():

@@ -1,6 +1,6 @@
 """Regression tests for LLM tool registry behavior."""
 
-from resume_agent.llm import LLMAgent, LLMConfig
+from packages.core.resume_agent_core.llm import LLMAgent, LLMConfig
 
 
 def test_get_tools_returns_tool_schema_not_registry_tuple():

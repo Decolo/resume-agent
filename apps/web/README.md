@@ -1,9 +1,9 @@
 # apps/web
 
-Phase 3 (Slice F) scaffold for static web UI asset ownership in the target monorepo layout.
+Static web UI asset package.
 
-Current compatibility policy:
+Ownership:
 
 1. Static UI source lives in `apps/web/ui`.
-2. API runtime resolves `apps/web/ui` first and keeps `resume_agent/web/ui` as fallback during migration.
-3. Compatibility fallback can be removed after one stable release cycle.
+2. API runtime resolves `apps/web/ui` directly.
+3. Legacy `resume_agent/web/ui` fallback has been retired.

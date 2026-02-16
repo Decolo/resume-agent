@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from resume_agent.observability import AgentObserver
+from packages.core.resume_agent_core.observability import AgentObserver
 
 
 @pytest.fixture

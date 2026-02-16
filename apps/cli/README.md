@@ -1,9 +1,9 @@
 # apps/cli
 
-Phase 3 (Slice E) scaffold for CLI app entrypoint ownership in the target monorepo layout.
+CLI application entrypoint package.
 
-Current compatibility policy:
+Ownership:
 
-1. CLI app source lives in `apps/cli/resume_agent_cli/app.py`.
-2. `resume_agent/cli.py` remains a compatibility shim forwarding to this module.
-3. `uv run resume-agent` keeps using `resume_agent.cli:main` during migration.
+1. CLI runtime lives in `apps/cli/resume_agent_cli/app.py`.
+2. Project script `resume-agent` points directly to `apps.cli.resume_agent_cli.app:main`.
+3. Legacy `resume_agent/cli.py` shim has been retired.

@@ -163,7 +163,7 @@ class SessionSerializer:
         Returns:
             Dictionary with delegation history, agent stats, shared context
         """
-        from resume_agent.agents.orchestrator_agent import OrchestratorAgent
+        from .agents.orchestrator_agent import OrchestratorAgent
 
         if not isinstance(agent, OrchestratorAgent):
             return {}
@@ -270,9 +270,8 @@ class SessionManager:
         Returns:
             Session ID
         """
-        from resume_agent.agents.orchestrator_agent import OrchestratorAgent
-
         from .agent_factory import AutoAgent
+        from .agents.orchestrator_agent import OrchestratorAgent
 
         # Generate or reuse session ID
         if session_id is None:
@@ -435,10 +434,9 @@ class SessionManager:
             agent: ResumeAgent, OrchestratorAgent, or AutoAgent instance
             session_data: Session data dictionary from load_session()
         """
-        from resume_agent.agents.delegation import DelegationRecord
-        from resume_agent.agents.orchestrator_agent import OrchestratorAgent
-
         from .agent_factory import AutoAgent
+        from .agents.delegation import DelegationRecord
+        from .agents.orchestrator_agent import OrchestratorAgent
 
         # Handle AutoAgent
         if isinstance(agent, AutoAgent):
