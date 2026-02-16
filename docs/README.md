@@ -29,6 +29,7 @@ This index organizes the docs by task so you can find things quickly.
 ### Architecture
 - **[Phase 1 Improvements](./architecture/phase1-improvements.md)** - Technical improvements
 - **[Run State Machine v1](./architecture/run-state-machine.md)** - Run/approval lifecycle and transitions
+- **[Monorepo Ownership Map](./architecture/monorepo-ownership-map.md)** - Current-to-target module ownership mapping
 
 ### Learn
 - **[Event Loop & Async Patterns](./learn/event-loop-async-patterns.md)** - Async concepts and patterns
