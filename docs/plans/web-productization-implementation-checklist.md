@@ -50,7 +50,7 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 ## Week 8
 - [ ] Add dashboards/alerts for error rate, latency, cost, queue depth.
 - [ ] Load test target concurrency and tune runtime limits.
-- [ ] Finalize release checklist and rollback playbook.
+- [x] Finalize release checklist and rollback playbook.
 
 ## Module Checklist (Cross-cutting)
 
@@ -76,8 +76,8 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 
 ## Release Gates
 
-- [ ] API contract tests all pass.
-- [ ] E2E happy path (upload -> jd -> rewrite -> approve -> export) passes.
-- [ ] Interrupt and reject edge cases pass.
+- [x] API contract tests all pass.
+- [x] E2E happy path (upload -> jd -> rewrite -> approve -> export) passes.
+- [x] Interrupt and reject edge cases pass.
 - [ ] Cost guardrails verified in staging.
-- [ ] Documentation updated for setup, API, and operations.
+- [x] Documentation updated for setup, API, and operations.
