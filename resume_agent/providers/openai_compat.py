@@ -367,6 +367,9 @@ class OpenAICompatibleProvider:
         if isinstance(arguments, dict):
             return arguments
         try:
-            return json.loads(arguments)
+            parsed = json.loads(arguments)
+            if isinstance(parsed, dict):
+                return parsed
+            return {}
         except Exception:
             return {}

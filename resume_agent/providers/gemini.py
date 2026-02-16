@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from google import genai
 from google.genai import types
@@ -49,7 +49,7 @@ class GeminiProvider:
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=config.system_prompt if config.system_prompt else None,
-                tools=gemini_tools,
+                tools=cast(Any, gemini_tools),
                 max_output_tokens=config.max_tokens,
                 temperature=config.temperature,
             ),
@@ -74,7 +74,7 @@ class GeminiProvider:
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=config.system_prompt if config.system_prompt else None,
-                        tools=gemini_tools,
+                        tools=cast(Any, gemini_tools),
                         max_output_tokens=config.max_tokens,
                         temperature=config.temperature,
                     ),
@@ -186,7 +186,7 @@ class GeminiProvider:
             name=tool.name,
             description=tool.description,
             parameters=types.Schema(
-                type="OBJECT",
+                type=types.Type.OBJECT,
                 properties=properties,
                 required=required,
             ),
@@ -195,14 +195,14 @@ class GeminiProvider:
     def _to_gemini_schema(self, schema_def: Dict[str, Any]) -> types.Schema:
         type_name = str(schema_def.get("type", "string") or "string").lower()
         type_map = {
-            "string": "STRING",
-            "integer": "INTEGER",
-            "number": "NUMBER",
-            "boolean": "BOOLEAN",
-            "object": "OBJECT",
-            "array": "ARRAY",
+            "string": types.Type.STRING,
+            "integer": types.Type.INTEGER,
+            "number": types.Type.NUMBER,
+            "boolean": types.Type.BOOLEAN,
+            "object": types.Type.OBJECT,
+            "array": types.Type.ARRAY,
         }
-        gemini_type = type_map.get(type_name, "STRING")
+        gemini_type = type_map.get(type_name, types.Type.STRING)
 
         kwargs: Dict[str, Any] = {
             "type": gemini_type,
@@ -213,7 +213,7 @@ class GeminiProvider:
         if isinstance(enum_values, list) and enum_values:
             kwargs["enum"] = [str(v) for v in enum_values]
 
-        if gemini_type == "OBJECT":
+        if gemini_type == types.Type.OBJECT:
             props: Dict[str, types.Schema] = {}
             for prop_name, prop_def in (schema_def.get("properties") or {}).items():
                 if isinstance(prop_def, dict):
@@ -223,7 +223,7 @@ class GeminiProvider:
             if isinstance(required, list) and required:
                 kwargs["required"] = required
 
-        if gemini_type == "ARRAY":
+        if gemini_type == types.Type.ARRAY:
             items = schema_def.get("items")
             if isinstance(items, dict):
                 kwargs["items"] = self._to_gemini_schema(items)
