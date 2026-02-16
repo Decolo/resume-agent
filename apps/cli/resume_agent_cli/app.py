@@ -1053,9 +1053,11 @@ async def run_interactive(
                     if not text:
                         return
                     if not stream_state["printed"]:
-                        console.print()
+                        console.print("\n🤖 Assistant:", style="green")
                         stream_state["printed"] = True
-                    console.print(text, end="", soft_wrap=True, highlight=False, markup=False)
+                    # Use raw terminal write to avoid Rich per-chunk reflow artifacts.
+                    console.file.write(str(text))
+                    console.file.flush()
 
                 agent_task = asyncio.create_task(
                     agent.run(
@@ -1104,7 +1106,8 @@ async def run_interactive(
 
                 response = await agent_task
                 if stream_state["printed"]:
-                    console.print()
+                    if not response.endswith("\n"):
+                        console.print()
                     if response.startswith("Error:"):
                         console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
                 else:
@@ -1271,8 +1274,11 @@ def main():
                 text = getattr(delta, "text", None)
                 if not text:
                     return
+                if not stream_state["printed"]:
+                    console.print("🤖 Assistant:", style="green")
                 stream_state["printed"] = True
-                console.print(text, end="", soft_wrap=True, highlight=False, markup=False)
+                console.file.write(str(text))
+                console.file.flush()
 
             if isinstance(agent, OrchestratorAgent):
                 response = await agent.run(
@@ -1287,7 +1293,8 @@ def main():
                     on_stream_delta=on_stream_delta if stream_enabled else None,
                 )
             if stream_state["printed"]:
-                console.print()
+                if not response.endswith("\n"):
+                    console.print()
                 if response.startswith("Error:"):
                     console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
             else:
