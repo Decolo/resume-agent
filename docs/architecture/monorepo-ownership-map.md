@@ -41,7 +41,7 @@ Use small slices; one slice per PR:
 2. **Slice B**: introduce `packages/providers` wrappers and keep compatibility re-exports.
 3. **Slice C**: extract `packages/core` with shims in `resume_agent/*`.
 4. **Slice D**: relocate API app entrypoints to `apps/api` with compatibility runner. (completed 2026-02-16)
-5. **Slice E**: relocate CLI app entrypoint to `apps/cli`.
+5. **Slice E**: relocate CLI app entrypoint to `apps/cli`. (completed 2026-02-16)
 6. **Slice F**: relocate static web UI to `apps/web`.
 
 ## Guardrails Per Slice

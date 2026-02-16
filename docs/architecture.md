@@ -7,7 +7,7 @@ Deep design details stay in specialized docs under `docs/architecture/`.
 
 The repository has one core runtime and multiple entry adapters:
 
-1. CLI adapter (`resume_agent/cli.py`)
+1. CLI adapter (source: `apps/cli/*`, compatibility path: `resume_agent/cli.py`)
 2. Web/API adapter (source: `apps/api/*`, compatibility path: `resume_agent/web/*`)
 3. Core runtime (`resume_agent/llm.py`, `resume_agent/agent.py`, `resume_agent/agent_factory.py`; mirrored target: `packages/core/*`)
 4. Domain tools (`resume_agent/tools/*`)
@@ -34,7 +34,7 @@ Automated boundary checks:
 
 ### CLI Path
 
-`cli.py` -> `agent_factory.py` -> `ResumeAgent`/`OrchestratorAgent` -> `LLMAgent` -> tools/providers.
+`apps/cli/resume_agent_cli/app.py` (compat: `resume_agent/cli.py`) -> `agent_factory.py` -> `ResumeAgent`/`OrchestratorAgent` -> `LLMAgent` -> tools/providers.
 
 ### Web Path
 

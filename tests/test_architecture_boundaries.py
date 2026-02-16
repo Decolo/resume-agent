@@ -72,6 +72,7 @@ def test_architecture_boundaries() -> None:
         "resume_agent.agent_factory",
     )
     web_adapter_allowed_dependents = ("resume_agent.web", "apps.api")
+    cli_adapter_allowed_dependents = ("resume_agent.cli", "apps.cli")
 
     for file_path in py_files:
         module = _module_name(file_path)
@@ -96,6 +97,27 @@ def test_architecture_boundaries() -> None:
                 if imported.startswith("apps.api"):
                     violations.append(
                         f"{module} imports {imported}; only compatibility wrapper resume_agent.web.app may depend on apps.api"
+                    )
+
+        if not module.startswith(cli_adapter_allowed_dependents):
+            for imported in imports:
+                if imported.startswith("resume_agent.cli"):
+                    violations.append(
+                        f"{module} imports {imported}; only cli package and apps.cli may depend on cli adapters"
+                    )
+
+        if module.startswith("apps.cli"):
+            for imported in imports:
+                if imported.startswith("resume_agent.cli"):
+                    violations.append(
+                        f"{module} imports {imported}; apps.cli must not depend on compatibility shim modules"
+                    )
+
+        if module.startswith("resume_agent") and module != "resume_agent.cli":
+            for imported in imports:
+                if imported.startswith("apps.cli"):
+                    violations.append(
+                        f"{module} imports {imported}; only compatibility wrapper resume_agent.cli may depend on apps.cli"
                     )
 
         if module.startswith(("resume_agent.providers", "packages.providers")):
