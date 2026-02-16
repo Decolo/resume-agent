@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from dataclasses import dataclass
-from typing import Callable, TypeVar, Any
-import logging
+from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 @dataclass
 class RetryConfig:
     """Configuration for retry behavior."""
+
     max_attempts: int = 3
     base_delay: float = 1.0
     max_delay: float = 60.0
@@ -25,20 +26,17 @@ class RetryConfig:
 
 class TransientError(Exception):
     """Exception for transient errors that should be retried."""
+
     pass
 
 
 class PermanentError(Exception):
     """Exception for permanent errors that should not be retried."""
+
     pass
 
 
-async def retry_with_backoff(
-    func: Callable[..., T],
-    config: RetryConfig,
-    *args: Any,
-    **kwargs: Any
-) -> T:
+async def retry_with_backoff(func: Callable[..., T], config: RetryConfig, *args: Any, **kwargs: Any) -> T:
     """
     Execute a function with exponential backoff retry logic.
 
@@ -74,7 +72,7 @@ async def retry_with_backoff(
             raise
         except PermanentError:
             # Don't retry permanent errors
-            logger.error(f"Permanent error encountered, not retrying")
+            logger.error("Permanent error encountered, not retrying")
             raise
 
         except Exception as e:
@@ -91,19 +89,13 @@ async def retry_with_backoff(
                 raise
 
             # Calculate delay with exponential backoff
-            base_delay = min(
-                config.base_delay * (config.exponential_base ** attempt),
-                config.max_delay
-            )
+            base_delay = min(config.base_delay * (config.exponential_base**attempt), config.max_delay)
 
             # Add jitter (random variation) to prevent thundering herd
             jitter = base_delay * config.jitter_factor * (2 * random.random() - 1)
             delay = base_delay + jitter
 
-            logger.warning(
-                f"Attempt {attempt + 1}/{config.max_attempts} failed: {str(e)}. "
-                f"Retrying in {delay:.2f}s..."
-            )
+            logger.warning(f"Attempt {attempt + 1}/{config.max_attempts} failed: {str(e)}. Retrying in {delay:.2f}s...")
 
             # Wait before retrying
             await asyncio.sleep(delay)

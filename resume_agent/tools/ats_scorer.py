@@ -4,24 +4,52 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List
 
 from .base import BaseTool, ToolResult
-
 
 # Common ATS keywords by category
 ATS_KEYWORDS = {
     "action_verbs": [
-        "achieved", "administered", "analyzed", "built", "collaborated",
-        "created", "delivered", "designed", "developed", "directed",
-        "established", "executed", "generated", "implemented", "improved",
-        "increased", "launched", "led", "managed", "optimized",
-        "organized", "produced", "reduced", "resolved", "streamlined",
+        "achieved",
+        "administered",
+        "analyzed",
+        "built",
+        "collaborated",
+        "created",
+        "delivered",
+        "designed",
+        "developed",
+        "directed",
+        "established",
+        "executed",
+        "generated",
+        "implemented",
+        "improved",
+        "increased",
+        "launched",
+        "led",
+        "managed",
+        "optimized",
+        "organized",
+        "produced",
+        "reduced",
+        "resolved",
+        "streamlined",
     ],
     "sections": [
-        "experience", "education", "skills", "summary", "objective",
-        "projects", "certifications", "awards", "achievements",
-        "work history", "employment", "qualifications",
+        "experience",
+        "education",
+        "skills",
+        "summary",
+        "objective",
+        "projects",
+        "certifications",
+        "awards",
+        "achievements",
+        "work history",
+        "employment",
+        "qualifications",
     ],
     "contact": ["email", "phone", "linkedin", "github", "portfolio"],
 }
@@ -87,9 +115,7 @@ Optionally accepts a job description for keyword matching."""
                 suggestions.extend(issues)
 
             # Format output
-            output = self._format_report(
-                overall, fmt_score, comp_score, kw_score, struct_score, suggestions
-            )
+            output = self._format_report(overall, fmt_score, comp_score, kw_score, struct_score, suggestions)
 
             return ToolResult(
                 success=True,
@@ -124,10 +150,12 @@ Optionally accepts a job description for keyword matching."""
         fancy_chars = re.findall(r"[•●◆★☆►▸▹→←↑↓✓✗✔✘❌✅]", content)
         if fancy_chars:
             score -= 10
-            issues.append(f"Contains special characters ({', '.join(sorted(set(fancy_chars))[:5])}) — use standard bullets (- or *)")
+            issues.append(
+                f"Contains special characters ({', '.join(sorted(set(fancy_chars))[:5])}) — use standard bullets (- or *)"
+            )
 
         # Check for very long lines (>120 chars) suggesting poor formatting
-        long_lines = [l for l in content.split("\n") if len(l) > 120]
+        long_lines = [line for line in content.split("\n") if len(line) > 120]
         if len(long_lines) > 5:
             score -= 10
             issues.append(f"{len(long_lines)} lines exceed 120 characters — consider shorter lines for readability")
@@ -228,10 +256,43 @@ Optionally accepts a job description for keyword matching."""
             jd_lower = job_description.lower()
             jd_words = set(re.findall(r"\b[a-z]{3,}\b", jd_lower))
             # Filter out common stop words
-            stop_words = {"the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
-                          "her", "was", "one", "our", "out", "has", "have", "been", "will",
-                          "with", "this", "that", "from", "they", "were", "which", "their",
-                          "about", "would", "there", "what", "also", "into", "more", "other"}
+            stop_words = {
+                "the",
+                "and",
+                "for",
+                "are",
+                "but",
+                "not",
+                "you",
+                "all",
+                "can",
+                "had",
+                "her",
+                "was",
+                "one",
+                "our",
+                "out",
+                "has",
+                "have",
+                "been",
+                "will",
+                "with",
+                "this",
+                "that",
+                "from",
+                "they",
+                "were",
+                "which",
+                "their",
+                "about",
+                "would",
+                "there",
+                "what",
+                "also",
+                "into",
+                "more",
+                "other",
+            }
             jd_keywords = jd_words - stop_words
             resume_words = set(words)
 
@@ -257,7 +318,9 @@ Optionally accepts a job description for keyword matching."""
         lines = content.split("\n")
 
         # Check for section headers (markdown # or ## style, or ALL CAPS)
-        headers = [l for l in lines if re.match(r"^#{1,3}\s+\S", l) or (l.isupper() and len(l.strip()) > 3)]
+        headers = [
+            line for line in lines if re.match(r"^#{1,3}\s+\S", line) or (line.isupper() and len(line.strip()) > 3)
+        ]
         if len(headers) < 3:
             score -= 15
             issues.append("Few section headers found — use clear headers (## Experience, ## Education, etc.)")
@@ -321,8 +384,8 @@ Optionally accepts a job description for keyword matching."""
             f"## ATS Score: {overall}/100 {grade}",
             bar,
             "",
-            f"| Category     | Score | Weight |",
-            f"|-------------|-------|--------|",
+            "| Category     | Score | Weight |",
+            "|-------------|-------|--------|",
             f"| Formatting   | {fmt_score:3d}   | {WEIGHTS['formatting']:.0%}  |",
             f"| Completeness | {comp_score:3d}   | {WEIGHTS['completeness']:.0%}  |",
             f"| Keywords     | {kw_score:3d}   | {WEIGHTS['keywords']:.0%}  |",

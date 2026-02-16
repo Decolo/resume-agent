@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
-from .base import BaseAgent, AgentConfig
-from .protocol import AgentTask, AgentResult, create_result
 from ..skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
+from .base import AgentConfig, BaseAgent
+from .protocol import AgentResult, AgentTask, create_result
 
 if TYPE_CHECKING:
     from ..llm import LLMAgent

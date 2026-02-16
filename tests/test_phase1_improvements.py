@@ -1,18 +1,16 @@
 """Test suite for Phase 1 improvements: retry, history, caching, observability."""
 
-import asyncio
 import pytest
-from pathlib import Path
-from datetime import datetime, timedelta
+
+from resume_agent.cache import ToolCache, get_tool_ttl, should_cache_tool
+from resume_agent.llm import HistoryManager
+from resume_agent.observability import AgentObserver
+from resume_agent.providers.types import Message, MessagePart
 
 # Import modules to test
-from resume_agent.retry import RetryConfig, retry_with_backoff, TransientError, PermanentError
-from resume_agent.observability import AgentObserver, AgentEvent
-from resume_agent.cache import ToolCache, CacheEntry, should_cache_tool, get_tool_ttl
-from resume_agent.llm import HistoryManager
-from resume_agent.providers.types import Message, MessagePart
-from resume_agent.tools.file_tool import FileReadTool, MAX_FILE_SIZE
+from resume_agent.retry import PermanentError, RetryConfig, TransientError, retry_with_backoff
 from resume_agent.tools.bash_tool import BashTool
+from resume_agent.tools.file_tool import MAX_FILE_SIZE, FileReadTool
 
 
 class TestRetryLogic:
@@ -92,17 +90,14 @@ class TestRetryLogic:
             max_attempts=5,
             base_delay=1.0,
             exponential_base=2.0,
-            jitter_factor=0.0  # No jitter for predictable testing
+            jitter_factor=0.0,  # No jitter for predictable testing
         )
 
         # Delays should be: 1s, 2s, 4s, 8s
         expected_delays = [1.0, 2.0, 4.0, 8.0]
 
         for attempt, expected in enumerate(expected_delays):
-            delay = min(
-                config.base_delay * (config.exponential_base ** attempt),
-                config.max_delay
-            )
+            delay = min(config.base_delay * (config.exponential_base**attempt), config.max_delay)
             assert delay == expected
 
 
@@ -136,9 +131,7 @@ class TestHistoryManager:
 
         # Add messages until token limit is exceeded
         for i in range(20):
-            manager.add_message(
-                Message(role="user", parts=[MessagePart.from_text("x" * 100)])
-            )
+            manager.add_message(Message(role="user", parts=[MessagePart.from_text("x" * 100)]))
 
         history = manager.get_history()
         # Should have pruned to stay under token limit
@@ -183,6 +176,7 @@ class TestToolCache:
 
         # Wait a tiny bit to ensure expiration
         import time
+
         time.sleep(0.01)
 
         result = cache.get("test_tool", {"arg": "value"})
@@ -250,7 +244,7 @@ class TestObservability:
             result="success",
             duration_ms=100.5,
             success=True,
-            cached=False
+            cached=False,
         )
 
         assert len(observer.events) == 1
@@ -263,13 +257,7 @@ class TestObservability:
         """Test logging LLM requests."""
         observer = AgentObserver()
 
-        observer.log_llm_request(
-            model="gemini-2.0-flash",
-            tokens=1000,
-            cost=0.08,
-            duration_ms=500.0,
-            step=1
-        )
+        observer.log_llm_request(model="gemini-2.0-flash", tokens=1000, cost=0.08, duration_ms=500.0, step=1)
 
         assert len(observer.events) == 1
         event = observer.events[0]
@@ -281,11 +269,7 @@ class TestObservability:
         """Test logging errors."""
         observer = AgentObserver()
 
-        observer.log_error(
-            error_type="tool_execution",
-            message="Tool failed",
-            context={"tool": "test_tool"}
-        )
+        observer.log_error(error_type="tool_execution", message="Tool failed", context={"tool": "test_tool"})
 
         assert len(observer.events) == 1
         event = observer.events[0]

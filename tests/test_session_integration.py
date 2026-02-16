@@ -1,13 +1,11 @@
 """Integration test for session persistence with agent."""
 
 import pytest
-import asyncio
-from pathlib import Path
 
-from resume_agent.agent import ResumeAgent, AgentConfig
+from resume_agent.agent import AgentConfig, ResumeAgent
 from resume_agent.llm import LLMConfig
-from resume_agent.session import SessionManager
 from resume_agent.providers.types import Message, MessagePart
+from resume_agent.session import SessionManager
 
 
 @pytest.mark.asyncio
@@ -18,19 +16,11 @@ async def test_session_save_load_integration(tmp_path):
     agent_config = AgentConfig(workspace_dir=str(tmp_path))
     session_manager = SessionManager(str(tmp_path))
 
-    agent = ResumeAgent(
-        llm_config=config,
-        agent_config=agent_config,
-        session_manager=session_manager
-    )
+    agent = ResumeAgent(llm_config=config, agent_config=agent_config, session_manager=session_manager)
 
     # Simulate conversation by adding messages directly
-    agent.agent.history_manager.add_message(
-        Message(role="user", parts=[MessagePart.from_text("Hello")])
-    )
-    agent.agent.history_manager.add_message(
-        Message(role="assistant", parts=[MessagePart.from_text("Hi there!")])
-    )
+    agent.agent.history_manager.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
+    agent.agent.history_manager.add_message(Message(role="assistant", parts=[MessagePart.from_text("Hi there!")]))
 
     # Save session
     session_id = session_manager.save_session(agent, session_name="test_session")
@@ -42,11 +32,7 @@ async def test_session_save_load_integration(tmp_path):
     assert session_file.exists()
 
     # Create new agent and load session
-    new_agent = ResumeAgent(
-        llm_config=config,
-        agent_config=agent_config,
-        session_manager=session_manager
-    )
+    new_agent = ResumeAgent(llm_config=config, agent_config=agent_config, session_manager=session_manager)
 
     # Load session
     session_data = session_manager.load_session(session_id)
@@ -66,18 +52,12 @@ async def test_session_list_and_delete(tmp_path):
     agent_config = AgentConfig(workspace_dir=str(tmp_path))
     session_manager = SessionManager(str(tmp_path))
 
-    agent = ResumeAgent(
-        llm_config=config,
-        agent_config=agent_config,
-        session_manager=session_manager
-    )
+    agent = ResumeAgent(llm_config=config, agent_config=agent_config, session_manager=session_manager)
 
     # Create multiple sessions
     session_ids = []
     for i in range(3):
-        agent.agent.history_manager.add_message(
-            Message(role="user", parts=[MessagePart.from_text(f"Message {i}")])
-        )
+        agent.agent.history_manager.add_message(Message(role="user", parts=[MessagePart.from_text(f"Message {i}")]))
         session_id = session_manager.save_session(agent, session_name=f"session_{i}")
         session_ids.append(session_id)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta
-from typing import Optional, Any, Dict
+from typing import Any, Dict, Optional
 
 
 class CacheEntry:
@@ -60,7 +60,7 @@ class ToolCache:
         data = json.dumps(
             {"tool": tool_name, "args": args},
             sort_keys=True,  # Ensure consistent ordering
-            default=str  # Handle non-serializable types
+            default=str,  # Handle non-serializable types
         )
         # Hash to create compact key
         return hashlib.sha256(data.encode()).hexdigest()
@@ -94,13 +94,7 @@ class ToolCache:
         self._hits += 1
         return entry.value
 
-    def set(
-        self,
-        tool_name: str,
-        args: Dict[str, Any],
-        value: Any,
-        ttl_seconds: int = 300
-    ):
+    def set(self, tool_name: str, args: Dict[str, Any], value: Any, ttl_seconds: int = 300):
         """
         Store a value in the cache.
 
@@ -121,10 +115,7 @@ class ToolCache:
 
     def evict_expired(self):
         """Remove all expired entries from cache."""
-        expired_keys = [
-            key for key, entry in self._cache.items()
-            if entry.is_expired()
-        ]
+        expired_keys = [key for key, entry in self._cache.items() if entry.is_expired()]
         for key in expired_keys:
             del self._cache[key]
 
@@ -167,7 +158,6 @@ CACHE_CONFIGS = {
     "resume_parse": {"ttl": 300, "enabled": True},  # 5 minutes
     "ats_score": {"ttl": 120, "enabled": True},  # 2 minutes
     "job_match": {"ttl": 600, "enabled": True},  # 10 minutes
-
     # Write / validation tools - DO NOT cache
     "file_write": {"enabled": False},
     "bash": {"enabled": False},

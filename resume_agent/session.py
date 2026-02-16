@@ -6,11 +6,11 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Optional
 
 from .llm import HistoryManager
-from .providers.types import Message, MessagePart, FunctionCall, FunctionResponse
-from .observability import AgentObserver, AgentEvent
+from .observability import AgentEvent, AgentObserver
+from .providers.types import FunctionCall, FunctionResponse, Message, MessagePart
 
 
 class SessionSerializer:
@@ -27,17 +27,16 @@ class SessionSerializer:
         if msg.parts:
             for part in msg.parts:
                 if part.text:
-                    msg_data["parts"].append({
-                        "type": "text",
-                        "content": part.text
-                    })
+                    msg_data["parts"].append({"type": "text", "content": part.text})
                 elif part.function_call:
-                    msg_data["parts"].append({
-                        "type": "function_call",
-                        "name": part.function_call.name,
-                        "args": dict(part.function_call.arguments) if part.function_call.arguments else {},
-                        "id": part.function_call.id,
-                    })
+                    msg_data["parts"].append(
+                        {
+                            "type": "function_call",
+                            "name": part.function_call.name,
+                            "args": dict(part.function_call.arguments) if part.function_call.arguments else {},
+                            "id": part.function_call.id,
+                        }
+                    )
                 elif part.function_response:
                     # Serialize function response - store the actual response dict
                     response_value = part.function_response.response
@@ -45,12 +44,14 @@ class SessionSerializer:
                         # If it's not a dict, convert to string and wrap
                         response_value = str(response_value)
 
-                    msg_data["parts"].append({
-                        "type": "function_response",
-                        "name": part.function_response.name,
-                        "response": response_value,
-                        "call_id": part.function_response.call_id,
-                    })
+                    msg_data["parts"].append(
+                        {
+                            "type": "function_response",
+                            "name": part.function_response.name,
+                            "response": response_value,
+                            "call_id": part.function_response.call_id,
+                        }
+                    )
 
         return msg_data
 
@@ -100,10 +101,7 @@ class SessionSerializer:
     def serialize_history(history_manager: HistoryManager) -> dict:
         """Serialize conversation history."""
         return {
-            "messages": [
-                SessionSerializer.serialize_message(msg)
-                for msg in history_manager.get_history()
-            ],
+            "messages": [SessionSerializer.serialize_message(msg) for msg in history_manager.get_history()],
             "max_messages": history_manager.max_messages,
             "max_tokens": history_manager.max_tokens,
         }
@@ -111,10 +109,7 @@ class SessionSerializer:
     @staticmethod
     def deserialize_history(data: dict) -> List[Message]:
         """Deserialize conversation history."""
-        return [
-            SessionSerializer.deserialize_message(msg_data)
-            for msg_data in data.get("messages", [])
-        ]
+        return [SessionSerializer.deserialize_message(msg_data) for msg_data in data.get("messages", [])]
 
     @staticmethod
     def serialize_observability(observer: AgentObserver) -> dict:
@@ -171,17 +166,19 @@ class SessionSerializer:
         delegation_history = []
         if agent.delegation_manager:
             for record in agent.delegation_manager._delegation_history:
-                delegation_history.append({
-                    "task_id": record.task_id,
-                    "from_agent": record.from_agent,
-                    "to_agent": record.to_agent,
-                    "timestamp": record.timestamp.isoformat(),
-                    "duration_ms": record.duration_ms,
-                    "success": record.success,
-                })
+                delegation_history.append(
+                    {
+                        "task_id": record.task_id,
+                        "from_agent": record.from_agent,
+                        "to_agent": record.to_agent,
+                        "timestamp": record.timestamp.isoformat(),
+                        "duration_ms": record.duration_ms,
+                        "success": record.success,
+                    }
+                )
 
         # Serialize agent stats
-        agent_stats = agent.get_agent_stats() if hasattr(agent, 'get_agent_stats') else {}
+        agent_stats = agent.get_agent_stats() if hasattr(agent, "get_agent_stats") else {}
 
         return {
             "delegation_history": delegation_history,
@@ -215,10 +212,7 @@ class SessionIndex:
         """List all sessions sorted by updated_at."""
         sessions = []
         for session_id, metadata in self.index["sessions"].items():
-            sessions.append({
-                "id": session_id,
-                **metadata
-            })
+            sessions.append({"id": session_id, **metadata})
 
         # Sort by updated_at (most recent first)
         sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
@@ -270,9 +264,8 @@ class SessionManager:
         Returns:
             Session ID
         """
-        from .agent import ResumeAgent
-        from .agents.orchestrator_agent import OrchestratorAgent
         from .agent_factory import AutoAgent
+        from .agents.orchestrator_agent import OrchestratorAgent
 
         # Generate or reuse session ID
         if session_id is None:
@@ -360,14 +353,17 @@ class SessionManager:
         # Update index
         message_count = len(conversation_data["messages"])
         stats = observability_data.get("session_stats", {})
-        self.index.add_session(session_id, {
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-            "mode": mode,
-            "message_count": message_count,
-            "total_tokens": stats.get("total_tokens", 0),
-            "total_cost_usd": stats.get("total_cost_usd", 0.0),
-        })
+        self.index.add_session(
+            session_id,
+            {
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "mode": mode,
+                "message_count": message_count,
+                "total_tokens": stats.get("total_tokens", 0),
+                "total_cost_usd": stats.get("total_cost_usd", 0.0),
+            },
+        )
 
         return session_id
 
@@ -425,21 +421,16 @@ class SessionManager:
             return sessions[0]["id"]
         return None
 
-    def restore_agent_state(
-        self,
-        agent: Any,
-        session_data: dict
-    ):
+    def restore_agent_state(self, agent: Any, session_data: dict):
         """Restore agent state from session data.
 
         Args:
             agent: ResumeAgent, OrchestratorAgent, or AutoAgent instance
             session_data: Session data dictionary from load_session()
         """
-        from .agent import ResumeAgent
-        from .agents.orchestrator_agent import OrchestratorAgent
-        from .agents.delegation import DelegationRecord
         from .agent_factory import AutoAgent
+        from .agents.delegation import DelegationRecord
+        from .agents.orchestrator_agent import OrchestratorAgent
 
         # Handle AutoAgent
         if isinstance(agent, AutoAgent):

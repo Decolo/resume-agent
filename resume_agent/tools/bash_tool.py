@@ -4,6 +4,7 @@ import asyncio
 import os
 import platform
 from pathlib import Path
+
 from .base import BaseTool, ToolResult
 
 
@@ -28,34 +29,51 @@ class BashTool(BaseTool):
     # Commands that are not allowed for safety
     BLOCKED_COMMANDS = [
         # Destructive operations
-        "rm", "rmdir", "del", "format",
-        "dd", "mkfs", "fdisk",
+        "rm",
+        "rmdir",
+        "del",
+        "format",
+        "dd",
+        "mkfs",
+        "fdisk",
         # System control
-        "shutdown", "reboot", "halt", "poweroff",
-        "kill", "killall", "pkill",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+        "kill",
+        "killall",
+        "pkill",
         # Permission changes
-        "chmod", "chown", "chgrp",
+        "chmod",
+        "chown",
+        "chgrp",
         # Privilege escalation
-        "sudo", "su", "doas",
+        "sudo",
+        "su",
+        "doas",
         # Network access
-        "curl", "wget", "nc", "netcat",
+        "curl",
+        "wget",
+        "nc",
+        "netcat",
         # Fork bomb
         ":(){:|:&};:",
     ]
 
     # Dangerous patterns that indicate shell injection or command chaining
     DANGEROUS_PATTERNS = [
-        ";",      # Command separator
-        "&&",     # Logical AND
-        "||",     # Logical OR
-        "|",      # Pipe
-        "`",      # Command substitution
-        "$(",     # Command substitution
-        "${",     # Variable expansion
-        ">",      # Output redirection
-        ">>",     # Append redirection
-        "2>",     # Error redirection
-        "<",      # Input redirection
+        ";",  # Command separator
+        "&&",  # Logical AND
+        "||",  # Logical OR
+        "|",  # Pipe
+        "`",  # Command substitution
+        "$(",  # Command substitution
+        "${",  # Variable expansion
+        ">",  # Output redirection
+        ">>",  # Append redirection
+        "2>",  # Error redirection
+        "<",  # Input redirection
     ]
 
     def __init__(self, workspace_dir: str = "."):
@@ -106,9 +124,7 @@ class BashTool(BaseTool):
             )
 
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout
-                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
             except asyncio.TimeoutError:
                 process.kill()
                 return ToolResult(

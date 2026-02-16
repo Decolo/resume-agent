@@ -1,18 +1,15 @@
 """Tests for session persistence functionality."""
 
-import json
 import pytest
-from pathlib import Path
-from datetime import datetime
 
-from resume_agent.session import (
-    SessionSerializer,
-    SessionManager,
-    SessionIndex,
-)
 from resume_agent.llm import HistoryManager, LLMAgent, LLMConfig
-from resume_agent.observability import AgentObserver, AgentEvent
-from resume_agent.providers.types import Message, MessagePart, FunctionCall, FunctionResponse
+from resume_agent.observability import AgentObserver
+from resume_agent.providers.types import FunctionCall, FunctionResponse, Message, MessagePart
+from resume_agent.session import (
+    SessionIndex,
+    SessionManager,
+    SessionSerializer,
+)
 
 
 class TestSessionSerializer:
@@ -33,11 +30,7 @@ class TestSessionSerializer:
         """Test serializing a function call message."""
         msg = Message(
             role="assistant",
-            parts=[
-                MessagePart.from_function_call(
-                    FunctionCall(name="file_read", arguments={"file_path": "test.txt"})
-                )
-            ],
+            parts=[MessagePart.from_function_call(FunctionCall(name="file_read", arguments={"file_path": "test.txt"}))],
         )
 
         serialized = SessionSerializer.serialize_message(msg)
@@ -68,12 +61,7 @@ class TestSessionSerializer:
 
     def test_deserialize_text_message(self):
         """Test deserializing a text message."""
-        data = {
-            "role": "user",
-            "parts": [
-                {"type": "text", "content": "Hello, world!"}
-            ]
-        }
+        data = {"role": "user", "parts": [{"type": "text", "content": "Hello, world!"}]}
 
         msg = SessionSerializer.deserialize_message(data)
 
@@ -85,13 +73,7 @@ class TestSessionSerializer:
         """Test deserializing a function call message."""
         data = {
             "role": "assistant",
-            "parts": [
-                {
-                    "type": "function_call",
-                    "name": "file_read",
-                    "args": {"file_path": "test.txt"}
-                }
-            ]
+            "parts": [{"type": "function_call", "name": "file_read", "args": {"file_path": "test.txt"}}],
         }
 
         msg = SessionSerializer.deserialize_message(data)
@@ -117,17 +99,11 @@ class TestSessionSerializer:
         """Test deserializing conversation history."""
         data = {
             "messages": [
-                {
-                    "role": "user",
-                    "parts": [{"type": "text", "content": "Hello"}]
-                },
-                {
-                    "role": "assistant",
-                    "parts": [{"type": "text", "content": "Hi there!"}]
-                }
+                {"role": "user", "parts": [{"type": "text", "content": "Hello"}]},
+                {"role": "assistant", "parts": [{"type": "text", "content": "Hi there!"}]},
             ],
             "max_messages": 50,
-            "max_tokens": 100000
+            "max_tokens": 100000,
         }
 
         messages = SessionSerializer.deserialize_history(data)
@@ -147,7 +123,7 @@ class TestSessionSerializer:
             result="File contents",
             duration_ms=100.0,
             success=True,
-            cached=False
+            cached=False,
         )
 
         serialized = SessionSerializer.serialize_observability(observer)
@@ -167,7 +143,7 @@ class TestSessionSerializer:
                     "data": {"tool": "file_read"},
                     "duration_ms": 100.0,
                     "tokens_used": None,
-                    "cost_usd": None
+                    "cost_usd": None,
                 }
             ]
         }
@@ -193,7 +169,7 @@ class TestSessionIndex:
             "mode": "single-agent",
             "message_count": 10,
             "total_tokens": 1000,
-            "total_cost_usd": 0.01
+            "total_cost_usd": 0.01,
         }
 
         index.add_session("test_session_123", metadata)
@@ -214,7 +190,7 @@ class TestSessionIndex:
             "mode": "single-agent",
             "message_count": 10,
             "total_tokens": 1000,
-            "total_cost_usd": 0.01
+            "total_cost_usd": 0.01,
         }
 
         index.add_session("test_session_123", metadata)
@@ -236,7 +212,7 @@ class TestSessionIndex:
                 "mode": "single-agent",
                 "message_count": 10 + i,
                 "total_tokens": 1000 + i * 100,
-                "total_cost_usd": 0.01 + i * 0.001
+                "total_cost_usd": 0.01 + i * 0.001,
             }
             index.add_session(f"test_session_{i}", metadata)
 
@@ -264,7 +240,7 @@ class TestSessionManager:
             def __init__(self):
                 self.agent = agent
                 self.llm_config = config
-                self.agent_config = type('obj', (object,), {'workspace_dir': str(tmp_path)})()
+                self.agent_config = type("obj", (object,), {"workspace_dir": str(tmp_path)})()
 
         mock_agent = MockAgent()
 
@@ -291,7 +267,7 @@ class TestSessionManager:
             def __init__(self):
                 self.agent = agent
                 self.llm_config = config
-                self.agent_config = type('obj', (object,), {'workspace_dir': str(tmp_path)})()
+                self.agent_config = type("obj", (object,), {"workspace_dir": str(tmp_path)})()
 
         mock_agent = MockAgent()
 
@@ -317,7 +293,7 @@ class TestSessionManager:
             def __init__(self):
                 self.agent = agent
                 self.llm_config = config
-                self.agent_config = type('obj', (object,), {'workspace_dir': str(tmp_path)})()
+                self.agent_config = type("obj", (object,), {"workspace_dir": str(tmp_path)})()
 
         mock_agent = MockAgent()
 
@@ -345,7 +321,7 @@ class TestSessionManager:
             def __init__(self):
                 self.agent = agent
                 self.llm_config = config
-                self.agent_config = type('obj', (object,), {'workspace_dir': str(tmp_path)})()
+                self.agent_config = type("obj", (object,), {"workspace_dir": str(tmp_path)})()
 
         mock_agent = MockAgent()
 

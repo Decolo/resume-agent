@@ -1,13 +1,12 @@
 """Tests for multi-agent core components."""
 
-import pytest
-from resume_agent.agents.protocol import (
-    AgentTask,
-    AgentResult,
-    generate_task_id,
-    create_result,
-)
 from resume_agent.agents.context import SharedContext
+from resume_agent.agents.protocol import (
+    AgentResult,
+    AgentTask,
+    create_result,
+    generate_task_id,
+)
 
 
 class TestAgentTask:
@@ -92,7 +91,6 @@ class TestAgentResult:
 
         assert result.success is False
         assert result.error == "File not found"
-
 
 
 class TestSharedContext:

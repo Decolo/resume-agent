@@ -6,14 +6,13 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
-from .protocol import AgentTask, AgentResult, create_result
+from .protocol import AgentResult, AgentTask, create_result
 
 if TYPE_CHECKING:
-    from .base import BaseAgent
-    from .registry import AgentRegistry
     from ..observability import AgentObserver
+    from .registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -128,16 +127,12 @@ class DelegationManager:
 
         # Check delegation depth
         if task.max_depth <= 0:
-            raise MaxDelegationDepthError(
-                f"Maximum delegation depth ({self.config.max_depth}) exceeded"
-            )
+            raise MaxDelegationDepthError(f"Maximum delegation depth ({self.config.max_depth}) exceeded")
 
         # Check for cycles
         if self.config.enable_cycle_detection:
             if self._detect_cycle(task, from_agent):
-                raise DelegationCycleError(
-                    f"Delegation cycle detected for task {task.task_id}"
-                )
+                raise DelegationCycleError(f"Delegation cycle detected for task {task.task_id}")
 
         # Find target agent
         if to_agent:
@@ -147,9 +142,7 @@ class DelegationManager:
         else:
             target_agent = self.registry.find_best_agent(task)
             if not target_agent:
-                raise NoDelegateFoundError(
-                    f"No suitable agent found for task type '{task.task_type}'"
-                )
+                raise NoDelegateFoundError(f"No suitable agent found for task type '{task.task_type}'")
 
         # Record delegation
         record = DelegationRecord(
@@ -176,8 +169,7 @@ class DelegationManager:
         target_agent.stats.delegations_received += 1
 
         logger.info(
-            f"Delegating task '{task.task_id}' ({task.task_type}) "
-            f"from '{from_agent}' to '{target_agent.agent_id}'"
+            f"Delegating task '{task.task_id}' ({task.task_type}) from '{from_agent}' to '{target_agent.agent_id}'"
         )
 
         try:
@@ -201,10 +193,7 @@ class DelegationManager:
             record.duration_ms = self.config.timeout_seconds * 1000
             record.success = False
 
-            logger.error(
-                f"Delegation timeout for task '{task.task_id}' "
-                f"after {self.config.timeout_seconds}s"
-            )
+            logger.error(f"Delegation timeout for task '{task.task_id}' after {self.config.timeout_seconds}s")
 
             return create_result(
                 task_id=task.task_id,
@@ -312,9 +301,7 @@ class DelegationManager:
         failed = sum(1 for r in self._delegation_history if r.success is False)
         pending = sum(1 for r in self._delegation_history if r.success is None)
 
-        total_duration = sum(
-            r.duration_ms for r in self._delegation_history if r.duration_ms
-        )
+        total_duration = sum(r.duration_ms for r in self._delegation_history if r.duration_ms)
         avg_duration = total_duration / total_delegations if total_delegations else 0
 
         return {
@@ -322,9 +309,7 @@ class DelegationManager:
             "successful": successful,
             "failed": failed,
             "pending": pending,
-            "success_rate": f"{successful / total_delegations * 100:.1f}%"
-            if total_delegations
-            else "N/A",
+            "success_rate": f"{successful / total_delegations * 100:.1f}%" if total_delegations else "N/A",
             "average_duration_ms": f"{avg_duration:.1f}ms",
             "active_delegations": len(self._active_delegations),
         }

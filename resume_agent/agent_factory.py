@@ -7,35 +7,35 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
-from .agent import ResumeAgent, AgentConfig
+from .agent import AgentConfig, ResumeAgent
+from .agents.base import AgentConfig as SpecializedAgentConfig
+from .agents.delegation import DelegationConfig, DelegationManager
+from .agents.formatter_agent import FormatterAgent
+from .agents.history import HistoryConfig, MultiAgentHistoryManager
+from .agents.orchestrator_agent import OrchestratorAgent
+from .agents.parser_agent import ParserAgent
+from .agents.registry import AgentRegistry
+from .agents.writer_agent import WriterAgent
 from .llm import LLMAgent, LLMConfig, load_config, load_raw_config
 from .observability import AgentObserver
-from .agents.registry import AgentRegistry
-from .agents.delegation import DelegationManager, DelegationConfig
-from .agents.history import MultiAgentHistoryManager, HistoryConfig
-from .agents.parser_agent import ParserAgent
-from .agents.writer_agent import WriterAgent
-from .agents.formatter_agent import FormatterAgent
-from .agents.orchestrator_agent import OrchestratorAgent
-from .agents.base import AgentConfig as SpecializedAgentConfig
+from .skills.formatter_prompt import FORMATTER_AGENT_PROMPT
+from .skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
+from .skills.parser_prompt import PARSER_AGENT_PROMPT
+from .skills.writer_prompt import WRITER_AGENT_PROMPT
 from .tools import (
-    FileReadTool,
-    FileWriteTool,
-    FileListTool,
-    FileRenameTool,
+    ATSScorerTool,
     BashTool,
+    FileListTool,
+    FileReadTool,
+    FileRenameTool,
+    FileWriteTool,
+    JobMatcherTool,
     ResumeParserTool,
+    ResumeValidatorTool,
     ResumeWriterTool,
     WebFetchTool,
     WebReadTool,
-    ATSScorerTool,
-    JobMatcherTool,
-    ResumeValidatorTool,
 )
-from .skills.parser_prompt import PARSER_AGENT_PROMPT
-from .skills.writer_prompt import WRITER_AGENT_PROMPT
-from .skills.formatter_prompt import FORMATTER_AGENT_PROMPT
-from .skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -402,8 +402,7 @@ def create_multi_agent_system(
     # Register agent tools with orchestrator
     orchestrator.register_agent_tools()
     logger.info(
-        f"Multi-agent system created with {len(registry)} agents: "
-        f"{[a.agent_id for a in registry.get_all_agents()]}"
+        f"Multi-agent system created with {len(registry)} agents: {[a.agent_id for a in registry.get_all_agents()]}"
     )
 
     return orchestrator
@@ -616,10 +615,19 @@ def _create_orchestrator_agent(
     )
 
     # Orchestrator gets coordination and analysis tools
-    _register_tools(llm_agent, tools, [
-        "file_list", "file_rename", "web_read", "web_fetch",
-        "ats_score", "job_match", "resume_validate",
-    ])
+    _register_tools(
+        llm_agent,
+        tools,
+        [
+            "file_list",
+            "file_rename",
+            "web_read",
+            "web_fetch",
+            "ats_score",
+            "job_match",
+            "resume_validate",
+        ],
+    )
 
     llm_agent.history_manager = history_manager.get_master_history()
 

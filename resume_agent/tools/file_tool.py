@@ -1,6 +1,7 @@
 """File operation tools - read, write, list files."""
 
 from pathlib import Path
+
 from .base import BaseTool, ToolResult
 
 # Constants
@@ -31,10 +32,10 @@ class FileReadTool(BaseTool):
     def _is_binary(self, file_path: Path) -> bool:
         """Check if a file is binary by reading first chunk."""
         try:
-            with open(file_path, 'rb') as f:
+            with open(file_path, "rb") as f:
                 chunk = f.read(512)
             # Check for null bytes (common in binary files)
-            return b'\x00' in chunk
+            return b"\x00" in chunk
         except Exception:
             return False
 
@@ -50,18 +51,12 @@ class FileReadTool(BaseTool):
             file_size = file_path.stat().st_size
             if file_size > MAX_FILE_SIZE:
                 return ToolResult(
-                    success=False,
-                    output="",
-                    error=f"File too large: {file_size} bytes (max {MAX_FILE_SIZE} bytes)"
+                    success=False, output="", error=f"File too large: {file_size} bytes (max {MAX_FILE_SIZE} bytes)"
                 )
 
             # Check if binary file
             if self._is_binary(file_path):
-                return ToolResult(
-                    success=False,
-                    output="",
-                    error=f"Cannot read binary file: {path}"
-                )
+                return ToolResult(success=False, output="", error=f"Cannot read binary file: {path}")
 
             content = file_path.read_text(encoding=encoding)
             return ToolResult(

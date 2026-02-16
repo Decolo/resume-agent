@@ -1,7 +1,5 @@
 """Tests for function call/response pairing in HistoryManager."""
 
-import pytest
-
 from resume_agent.llm import HistoryManager
 from resume_agent.providers.types import FunctionCall, FunctionResponse, Message, MessagePart
 
@@ -20,11 +18,7 @@ def create_function_call_message(func_name: str) -> Message:
     """Create an assistant message with function call."""
     return Message(
         role="assistant",
-        parts=[
-            MessagePart.from_function_call(
-                FunctionCall(name=func_name, arguments={"arg": "value"})
-            )
-        ],
+        parts=[MessagePart.from_function_call(FunctionCall(name=func_name, arguments={"arg": "value"}))],
     )
 
 
@@ -32,11 +26,7 @@ def create_function_response_message(func_name: str, result: str) -> Message:
     """Create a tool message with function response."""
     return Message(
         role="tool",
-        parts=[
-            MessagePart.from_function_response(
-                FunctionResponse(name=func_name, response={"result": result})
-            )
-        ],
+        parts=[MessagePart.from_function_response(FunctionResponse(name=func_name, response={"result": result}))],
     )
 
 
@@ -188,11 +178,5 @@ class TestFunctionCallPairing:
 
         # If the pair was removed, both should be gone
         if len(history) < 3:
-            assert not any(
-                msg.role == "assistant" and any(part.function_call for part in msg.parts)
-                for msg in history
-            )
-            assert not any(
-                msg.role == "tool" and any(part.function_response for part in msg.parts)
-                for msg in history
-            )
+            assert not any(msg.role == "assistant" and any(part.function_call for part in msg.parts) for msg in history)
+            assert not any(msg.role == "tool" and any(part.function_response for part in msg.parts) for msg in history)

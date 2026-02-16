@@ -100,9 +100,7 @@ class TestHTMLValidation:
     async def test_valid_html_passes(self, validator, tmp_path):
         html = (
             '<!DOCTYPE html><html><head><meta charset="UTF-8">'
-            "<style>body{}</style></head><body>"
-            + GOOD_RESUME.replace("\n", "<br>")
-            + "</body></html>"
+            "<style>body{}</style></head><body>" + GOOD_RESUME.replace("\n", "<br>") + "</body></html>"
         )
         path = _write(tmp_path, "resume.html", html)
         result = await validator.execute(path=str(path))

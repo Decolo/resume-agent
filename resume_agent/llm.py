@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, List, Optional
 
-from .retry import retry_with_backoff, RetryConfig, TransientError
+from .cache import ToolCache, get_tool_ttl, should_cache_tool
 from .observability import AgentObserver
-from .cache import ToolCache, should_cache_tool, get_tool_ttl
 from .providers import create_provider
 from .providers.types import (
     FunctionCall,
@@ -18,9 +17,10 @@ from .providers.types import (
     LLMResponse,
     Message,
     MessagePart,
-    ToolSchema,
     StreamDelta,
+    ToolSchema,
 )
+from .retry import RetryConfig, TransientError, retry_with_backoff
 
 
 class HistoryManager:
@@ -65,7 +65,7 @@ class HistoryManager:
         # Message count pruning
         if len(self._history) > self.max_messages:
             # Keep recent messages (sliding window)
-            self._history = self._history[-self.max_messages:]
+            self._history = self._history[-self.max_messages :]
             # After sliding window, ensure we didn't break pairs
             self._fix_broken_pairs()
             self._ensure_valid_sequence()
@@ -325,7 +325,13 @@ class LLMAgent:
             return None
         return [schema for _, (_, schema) in self._tools.items()]
 
-    async def run(self, user_input: str, max_steps: int = 20, stream: bool = False, on_stream_delta: Optional[Callable[[StreamDelta], None]] = None) -> str:
+    async def run(
+        self,
+        user_input: str,
+        max_steps: int = 20,
+        stream: bool = False,
+        on_stream_delta: Optional[Callable[[StreamDelta], None]] = None,
+    ) -> str:
         """Run the agent with user input, handling tool calls automatically."""
         # If we already have pending tool calls, ask for approval first
         if self._pending_tool_calls:
@@ -381,10 +387,12 @@ class LLMAgent:
             tool_calls_dump = []
             if function_calls:
                 for fc in function_calls:
-                    tool_calls_dump.append({
-                        "name": fc.name,
-                        "args": dict(fc.arguments) if fc.arguments else {},
-                    })
+                    tool_calls_dump.append(
+                        {
+                            "name": fc.name,
+                            "args": dict(fc.arguments) if fc.arguments else {},
+                        }
+                    )
             self.observer.log_llm_response(
                 step=step,
                 text=response_text or "(no text)",
@@ -468,6 +476,7 @@ class LLMAgent:
 
     async def _call_llm(self) -> LLMResponse:
         """Call LLM with retry logic."""
+
         async def make_request():
             messages = list(self.history_manager.get_history())
             return await self.provider.generate(
@@ -509,7 +518,9 @@ class LLMAgent:
                     transient_counter += 1
                     call_key = f"stream:{transient_counter}"
 
-                call_id = call.id or delta.function_call_id or f"tool_{int(time.time() * 1000)}_{len(function_call_order)}"
+                call_id = (
+                    call.id or delta.function_call_id or f"tool_{int(time.time() * 1000)}_{len(function_call_order)}"
+                )
 
                 if call_key not in function_calls_map:
                     function_calls_map[call_key] = FunctionCall(name=call.name, arguments={}, id=call_id)
@@ -538,7 +549,9 @@ class LLMAgent:
 
                 if call_key not in function_calls_map:
                     transient_counter += 1
-                    generated_id = delta.function_call_id or f"tool_stream_{int(time.time() * 1000)}_{transient_counter}"
+                    generated_id = (
+                        delta.function_call_id or f"tool_stream_{int(time.time() * 1000)}_{transient_counter}"
+                    )
                     function_calls_map[call_key] = FunctionCall(name="", arguments={}, id=generated_id)
                     function_call_order.append(call_key)
 
@@ -553,6 +566,7 @@ class LLMAgent:
             if buf:
                 try:
                     import json
+
                     call.arguments = json.loads(buf)
                 except Exception:
                     call.arguments = {}
@@ -577,8 +591,7 @@ class LLMAgent:
             estimated_tokens = int(usage.get("total_tokens") or 0)
         else:
             estimated_tokens = sum(
-                self.history_manager._estimate_tokens(msg)
-                for msg in self.history_manager.get_history()
+                self.history_manager._estimate_tokens(msg) for msg in self.history_manager.get_history()
             )
         estimated_cost = (estimated_tokens / 1_000_000) * self._COST_PER_MILLION_TOKENS
         self.observer.log_llm_request(
@@ -636,11 +649,7 @@ class LLMAgent:
 
         if state["same_call_repeats"] > 0 and state["last_call"] is not None:
             tool_name = state["last_call"].get("name", "unknown")
-            limit = (
-                self._MAX_REPEAT_READ_ONLY
-                if tool_name in self._READ_ONLY_TOOLS
-                else self._MAX_REPEAT_DEFAULT
-            )
+            limit = self._MAX_REPEAT_READ_ONLY if tool_name in self._READ_ONLY_TOOLS else self._MAX_REPEAT_DEFAULT
             if state["same_call_repeats"] >= limit:
                 return (
                     f"Loop guard triggered: repeated tool call '{tool_name}' "
@@ -668,10 +677,12 @@ class LLMAgent:
     def list_pending_tool_calls(self) -> List[Dict[str, Any]]:
         pending = []
         for fc in self._pending_tool_calls:
-            pending.append({
-                "name": fc.name,
-                "args": dict(fc.arguments) if getattr(fc, "arguments", None) else {},
-            })
+            pending.append(
+                {
+                    "name": fc.name,
+                    "args": dict(fc.arguments) if getattr(fc, "arguments", None) else {},
+                }
+            )
         return pending
 
     async def approve_pending_tool_calls(self) -> List[Dict[str, Any]]:
@@ -696,10 +707,12 @@ class LLMAgent:
 
         results = []
         for fr in responses:
-            results.append({
-                "name": fr.name,
-                "result": fr.response.get("result") if getattr(fr, "response", None) else "",
-            })
+            results.append(
+                {
+                    "name": fr.name,
+                    "result": fr.response.get("result") if getattr(fr, "response", None) else "",
+                }
+            )
         return results
 
     def reject_pending_tool_calls(self) -> int:
@@ -829,8 +842,9 @@ def load_raw_config(config_path: str = "config/config.local.yaml") -> dict:
     1. config.local.yaml (user's local config with secrets)
     2. config.yaml (template/defaults)
     """
-    import yaml
     from pathlib import Path
+
+    import yaml
 
     path = Path(config_path)
     if not path.exists():

@@ -13,6 +13,7 @@ from .tools.base import ToolResult
 @dataclass
 class PendingWrite:
     """A file write waiting for user approval."""
+
     path: str
     resolved_path: Path
     content: str
@@ -74,7 +75,8 @@ class PendingWriteManager:
             # New file — show full content as additions
             new_lines = pw.content.splitlines(keepends=True)
             diff_lines = difflib.unified_diff(
-                [], new_lines,
+                [],
+                new_lines,
                 fromfile="/dev/null",
                 tofile=path,
             )
@@ -83,7 +85,8 @@ class PendingWriteManager:
         old_lines = pw.original_content.splitlines(keepends=True)
         new_lines = pw.content.splitlines(keepends=True)
         diff_lines = difflib.unified_diff(
-            old_lines, new_lines,
+            old_lines,
+            new_lines,
             fromfile=f"a/{path}",
             tofile=f"b/{path}",
         )

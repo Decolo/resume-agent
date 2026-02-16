@@ -19,6 +19,7 @@ class Severity(Enum):
 @dataclass
 class ConfigError:
     """A single configuration issue."""
+
     field: str
     message: str
     severity: Severity
@@ -39,11 +40,13 @@ def validate_config(raw_config: Dict[str, Any], workspace_dir: str = ".") -> Lis
     # --- Provider ---
     provider = raw_config.get("provider", "gemini")
     if not isinstance(provider, str) or not provider:
-        errors.append(ConfigError(
-            field="provider",
-            message="provider must be a non-empty string",
-            severity=Severity.ERROR,
-        ))
+        errors.append(
+            ConfigError(
+                field="provider",
+                message="provider must be a non-empty string",
+                severity=Severity.ERROR,
+            )
+        )
         provider = "gemini"
     provider = provider.lower()
 
@@ -53,48 +56,58 @@ def validate_config(raw_config: Dict[str, Any], workspace_dir: str = ".") -> Lis
     if not api_key:
         message = (
             f"{env_key} not set. Set the env var or add api_key to config/config.local.yaml"
-            if env_key else
-            "API key not set. Set the env var or add api_key to config/config.local.yaml"
+            if env_key
+            else "API key not set. Set the env var or add api_key to config/config.local.yaml"
         )
-        errors.append(ConfigError(
-            field="api_key",
-            message=message,
-            severity=Severity.ERROR,
-        ))
+        errors.append(
+            ConfigError(
+                field="api_key",
+                message=message,
+                severity=Severity.ERROR,
+            )
+        )
 
     if provider not in PROVIDER_DEFAULTS:
-        errors.append(ConfigError(
-            field="provider",
-            message=f"Unknown provider '{provider}'. Expected one of: {', '.join(PROVIDER_DEFAULTS.keys())}",
-            severity=Severity.WARNING,
-        ))
+        errors.append(
+            ConfigError(
+                field="provider",
+                message=f"Unknown provider '{provider}'. Expected one of: {', '.join(PROVIDER_DEFAULTS.keys())}",
+                severity=Severity.WARNING,
+            )
+        )
 
     # --- Model ---
     model = raw_config.get("model", "")
     if not model or not isinstance(model, str):
-        errors.append(ConfigError(
-            field="model",
-            message="model must be a non-empty string",
-            severity=Severity.ERROR,
-        ))
+        errors.append(
+            ConfigError(
+                field="model",
+                message="model must be a non-empty string",
+                severity=Severity.ERROR,
+            )
+        )
 
     # --- Temperature ---
     temperature = raw_config.get("temperature", 0.7)
     if not isinstance(temperature, (int, float)) or temperature < 0 or temperature > 2:
-        errors.append(ConfigError(
-            field="temperature",
-            message=f"temperature must be a number between 0 and 2, got {temperature}",
-            severity=Severity.ERROR,
-        ))
+        errors.append(
+            ConfigError(
+                field="temperature",
+                message=f"temperature must be a number between 0 and 2, got {temperature}",
+                severity=Severity.ERROR,
+            )
+        )
 
     # --- Max tokens ---
     max_tokens = raw_config.get("max_tokens", 4096)
     if not isinstance(max_tokens, int) or max_tokens <= 0:
-        errors.append(ConfigError(
-            field="max_tokens",
-            message=f"max_tokens must be a positive integer, got {max_tokens}",
-            severity=Severity.ERROR,
-        ))
+        errors.append(
+            ConfigError(
+                field="max_tokens",
+                message=f"max_tokens must be a positive integer, got {max_tokens}",
+                severity=Severity.ERROR,
+            )
+        )
 
     # --- Multi-agent enabled ---
     ma = raw_config.get("multi_agent", {})
@@ -102,20 +115,24 @@ def validate_config(raw_config: Dict[str, Any], workspace_dir: str = ".") -> Lis
         enabled = ma.get("enabled", False)
         valid_enabled = {True, False, "auto"}
         if enabled not in valid_enabled:
-            errors.append(ConfigError(
-                field="multi_agent.enabled",
-                message=f"multi_agent.enabled must be true, false, or \"auto\", got {enabled!r}",
-                severity=Severity.ERROR,
-            ))
+            errors.append(
+                ConfigError(
+                    field="multi_agent.enabled",
+                    message=f'multi_agent.enabled must be true, false, or "auto", got {enabled!r}',
+                    severity=Severity.ERROR,
+                )
+            )
 
     # --- Workspace ---
     ws = Path(workspace_dir)
     if not ws.exists():
-        errors.append(ConfigError(
-            field="workspace_dir",
-            message=f"Workspace directory does not exist: {workspace_dir}",
-            severity=Severity.WARNING,
-        ))
+        errors.append(
+            ConfigError(
+                field="workspace_dir",
+                message=f"Workspace directory does not exist: {workspace_dir}",
+                severity=Severity.WARNING,
+            )
+        )
 
     return errors
 

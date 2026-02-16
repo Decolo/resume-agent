@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import re
 from html.parser import HTMLParser
-from typing import Optional, Tuple
+from typing import Tuple
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from .base import BaseTool, ToolResult
-
 
 _ALLOWED_CONTENT_TYPES = (
     "text/",

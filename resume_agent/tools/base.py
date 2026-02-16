@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 @dataclass
 class ToolResult:
     """Result from a tool execution."""
+
     success: bool
     output: str
     error: Optional[str] = None

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Dict, Tuple
+
 from .base import BaseTool, ToolResult
 
 
@@ -118,7 +119,7 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
 
         doc = Document(path)
         text_parts = []
-        
+
         for para in doc.paragraphs:
             if para.text.strip():
                 text_parts.append(para.text)
@@ -150,10 +151,10 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
         """Parse JSON resume (JSON Resume format)."""
         content = path.read_text(encoding="utf-8")
         data = json.loads(content)
-        
+
         # Convert JSON to readable text
         text_parts = []
-        
+
         if "basics" in data:
             basics = data["basics"]
             text_parts.append(f"# {basics.get('name', 'Unknown')}")
@@ -193,7 +194,7 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
     def _extract_sections(self, content: str) -> Dict[str, str]:
         """Extract common resume sections from content."""
         sections = {}
-        
+
         # Common section headers
         section_patterns = [
             (r"(?i)(summary|objective|profile|about)", "summary"),
@@ -222,7 +223,7 @@ Supported formats: .pdf, .docx, .md, .txt, .json"""
                     current_content = []
                     matched = True
                     break
-            
+
             if not matched:
                 current_content.append(line)
 

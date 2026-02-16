@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 from .base import BaseTool, ToolResult
 
@@ -35,22 +35,16 @@ Provide either job_text directly or job_url to fetch the posting."""
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
 
-    async def execute(
-        self, resume_path: str, job_text: str = "", job_url: str = ""
-    ) -> ToolResult:
+    async def execute(self, resume_path: str, job_text: str = "", job_url: str = "") -> ToolResult:
         try:
             # Resolve and read resume
             file_path = self._resolve_path(resume_path)
             if not file_path.exists():
-                return ToolResult(
-                    success=False, output="", error=f"Resume not found: {resume_path}"
-                )
+                return ToolResult(success=False, output="", error=f"Resume not found: {resume_path}")
 
             resume_content = file_path.read_text(encoding="utf-8")
             if not resume_content.strip():
-                return ToolResult(
-                    success=False, output="", error=f"Resume is empty: {resume_path}"
-                )
+                return ToolResult(success=False, output="", error=f"Resume is empty: {resume_path}")
 
             # Get job description
             if not job_text.strip() and not job_url.strip():
@@ -79,19 +73,13 @@ Provide either job_text directly or job_url to fetch the posting."""
             missing = jd_keywords - resume_keywords
             extra = resume_keywords - jd_keywords
 
-            match_score = self._calculate_match_score(
-                resume_keywords, jd_keywords, jd_requirements, resume_content
-            )
+            match_score = self._calculate_match_score(resume_keywords, jd_keywords, jd_requirements, resume_content)
 
             # Generate suggestions
-            suggestions = self._generate_suggestions(
-                missing, jd_requirements, resume_content
-            )
+            suggestions = self._generate_suggestions(missing, jd_requirements, resume_content)
 
             # Format output
-            output = self._format_report(
-                match_score, matched, missing, extra, suggestions, jd_requirements
-            )
+            output = self._format_report(match_score, matched, missing, extra, suggestions, jd_requirements)
 
             return ToolResult(
                 success=True,
@@ -111,19 +99,102 @@ Provide either job_text directly or job_url to fetch the posting."""
 
     # Common words to exclude from keyword matching
     _STOP_WORDS: Set[str] = {
-        "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
-        "her", "was", "one", "our", "out", "has", "have", "been", "will",
-        "with", "this", "that", "from", "they", "were", "which", "their",
-        "about", "would", "there", "what", "also", "into", "more", "other",
-        "than", "then", "them", "these", "some", "such", "only", "over",
-        "very", "just", "being", "through", "during", "before", "after",
-        "above", "below", "between", "under", "again", "further", "once",
-        "here", "when", "where", "both", "each", "most", "same", "should",
-        "could", "does", "doing", "while", "must", "work", "working",
-        "looking", "seeking", "ability", "able", "including", "using",
-        "strong", "excellent", "good", "great", "well", "team", "role",
-        "position", "company", "join", "ideal", "candidate", "required",
-        "preferred", "minimum", "years", "year", "experience",
+        "the",
+        "and",
+        "for",
+        "are",
+        "but",
+        "not",
+        "you",
+        "all",
+        "can",
+        "had",
+        "her",
+        "was",
+        "one",
+        "our",
+        "out",
+        "has",
+        "have",
+        "been",
+        "will",
+        "with",
+        "this",
+        "that",
+        "from",
+        "they",
+        "were",
+        "which",
+        "their",
+        "about",
+        "would",
+        "there",
+        "what",
+        "also",
+        "into",
+        "more",
+        "other",
+        "than",
+        "then",
+        "them",
+        "these",
+        "some",
+        "such",
+        "only",
+        "over",
+        "very",
+        "just",
+        "being",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "under",
+        "again",
+        "further",
+        "once",
+        "here",
+        "when",
+        "where",
+        "both",
+        "each",
+        "most",
+        "same",
+        "should",
+        "could",
+        "does",
+        "doing",
+        "while",
+        "must",
+        "work",
+        "working",
+        "looking",
+        "seeking",
+        "ability",
+        "able",
+        "including",
+        "using",
+        "strong",
+        "excellent",
+        "good",
+        "great",
+        "well",
+        "team",
+        "role",
+        "position",
+        "company",
+        "join",
+        "ideal",
+        "candidate",
+        "required",
+        "preferred",
+        "minimum",
+        "years",
+        "year",
+        "experience",
     }
 
     def _extract_keywords(self, text: str) -> Set[str]:
@@ -207,9 +278,7 @@ Provide either job_text directly or job_url to fetch the posting."""
 
         required = requirements.get("required_skills", [])
         if required:
-            matched_reqs = sum(
-                1 for r in required if any(w in resume_lower for w in r.split() if len(w) > 3)
-            )
+            matched_reqs = sum(1 for r in required if any(w in resume_lower for w in r.split() if len(w) > 3))
             req_score = (matched_reqs / len(required)) * 100
 
         overall = round(kw_score * 0.6 + req_score * 0.4)
@@ -226,35 +295,38 @@ Provide either job_text directly or job_url to fetch the posting."""
         resume_lower = resume_content.lower()
 
         # Missing keywords
-        tech_missing = sorted(
-            kw for kw in missing
-            if any(c in kw for c in ".+#") or len(kw) <= 10
-        )[:10]
+        tech_missing = sorted(kw for kw in missing if any(c in kw for c in ".+#") or len(kw) <= 10)[:10]
         if tech_missing:
-            suggestions.append({
-                "section": "skills",
-                "action": "add",
-                "detail": f"Add missing technical keywords: {', '.join(tech_missing)}",
-            })
+            suggestions.append(
+                {
+                    "section": "skills",
+                    "action": "add",
+                    "detail": f"Add missing technical keywords: {', '.join(tech_missing)}",
+                }
+            )
 
         # Missing required skills
         for req in requirements.get("required_skills", []):
             req_words = [w for w in req.split() if len(w) > 3]
             if not any(w in resume_lower for w in req_words):
-                suggestions.append({
-                    "section": "experience",
-                    "action": "add",
-                    "detail": f"Address required skill: {req}",
-                })
+                suggestions.append(
+                    {
+                        "section": "experience",
+                        "action": "add",
+                        "detail": f"Address required skill: {req}",
+                    }
+                )
 
         # Missing qualifications
         for qual in requirements.get("qualifications", []):
             if qual not in resume_lower:
-                suggestions.append({
-                    "section": "education",
-                    "action": "verify",
-                    "detail": f"Ensure qualification is visible: {qual}",
-                })
+                suggestions.append(
+                    {
+                        "section": "education",
+                        "action": "verify",
+                        "detail": f"Ensure qualification is visible: {qual}",
+                    }
+                )
 
         return suggestions[:15]  # Cap at 15 suggestions
 

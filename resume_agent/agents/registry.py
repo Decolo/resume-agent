@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from .protocol import AgentTask
 
@@ -62,9 +62,7 @@ class AgentRegistry:
                 self._capabilities_index[capability] = []
             self._capabilities_index[capability].append(agent.agent_id)
 
-        logger.info(
-            f"Registered agent '{agent.agent_id}' with capabilities: {agent.capabilities}"
-        )
+        logger.info(f"Registered agent '{agent.agent_id}' with capabilities: {agent.capabilities}")
 
     def get_agent(self, agent_id: str) -> Optional[BaseAgent]:
         """Get an agent by its ID.
@@ -115,9 +113,7 @@ class AgentRegistry:
 
         if not candidates:
             # Fall back to checking all agents
-            candidates = [
-                agent for agent in self._agents.values() if agent.can_handle(task)
-            ]
+            candidates = [agent for agent in self._agents.values() if agent.can_handle(task)]
 
         if not candidates:
             logger.warning(f"No agent found for task type: {task.task_type}")
@@ -131,9 +127,7 @@ class AgentRegistry:
             load_score = 1.0 - agent.current_load()
 
             # Weighted scoring
-            total_score = (
-                0.5 * capability_score + 0.3 * success_score + 0.2 * load_score
-            )
+            total_score = 0.5 * capability_score + 0.3 * success_score + 0.2 * load_score
 
             scored_agents.append((agent, total_score))
             logger.debug(
@@ -143,10 +137,7 @@ class AgentRegistry:
 
         # Return highest scoring agent
         best_agent, best_score = max(scored_agents, key=lambda x: x[1])
-        logger.info(
-            f"Selected agent '{best_agent.agent_id}' for task '{task.task_type}' "
-            f"with score {best_score:.3f}"
-        )
+        logger.info(f"Selected agent '{best_agent.agent_id}' for task '{task.task_type}' with score {best_score:.3f}")
 
         return best_agent
 
@@ -156,10 +147,7 @@ class AgentRegistry:
         Returns:
             Dictionary mapping agent IDs to their statistics
         """
-        return {
-            agent_id: agent.get_stats_dict()
-            for agent_id, agent in self._agents.items()
-        }
+        return {agent_id: agent.get_stats_dict() for agent_id, agent in self._agents.items()}
 
     def __len__(self) -> int:
         """Return the number of registered agents."""
@@ -171,6 +159,5 @@ class AgentRegistry:
 
     def __repr__(self) -> str:
         return (
-            f"AgentRegistry(agents={list(self._agents.keys())}, "
-            f"capabilities={list(self._capabilities_index.keys())})"
+            f"AgentRegistry(agents={list(self._agents.keys())}, capabilities={list(self._capabilities_index.keys())})"
         )

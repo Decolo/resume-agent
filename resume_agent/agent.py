@@ -3,30 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Any
-from pathlib import Path
+from typing import Any, Optional
 
 from .llm import LLMAgent, LLMConfig, load_config
+from .skills import RESUME_EXPERT_PROMPT
 from .tools import (
-    FileReadTool,
-    FileWriteTool,
-    FileListTool,
-    FileRenameTool,
+    ATSScorerTool,
     BashTool,
+    FileListTool,
+    FileReadTool,
+    FileRenameTool,
+    FileWriteTool,
+    JobMatcherTool,
     ResumeParserTool,
+    ResumeValidatorTool,
     ResumeWriterTool,
     WebFetchTool,
     WebReadTool,
-    ATSScorerTool,
-    JobMatcherTool,
-    ResumeValidatorTool,
 )
-from .skills import RESUME_EXPERT_PROMPT
 
 
 @dataclass
 class AgentConfig:
     """Agent configuration."""
+
     workspace_dir: str = "."
     max_steps: int = 50
     system_prompt: str = RESUME_EXPERT_PROMPT
@@ -69,7 +69,7 @@ class ResumeAgent:
     def _init_tools(self) -> dict:
         """Initialize available tools."""
         workspace = self.agent_config.workspace_dir
-        
+
         return {
             "file_read": FileReadTool(workspace),
             "file_write": FileWriteTool(workspace),
@@ -93,7 +93,7 @@ class ResumeAgent:
                 "properties": tool.parameters,
                 "required": [k for k, v in tool.parameters.items() if v.get("required", False)],
             }
-            
+
             self.agent.register_tool(
                 name=tool.name,
                 description=tool.description,
@@ -106,15 +106,15 @@ class ResumeAgent:
         if self.agent_config.verbose:
             print(f"\n👤 User: {user_input[:100]}{'...' if len(user_input) > 100 else ''}")
             print("\n🤔 Thinking...")
-        
+
         response = await self.agent.run(
             user_input=user_input,
             max_steps=self.agent_config.max_steps,
         )
-        
+
         if self.agent_config.verbose:
             print(f"\n🤖 Assistant: {response[:200]}{'...' if len(response) > 200 else ''}")
-        
+
         return response
 
     async def chat(self, user_input: str) -> str:
@@ -129,10 +129,8 @@ class ResumeAgent:
 async def main():
     """Test the agent."""
     agent = ResumeAgent()
-    
-    response = await agent.run(
-        "List all files in the current directory and tell me what you see."
-    )
+
+    response = await agent.run("List all files in the current directory and tell me what you see.")
     print("\n" + "=" * 50)
     print("Final Response:")
     print(response)
@@ -140,4 +138,5 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
+
     asyncio.run(main())

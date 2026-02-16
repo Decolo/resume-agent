@@ -92,25 +92,19 @@ class TestJobMatcher:
 
     @pytest.mark.asyncio
     async def test_good_match_scores_high(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MATCHING_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         assert result.success
         assert result.data["match_score"] >= 60
 
     @pytest.mark.asyncio
     async def test_poor_match_scores_low(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MISMATCHED_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MISMATCHED_JD)
         assert result.success
         assert result.data["match_score"] < 70
 
     @pytest.mark.asyncio
     async def test_file_not_found(self, matcher):
-        result = await matcher.execute(
-            resume_path="nonexistent.md", job_text="Some job"
-        )
+        result = await matcher.execute(resume_path="nonexistent.md", job_text="Some job")
         assert not result.success
         assert "not found" in result.error.lower()
 
@@ -118,9 +112,7 @@ class TestJobMatcher:
     async def test_empty_resume(self, matcher, tmp_path):
         empty = tmp_path / "empty.md"
         empty.write_text("", encoding="utf-8")
-        result = await matcher.execute(
-            resume_path=str(empty), job_text="Some job"
-        )
+        result = await matcher.execute(resume_path=str(empty), job_text="Some job")
         assert not result.success
         assert "empty" in result.error.lower()
 
@@ -132,9 +124,7 @@ class TestJobMatcher:
 
     @pytest.mark.asyncio
     async def test_job_url_without_fetch(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_url="https://example.com/job"
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_url="https://example.com/job")
         assert not result.success
         assert "web_read" in result.error.lower()
 
@@ -144,9 +134,7 @@ class TestMatchOutput:
 
     @pytest.mark.asyncio
     async def test_data_has_required_fields(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MATCHING_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         assert "match_score" in result.data
         assert "matched_keywords" in result.data
         assert "missing_keywords" in result.data
@@ -155,35 +143,27 @@ class TestMatchOutput:
 
     @pytest.mark.asyncio
     async def test_matched_keywords_are_relevant(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MATCHING_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         matched = result.data["matched_keywords"]
         # The resume has Python, AWS, Docker, Kubernetes — should match
         assert any("python" in kw for kw in matched)
 
     @pytest.mark.asyncio
     async def test_missing_keywords_for_mismatched_jd(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MISMATCHED_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MISMATCHED_JD)
         missing = result.data["missing_keywords"]
         # Data science JD should have missing keywords like tensorflow, pytorch, etc.
         assert len(missing) > 0
 
     @pytest.mark.asyncio
     async def test_output_contains_sections(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MATCHING_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         assert "Match Score" in result.output
         assert "Matching Keywords" in result.output or "Missing Keywords" in result.output
 
     @pytest.mark.asyncio
     async def test_suggestions_are_actionable(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MISMATCHED_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MISMATCHED_JD)
         suggestions = result.data["suggestions"]
         # Should have suggestions for a mismatched resume
         assert len(suggestions) > 0
@@ -198,25 +178,19 @@ class TestRequirementsExtraction:
 
     @pytest.mark.asyncio
     async def test_extracts_required_skills(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MATCHING_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         reqs = result.data["requirements"]
         assert len(reqs.get("required_skills", [])) > 0
 
     @pytest.mark.asyncio
     async def test_extracts_preferred_skills(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MATCHING_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         reqs = result.data["requirements"]
         assert len(reqs.get("preferred_skills", [])) > 0
 
     @pytest.mark.asyncio
     async def test_extracts_experience_years(self, matcher, sample_resume):
-        result = await matcher.execute(
-            resume_path=str(sample_resume), job_text=MATCHING_JD
-        )
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         reqs = result.data["requirements"]
         quals = reqs.get("qualifications", [])
         assert any("years" in q.lower() for q in quals)

@@ -2,26 +2,25 @@
 
 import asyncio
 import os
+import select
 import sys
 import threading
-import select
 from pathlib import Path
-from typing import Union, Optional
+from typing import Optional, Union
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
-from prompt_toolkit import PromptSession
-from prompt_toolkit.history import FileHistory
 
-from .agent import ResumeAgent, AgentConfig
-from .llm import LLMConfig, load_config, load_raw_config
+from .agent import AgentConfig, ResumeAgent
 from .agent_factory import create_agent
 from .agents.orchestrator_agent import OrchestratorAgent
+from .config_validator import Severity, has_errors, validate_config
+from .llm import LLMConfig, load_config, load_raw_config
 from .session import SessionManager
-from .config_validator import validate_config, has_errors, Severity
-
 
 console = Console()
 
@@ -166,6 +165,7 @@ Files are saved to `exports/conversation_YYYYMMDD_HHMMSS[_verbose].{ext}`
 def _get_llm_agents(agent: Union[ResumeAgent, OrchestratorAgent]):
     """Return list of LLMAgent instances for pending tool approvals."""
     from .agent_factory import AutoAgent
+
     agents = []
     if isinstance(agent, AutoAgent):
         if hasattr(agent, "single_agent") and hasattr(agent.single_agent, "agent"):
@@ -229,7 +229,9 @@ def _set_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent], enable
             llm_agent.set_auto_approve_tools(enabled)
 
 
-async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None) -> bool:
+async def handle_command(
+    command: str, agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None
+) -> bool:
     """Handle special commands. Returns True if should continue, False to exit."""
     cmd = command.lower().strip()
 
@@ -266,9 +268,9 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                     timestamp = f"{parts_id[1]}_{parts_id[2]}"
                     console.print(f"✓ Session saved: {timestamp}", style="green")
                 else:
-                    console.print(f"✓ Session saved", style="green")
+                    console.print("✓ Session saved", style="green")
 
-            console.print(f"   Use /load to restore this session later", style="dim")
+            console.print("   Use /load to restore this session later", style="dim")
         except Exception as e:
             console.print(f"❌ Failed to save session: {e}", style="red")
 
@@ -313,6 +315,7 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                     display_name = f"{parts_id[1]}_{parts_id[2]}"
 
                 from datetime import datetime
+
                 updated = datetime.fromisoformat(session["updated_at"]).strftime("%m-%d %H:%M")
 
                 table.add_row(
@@ -321,7 +324,7 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                     updated,
                     session["mode"],
                     str(session["message_count"]),
-                    f"{session['total_tokens']:,}"
+                    f"{session['total_tokens']:,}",
                 )
 
             console.print(table)
@@ -352,7 +355,10 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
             # Show success with session info
             session_info = next((s for s in sessions if s["id"] == session_id), None)
             if session_info:
-                console.print(f"✓ Session loaded: {session_info['message_count']} messages, {session_info['total_tokens']:,} tokens", style="green")
+                console.print(
+                    f"✓ Session loaded: {session_info['message_count']} messages, {session_info['total_tokens']:,} tokens",
+                    style="green",
+                )
             else:
                 console.print(f"✓ Session loaded: {session_id}", style="green")
         except FileNotFoundError:
@@ -396,6 +402,7 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
 
                 # Format timestamps
                 from datetime import datetime
+
                 created = datetime.fromisoformat(session["created_at"]).strftime("%m-%d %H:%M")
                 updated = datetime.fromisoformat(session["updated_at"]).strftime("%m-%d %H:%M")
 
@@ -406,12 +413,12 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                     updated,
                     session["mode"],
                     str(session["message_count"]),
-                    f"{session['total_tokens']:,}"
+                    f"{session['total_tokens']:,}",
                 )
 
             console.print(table)
-            console.print(f"\n💡 Quick load: /load <number>  (e.g., /load 1 for most recent)", style="dim")
-            console.print(f"   Full ID load: /load <full_session_id>", style="dim")
+            console.print("\n💡 Quick load: /load <number>  (e.g., /load 1 for most recent)", style="dim")
+            console.print("   Full ID load: /load <full_session_id>", style="dim")
 
     elif cmd.startswith("/delete-session"):
         if not session_manager:
@@ -443,9 +450,9 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
 
             # Delete the session
             if session_manager.delete_session(session_id):
-                console.print(f"✓ Session deleted", style="green")
+                console.print("✓ Session deleted", style="green")
             else:
-                console.print(f"❌ Session not found", style="red")
+                console.print("❌ Session not found", style="red")
 
     elif cmd == "/files":
         if isinstance(agent, ResumeAgent):
@@ -501,14 +508,16 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
     elif cmd == "/delegation-tree":
         if isinstance(agent, OrchestratorAgent) and agent.delegation_manager:
             delegation_stats = agent.delegation_manager.get_stats()
-            console.print(Panel(
-                f"Total delegations: {delegation_stats['total_delegations']}\n"
-                f"Successful: {delegation_stats['successful']}\n"
-                f"Failed: {delegation_stats['failed']}\n"
-                f"Success rate: {delegation_stats['success_rate']}\n"
-                f"Average duration: {delegation_stats['average_duration_ms']}",
-                title="📊 Delegation Statistics"
-            ))
+            console.print(
+                Panel(
+                    f"Total delegations: {delegation_stats['total_delegations']}\n"
+                    f"Successful: {delegation_stats['successful']}\n"
+                    f"Failed: {delegation_stats['failed']}\n"
+                    f"Success rate: {delegation_stats['success_rate']}\n"
+                    f"Average duration: {delegation_stats['average_duration_ms']}",
+                    title="📊 Delegation Statistics",
+                )
+            )
         else:
             console.print("⚠️ Delegation tree only available in multi-agent mode.", style="yellow")
 
@@ -593,7 +602,7 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                 name = item.get("name", "tool")
                 console.print(f"  🔧 {name}", style="cyan")
 
-        console.print(f"\n💡 /approve to apply, /reject to discard", style="dim")
+        console.print("\n💡 /approve to apply, /reject to discard", style="dim")
 
     elif cmd.startswith("/auto-approve"):
         parts = cmd.split(maxsplit=1)
@@ -626,6 +635,7 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
 
         # Get conversation history (handle AutoAgent, OrchestratorAgent, ResumeAgent)
         from .agent_factory import AutoAgent
+
         if isinstance(agent, AutoAgent):
             llm_agent = agent.agent
         elif isinstance(agent, OrchestratorAgent):
@@ -645,7 +655,7 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
         # Get observability events if verbose mode
         observer_events = []
         if verbose:
-            observer = llm_agent.observer if hasattr(llm_agent, 'observer') else None
+            observer = llm_agent.observer if hasattr(llm_agent, "observer") else None
             if observer:
                 observer_events = observer.events
             else:
@@ -659,32 +669,33 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
             export_data = {
                 "exported_at": datetime.now().isoformat(),
                 "agent_mode": "multi-agent" if isinstance(agent, OrchestratorAgent) else "single-agent",
-                "messages": []
+                "messages": [],
             }
 
             for msg in history:
-                msg_data = {
-                    "role": msg.role,
-                    "parts": []
-                }
+                msg_data = {"role": msg.role, "parts": []}
                 if msg.parts:
                     for part in msg.parts:
                         if part.text:
                             msg_data["parts"].append({"type": "text", "content": part.text})
                         elif part.function_call:
-                            msg_data["parts"].append({
-                                "type": "function_call",
-                                "name": part.function_call.name,
-                                "args": dict(part.function_call.arguments) if part.function_call.arguments else {},
-                                "id": part.function_call.id,
-                            })
+                            msg_data["parts"].append(
+                                {
+                                    "type": "function_call",
+                                    "name": part.function_call.name,
+                                    "args": dict(part.function_call.arguments) if part.function_call.arguments else {},
+                                    "id": part.function_call.id,
+                                }
+                            )
                         elif part.function_response:
-                            msg_data["parts"].append({
-                                "type": "function_response",
-                                "name": part.function_response.name,
-                                "response": part.function_response.response,
-                                "call_id": part.function_response.call_id,
-                            })
+                            msg_data["parts"].append(
+                                {
+                                    "type": "function_response",
+                                    "name": part.function_response.name,
+                                    "response": part.function_response.response,
+                                    "call_id": part.function_response.call_id,
+                                }
+                            )
                 export_data["messages"].append(msg_data)
 
             # Add observability events if verbose
@@ -701,7 +712,7 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                         }
                         for event in observer_events
                     ],
-                    "session_stats": llm_agent.observer.get_session_stats() if hasattr(llm_agent, 'observer') else {}
+                    "session_stats": llm_agent.observer.get_session_stats() if hasattr(llm_agent, "observer") else {},
                 }
 
             content = json.dumps(export_data, indent=2)
@@ -710,9 +721,9 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
             lines = []
             for msg in history:
                 role_label = "User" if msg.role == "user" else "Assistant" if msg.role == "assistant" else "Tool"
-                lines.append(f"\n{'='*60}")
+                lines.append(f"\n{'=' * 60}")
                 lines.append(f"{role_label}:")
-                lines.append('='*60)
+                lines.append("=" * 60)
 
                 if msg.parts:
                     for part in msg.parts:
@@ -725,9 +736,9 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
 
             # Add observability events if verbose
             if verbose and observer_events:
-                lines.append(f"\n\n{'='*60}")
+                lines.append(f"\n\n{'=' * 60}")
                 lines.append("OBSERVABILITY LOGS")
-                lines.append('='*60)
+                lines.append("=" * 60)
 
                 for event in observer_events:
                     lines.append(f"\n[{event.timestamp.strftime('%H:%M:%S')}] {event.event_type.upper()}")
@@ -755,11 +766,11 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                             lines.append(f"  Duration: {event.duration_ms:.2f}ms")
 
                 # Add session stats
-                if hasattr(llm_agent, 'observer'):
+                if hasattr(llm_agent, "observer"):
                     stats = llm_agent.observer.get_session_stats()
-                    lines.append(f"\n{'='*60}")
+                    lines.append(f"\n{'=' * 60}")
                     lines.append("SESSION STATISTICS")
-                    lines.append('='*60)
+                    lines.append("=" * 60)
                     lines.append(f"Total Events:     {stats['event_count']}")
                     lines.append(f"Tool Calls:       {stats['tool_calls']} (cache hit: {stats['cache_hit_rate']:.1%})")
                     lines.append(f"LLM Requests:     {stats['llm_requests']}")
@@ -797,27 +808,31 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                 lines.append("\n# Observability Logs\n")
 
                 for event in observer_events:
-                    timestamp = event.timestamp.strftime('%H:%M:%S')
+                    timestamp = event.timestamp.strftime("%H:%M:%S")
 
                     if event.event_type == "tool_call":
                         tool = event.data.get("tool", "unknown")
                         success = "✓" if event.data.get("success") else "✗"
                         cached = " 🔄" if event.data.get("cached") else ""
-                        lines.append(f"- **[{timestamp}]** {success} Tool: `{tool}`{cached} ({event.duration_ms:.2f}ms)")
-                        args = event.data.get('args', {})
+                        lines.append(
+                            f"- **[{timestamp}]** {success} Tool: `{tool}`{cached} ({event.duration_ms:.2f}ms)"
+                        )
+                        args = event.data.get("args", {})
                         if args:
                             lines.append(f"  - Args: `{args}`")
 
                     elif event.event_type == "llm_request":
-                        model = event.data.get('model')
-                        step = event.data.get('step')
+                        model = event.data.get("model")
+                        step = event.data.get("step")
                         lines.append(f"- **[{timestamp}]** 🤖 LLM Request: `{model}` (Step {step})")
-                        lines.append(f"  - Tokens: {event.tokens_used}, Cost: ${event.cost_usd:.4f}, Duration: {event.duration_ms:.2f}ms")
+                        lines.append(
+                            f"  - Tokens: {event.tokens_used}, Cost: ${event.cost_usd:.4f}, Duration: {event.duration_ms:.2f}ms"
+                        )
 
                     elif event.event_type == "llm_response":
-                        step = event.data.get('step')
-                        text = event.data.get('text', '')[:100]
-                        tool_calls = event.data.get('tool_calls', [])
+                        step = event.data.get("step")
+                        text = event.data.get("text", "")[:100]
+                        tool_calls = event.data.get("tool_calls", [])
                         lines.append(f"- **[{timestamp}]** 🧠 LLM Response (Step {step})")
                         if tool_calls:
                             lines.append(f"  - Tool calls: {len(tool_calls)}")
@@ -825,20 +840,20 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
                             lines.append(f"  - Text: {text}...")
 
                     elif event.event_type == "error":
-                        error_type = event.data.get('error_type')
-                        message = event.data.get('message')
+                        error_type = event.data.get("error_type")
+                        message = event.data.get("message")
                         lines.append(f"- **[{timestamp}]** ❌ Error: `{error_type}` - {message}")
 
                     elif event.event_type == "step_start":
-                        step = event.data.get('step')
+                        step = event.data.get("step")
                         lines.append(f"- **[{timestamp}]** 🔄 Step {step} started")
 
                     elif event.event_type == "step_end":
-                        step = event.data.get('step')
+                        step = event.data.get("step")
                         lines.append(f"- **[{timestamp}]** ✓ Step {step} completed ({event.duration_ms:.2f}ms)")
 
                 # Add session stats
-                if hasattr(llm_agent, 'observer'):
+                if hasattr(llm_agent, "observer"):
                     stats = llm_agent.observer.get_session_stats()
                     lines.append("\n## Session Statistics\n")
                     lines.append(f"- **Total Events:** {stats['event_count']}")
@@ -856,8 +871,11 @@ async def handle_command(command: str, agent: Union[ResumeAgent, OrchestratorAge
         if target in ["clipboard", "clip"]:
             try:
                 import pyperclip
+
                 pyperclip.copy(content)
-                console.print(f"✓ Conversation history copied to clipboard ({format_type} format{verbose_label})", style="green")
+                console.print(
+                    f"✓ Conversation history copied to clipboard ({format_type} format{verbose_label})", style="green"
+                )
             except Exception as e:
                 console.print(f"❌ Failed to copy to clipboard: {e}", style="red")
         else:  # file
@@ -908,7 +926,8 @@ async def _prompt_pending_tool_action(
     console.print("  [3] ❌ Reject (discard)", style="red")
 
     choice = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: session.prompt("\n> "),
+        None,
+        lambda: session.prompt("\n> "),
     )
     choice = choice.strip()
 
@@ -945,7 +964,9 @@ async def _prompt_pending_tool_action(
     # Any other input: do nothing
 
 
-async def run_interactive(agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None):
+async def run_interactive(
+    agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None
+):
     """Run interactive chat loop."""
     # Setup prompt with history
     history_file = Path.home() / ".resume_agent_history"
@@ -990,9 +1011,7 @@ async def run_interactive(agent: Union[ResumeAgent, OrchestratorAgent], session_
                 stop_event = threading.Event()
                 esc_future = None
                 if sys.stdin.isatty():
-                    esc_future = asyncio.get_event_loop().run_in_executor(
-                        None, _wait_for_escape, stop_event
-                    )
+                    esc_future = asyncio.get_event_loop().run_in_executor(None, _wait_for_escape, stop_event)
 
                 wait_set = {agent_task}
                 if esc_future:
@@ -1051,41 +1070,46 @@ def main():
     """Main entry point."""
     import argparse
     import os
+
     from dotenv import load_dotenv
 
     # Load environment variables from .env file
     load_dotenv()
 
-    parser = argparse.ArgumentParser(
-        description="Resume Agent - AI-powered resume modification assistant"
-    )
+    parser = argparse.ArgumentParser(description="Resume Agent - AI-powered resume modification assistant")
     parser.add_argument(
-        "--workspace", "-w",
+        "--workspace",
+        "-w",
         default=".",
         help="Workspace directory for resume files (default: current directory)",
     )
     parser.add_argument(
-        "--config", "-c",
+        "--config",
+        "-c",
         default="config/config.local.yaml",
         help="Path to configuration file",
     )
     parser.add_argument(
-        "--prompt", "-p",
+        "--prompt",
+        "-p",
         help="Run a single prompt and exit (non-interactive mode)",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         default=False,
         help="Verbose output (show tool executions, session summary, cache stats)",
     )
     parser.add_argument(
-        "--multi-agent", "-m",
+        "--multi-agent",
+        "-m",
         action="store_true",
         help="Force multi-agent mode (overrides config)",
     )
     parser.add_argument(
-        "--single-agent", "-s",
+        "--single-agent",
+        "-s",
         action="store_true",
         help="Force single-agent mode (overrides config)",
     )
@@ -1172,6 +1196,7 @@ def main():
 
             if _list_pending_tool_calls(agent):
                 import sys
+
                 if sys.stdin.isatty():
                     session = PromptSession()
                     # Handle tool approvals first if present

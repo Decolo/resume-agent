@@ -1,15 +1,14 @@
 """Tests for configuration validator."""
 
 import os
-import pytest
 from unittest.mock import patch
 
 from resume_agent.config_validator import (
-    validate_config,
-    has_errors,
     ConfigError,
     Severity,
     _resolve_api_key_value,
+    has_errors,
+    validate_config,
 )
 
 

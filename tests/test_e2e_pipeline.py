@@ -6,14 +6,13 @@ All tools here are heuristic-based (no LLM calls), so no mocking needed.
 
 import pytest
 
-from resume_agent.tools.resume_parser import ResumeParserTool
-from resume_agent.tools.resume_writer import ResumeWriterTool
-from resume_agent.tools.ats_scorer import ATSScorerTool
-from resume_agent.tools.job_matcher import JobMatcherTool
-from resume_agent.tools.resume_validator import ResumeValidatorTool
 from resume_agent.preview import PendingWriteManager
 from resume_agent.templates import AVAILABLE_TEMPLATES
-
+from resume_agent.tools.ats_scorer import ATSScorerTool
+from resume_agent.tools.job_matcher import JobMatcherTool
+from resume_agent.tools.resume_parser import ResumeParserTool
+from resume_agent.tools.resume_validator import ResumeValidatorTool
+from resume_agent.tools.resume_writer import ResumeWriterTool
 
 SAMPLE_RESUME = """\
 # Jane Smith
@@ -93,9 +92,7 @@ class TestFullPipeline:
         assert 0 <= initial_score <= 100
 
         # 3. Job Match
-        match_result = await matcher.execute(
-            resume_path=str(resume_path), job_text=MATCHING_JOB
-        )
+        match_result = await matcher.execute(resume_path=str(resume_path), job_text=MATCHING_JOB)
         assert match_result.success
         match_score = match_result.data["match_score"]
         matched = match_result.data["matched_keywords"]
@@ -115,16 +112,12 @@ class TestFullPipeline:
             improved += f"\n- Additional: {extra_skills}\n"
 
         output_md = tmp_path / "improved.md"
-        write_result = await writer.execute(
-            path=str(output_md), content=improved
-        )
+        write_result = await writer.execute(path=str(output_md), content=improved)
         assert write_result.success
 
         # 5. Write HTML version
         output_html = tmp_path / "improved.html"
-        html_result = await writer.execute(
-            path=str(output_html), content=improved, template="modern"
-        )
+        html_result = await writer.execute(path=str(output_html), content=improved, template="modern")
         assert html_result.success
 
         # 6. Validate both outputs
@@ -157,9 +150,7 @@ class TestFullPipeline:
 
         # Write as JSON
         json_path = tmp_path / "resume.json"
-        json_result = await writer.execute(
-            path=str(json_path), content=SAMPLE_RESUME
-        )
+        json_result = await writer.execute(path=str(json_path), content=SAMPLE_RESUME)
         assert json_result.success
 
         # Validate JSON
@@ -202,9 +193,7 @@ class TestToolChaining:
         parse_result = await parser.execute(path=str(resume_path))
         assert parse_result.success
 
-        match_result = await matcher.execute(
-            resume_path=str(resume_path), job_text=MATCHING_JOB
-        )
+        match_result = await matcher.execute(resume_path=str(resume_path), job_text=MATCHING_JOB)
         assert match_result.success
         assert match_result.data["match_score"] >= 50
         assert len(match_result.data["matched_keywords"]) > 0
@@ -217,9 +206,7 @@ class TestToolChaining:
 
         # Write Markdown
         md_path = tmp_path / "output.md"
-        md_result = await writer.execute(
-            path=str(md_path), content=SAMPLE_RESUME
-        )
+        md_result = await writer.execute(path=str(md_path), content=SAMPLE_RESUME)
         assert md_result.success
 
         md_valid = await validator.execute(path=str(md_path))
@@ -228,9 +215,7 @@ class TestToolChaining:
 
         # Write HTML
         html_path = tmp_path / "output.html"
-        html_result = await writer.execute(
-            path=str(html_path), content=SAMPLE_RESUME, template="modern"
-        )
+        html_result = await writer.execute(path=str(html_path), content=SAMPLE_RESUME, template="modern")
         assert html_result.success
 
         html_valid = await validator.execute(path=str(html_path))
@@ -246,16 +231,12 @@ class TestToolChaining:
 
         for template in AVAILABLE_TEMPLATES:
             path = tmp_path / f"resume_{template}.html"
-            result = await writer.execute(
-                path=str(path), content=SAMPLE_RESUME, template=template
-            )
+            result = await writer.execute(path=str(path), content=SAMPLE_RESUME, template=template)
             assert result.success, f"Write failed for template: {template}"
 
             valid = await validator.execute(path=str(path))
             assert valid.success
-            assert valid.data["valid"] is True, (
-                f"Validation failed for {template}: {valid.data['errors']}"
-            )
+            assert valid.data["valid"] is True, f"Validation failed for {template}: {valid.data['errors']}"
 
 
 class TestPreviewPipeline:

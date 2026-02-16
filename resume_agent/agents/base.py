@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from .protocol import AgentTask, AgentResult, create_result
+from .protocol import AgentResult, AgentTask, create_result
 
 if TYPE_CHECKING:
     from ..llm import LLMAgent
@@ -136,9 +136,7 @@ class BaseAgent(ABC):
 
         # Check for partial matches in task description
         description_lower = task.description.lower()
-        matches = sum(
-            1 for cap in self.capabilities if cap.lower() in description_lower
-        )
+        matches = sum(1 for cap in self.capabilities if cap.lower() in description_lower)
 
         if matches > 0:
             return min(0.8, matches * 0.3)

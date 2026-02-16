@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentEvent:
     """A single event in the agent's execution."""
+
     timestamp: datetime
     event_type: str  # "tool_call", "llm_request", "error", "step_start", "step_end"
     data: Dict[str, Any]
@@ -44,8 +45,7 @@ class AgentObserver:
         if not self.logger.handlers:
             handler = logging.StreamHandler()
             formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
             )
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
@@ -80,9 +80,9 @@ class AgentObserver:
                 "args": args,
                 "result": result[:200],  # Truncate for logging
                 "success": success,
-                "cached": cached
+                "cached": cached,
             },
-            duration_ms=duration_ms
+            duration_ms=duration_ms,
         )
         self.events.append(event)
 
@@ -90,9 +90,7 @@ class AgentObserver:
         prefix = self._format_agent_prefix(agent_id)
         cache_indicator = " [CACHED]" if cached else ""
         status = "✓" if success else "✗"
-        self.logger.info(
-            f"{prefix}{status} Tool: {tool_name}{cache_indicator} ({duration_ms:.2f}ms)"
-        )
+        self.logger.info(f"{prefix}{status} Tool: {tool_name}{cache_indicator} ({duration_ms:.2f}ms)")
 
     def log_llm_request(
         self,
@@ -119,15 +117,12 @@ class AgentObserver:
             data={"model": model, "step": step},
             duration_ms=duration_ms,
             tokens_used=tokens,
-            cost_usd=cost
+            cost_usd=cost,
         )
         self.events.append(event)
 
         prefix = self._format_agent_prefix(agent_id)
-        self.logger.info(
-            f"{prefix}🤖 LLM: {model} | Step {step} | "
-            f"{tokens} tokens | ${cost:.4f} | {duration_ms:.2f}ms"
-        )
+        self.logger.info(f"{prefix}🤖 LLM: {model} | Step {step} | {tokens} tokens | ${cost:.4f} | {duration_ms:.2f}ms")
 
     def log_llm_response(
         self,
@@ -152,6 +147,7 @@ class AgentObserver:
         tools = tool_calls or []
         try:
             import json as _json
+
             tools_dump = _json.dumps(tools, ensure_ascii=True)
         except Exception:
             tools_dump = str(tools)
@@ -178,11 +174,7 @@ class AgentObserver:
         event = AgentEvent(
             timestamp=datetime.now(),
             event_type="error",
-            data={
-                "error_type": error_type,
-                "message": message,
-                "context": context or {}
-            }
+            data={"error_type": error_type, "message": message, "context": context or {}},
         )
         self.events.append(event)
 
@@ -200,7 +192,7 @@ class AgentObserver:
         event = AgentEvent(
             timestamp=datetime.now(),
             event_type="step_start",
-            data={"step": step, "user_input": user_input[:100] if user_input else None}
+            data={"step": step, "user_input": user_input[:100] if user_input else None},
         )
         self.events.append(event)
 
@@ -218,10 +210,7 @@ class AgentObserver:
             duration_ms: Step duration in milliseconds
         """
         event = AgentEvent(
-            timestamp=datetime.now(),
-            event_type="step_end",
-            data={"step": step},
-            duration_ms=duration_ms
+            timestamp=datetime.now(), event_type="step_end", data={"step": step}, duration_ms=duration_ms
         )
         self.events.append(event)
 

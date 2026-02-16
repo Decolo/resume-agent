@@ -90,9 +90,7 @@ class AgentTool(BaseTool):
             "formatter": "convert formats, generate output files, or validate formatting",
             "orchestrator": "coordinate complex multi-step tasks",
         }
-        return capability_descriptions.get(
-            self.agent.agent_type, "perform specialized tasks"
-        )
+        return capability_descriptions.get(self.agent.agent_type, "perform specialized tasks")
 
     def _generate_parameters(self) -> Dict[str, Any]:
         """Generate tool parameters schema.
@@ -150,9 +148,7 @@ class AgentTool(BaseTool):
         """
         return {
             "properties": self.parameters,
-            "required": [
-                k for k, v in self.parameters.items() if v.get("required", False)
-            ],
+            "required": [k for k, v in self.parameters.items() if v.get("required", False)],
         }
 
     async def execute(self, **kwargs) -> ToolResult:
@@ -209,7 +205,7 @@ class AgentTool(BaseTool):
                     success=False,
                     output="",
                     error=f"'path' parameter is required for {self.agent.agent_type} agent. "
-                          f"Please specify the file path to the resume.",
+                    f"Please specify the file path to the resume.",
                 )
 
             # Check if file exists
@@ -292,8 +288,4 @@ class AgentTool(BaseTool):
             )
 
     def __repr__(self) -> str:
-        return (
-            f"AgentTool(name={self.name!r}, "
-            f"agent={self.agent.agent_id!r}, "
-            f"from_agent={self.from_agent!r})"
-        )
+        return f"AgentTool(name={self.name!r}, agent={self.agent.agent_id!r}, from_agent={self.from_agent!r})"

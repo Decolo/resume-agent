@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
     from ..llm import HistoryManager
@@ -120,24 +120,17 @@ class MultiAgentHistoryManager:
             messages = history.get_history()
             stats["agents"][agent_id] = {
                 "message_count": len(messages),
-                "estimated_tokens": sum(
-                    history._estimate_tokens(msg) for msg in messages
-                ),
+                "estimated_tokens": sum(history._estimate_tokens(msg) for msg in messages),
             }
 
         if self._master_history:
             messages = self._master_history.get_history()
             stats["master"] = {
                 "message_count": len(messages),
-                "estimated_tokens": sum(
-                    self._master_history._estimate_tokens(msg) for msg in messages
-                ),
+                "estimated_tokens": sum(self._master_history._estimate_tokens(msg) for msg in messages),
             }
 
         return stats
 
     def __repr__(self) -> str:
-        return (
-            f"MultiAgentHistoryManager("
-            f"agents={list(self._agent_histories.keys())})"
-        )
+        return f"MultiAgentHistoryManager(agents={list(self._agent_histories.keys())})"

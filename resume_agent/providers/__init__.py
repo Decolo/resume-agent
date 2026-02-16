@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from .base import ChatProvider
 from .gemini import GeminiProvider
 from .openai_compat import OpenAICompatibleProvider
-
 
 PROVIDER_DEFAULTS: Dict[str, Dict[str, str]] = {
     "gemini": {"api_base": "", "env_key": "GEMINI_API_KEY"},
@@ -65,9 +64,7 @@ def _resolve_api_key(provider: str, api_key: str) -> str:
             return resolved
 
     if env_key:
-        raise ValueError(
-            f"{env_key} not set. Please set the env var or add api_key to config/config.local.yaml"
-        )
+        raise ValueError(f"{env_key} not set. Please set the env var or add api_key to config/config.local.yaml")
 
     raise ValueError("API key not set. Please set the env var or add api_key to config/config.local.yaml")
 

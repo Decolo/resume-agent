@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any
+
 from .base import BaseTool, ToolResult
 
 
@@ -68,7 +68,7 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
                 )
 
             file_path.write_text(output_content, encoding="utf-8")
-            
+
             return ToolResult(
                 success=True,
                 output=f"Successfully wrote resume to {path} ({len(output_content)} characters)",
@@ -81,7 +81,7 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
     def _to_plain_text(self, content: str) -> str:
         """Convert Markdown to plain text."""
         import re
-        
+
         text = content
         # Remove markdown headers
         text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)
@@ -94,13 +94,13 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
         text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
         # Remove inline code
         text = re.sub(r"`(.+?)`", r"\1", text)
-        
+
         return text
 
     def _to_json_resume(self, content: str) -> str:
         """Convert Markdown resume to JSON Resume format."""
         import re
-        
+
         resume = {
             "basics": {
                 "name": "",
@@ -116,10 +116,10 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
 
         lines = content.split("\n")
         current_section = None
-        
+
         for i, line in enumerate(lines):
             line = line.strip()
-            
+
             # First non-empty line is usually the name
             if not resume["basics"]["name"] and line and line.startswith("#"):
                 resume["basics"]["name"] = line.lstrip("#").strip()
@@ -140,10 +140,12 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
                 skill_text = line.lstrip("- ").strip()
                 if ":" in skill_text:
                     name, keywords = skill_text.split(":", 1)
-                    resume["skills"].append({
-                        "name": name.strip(),
-                        "keywords": [k.strip() for k in keywords.split(",")],
-                    })
+                    resume["skills"].append(
+                        {
+                            "name": name.strip(),
+                            "keywords": [k.strip() for k in keywords.split(",")],
+                        }
+                    )
                 else:
                     resume["skills"].append({"name": skill_text, "keywords": []})
 
@@ -151,26 +153,27 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
             email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", line)
             if email_match and not resume["basics"]["email"]:
                 resume["basics"]["email"] = email_match.group()
-            
+
             phone_match = re.search(r"[\+]?[\d\-\(\)\s]{10,}", line)
             if phone_match and not resume["basics"]["phone"]:
                 resume["basics"]["phone"] = phone_match.group().strip()
 
         resume["basics"]["summary"] = resume["basics"]["summary"].strip()
-        
+
         return json.dumps(resume, indent=2, ensure_ascii=False)
 
     def _to_html(self, content: str, template: str = "modern") -> str:
         """Convert Markdown to HTML with styling."""
         try:
             import markdown
+
             html_content = markdown.markdown(content, extensions=["tables", "fenced_code"])
         except ImportError:
             # Fallback: basic conversion
             html_content = self._basic_md_to_html(content)
 
         styles = self._get_template_styles(template)
-        
+
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -192,7 +195,7 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
     def _basic_md_to_html(self, content: str) -> str:
         """Basic Markdown to HTML conversion without library."""
         import re
-        
+
         html = content
         # Headers
         html = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html, flags=re.MULTILINE)
@@ -209,13 +212,14 @@ For PDF/DOCX, first write to .md or .html, then convert using bash tool."""
         html = f"<p>{html}</p>"
         # Links
         html = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', html)
-        
+
         return html
 
     def _get_template_styles(self, template: str) -> str:
         """Get CSS styles for template from external CSS files."""
         try:
             from ..templates import load_template_css
+
             return load_template_css(template)
         except Exception:
             # Fallback to minimal inline styles if template loading fails

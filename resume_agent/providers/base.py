@@ -15,13 +15,11 @@ class ChatProvider(Protocol):
         messages: List[Message],
         tools: Optional[List[ToolSchema]],
         config: GenerationConfig,
-    ) -> LLMResponse:
-        ...
+    ) -> LLMResponse: ...
 
     async def generate_stream(
         self,
         messages: List[Message],
         tools: Optional[List[ToolSchema]],
         config: GenerationConfig,
-    ) -> AsyncIterator[StreamDelta]:
-        ...
+    ) -> AsyncIterator[StreamDelta]: ...

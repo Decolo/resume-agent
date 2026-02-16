@@ -1,7 +1,9 @@
 """Test verbose export functionality."""
 
-import pytest
 from unittest.mock import Mock
+
+import pytest
+
 from resume_agent.observability import AgentObserver
 
 
@@ -92,7 +94,7 @@ def test_export_markdown_verbose_format(mock_agent):
 
         if msg.parts:
             for part in msg.parts:
-                if hasattr(part, 'text') and part.text:
+                if hasattr(part, "text") and part.text:
                     lines.append(part.text + "\n")
 
         lines.append("---\n")
@@ -101,7 +103,7 @@ def test_export_markdown_verbose_format(mock_agent):
     lines.append("\n# Observability Logs\n")
 
     for event in observer.events:
-        timestamp = event.timestamp.strftime('%H:%M:%S')
+        timestamp = event.timestamp.strftime("%H:%M:%S")
 
         if event.event_type == "tool_call":
             tool = event.data.get("tool", "unknown")
@@ -109,8 +111,8 @@ def test_export_markdown_verbose_format(mock_agent):
             lines.append(f"- **[{timestamp}]** {success} Tool: `{tool}` ({event.duration_ms:.2f}ms)")
 
         elif event.event_type == "llm_request":
-            model = event.data.get('model')
-            step = event.data.get('step')
+            model = event.data.get("model")
+            step = event.data.get("step")
             lines.append(f"- **[{timestamp}]** 🤖 LLM Request: `{model}` (Step {step})")
 
     # Add session stats
@@ -140,20 +142,13 @@ def test_export_json_verbose_format(mock_agent):
     history = mock_agent.agent.history_manager.get_history()
 
     # Simulate JSON export with verbose
-    export_data = {
-        "exported_at": datetime.now().isoformat(),
-        "agent_mode": "single-agent",
-        "messages": []
-    }
+    export_data = {"exported_at": datetime.now().isoformat(), "agent_mode": "single-agent", "messages": []}
 
     for msg in history:
-        msg_data = {
-            "role": msg.role,
-            "parts": []
-        }
+        msg_data = {"role": msg.role, "parts": []}
         if msg.parts:
             for part in msg.parts:
-                if hasattr(part, 'text') and part.text:
+                if hasattr(part, "text") and part.text:
                     msg_data["parts"].append({"type": "text", "content": part.text})
         export_data["messages"].append(msg_data)
 
@@ -170,7 +165,7 @@ def test_export_json_verbose_format(mock_agent):
             }
             for event in observer.events
         ],
-        "session_stats": observer.get_session_stats()
+        "session_stats": observer.get_session_stats(),
     }
 
     content = json.dumps(export_data, indent=2)
@@ -196,19 +191,19 @@ def test_export_text_verbose_format(mock_agent):
 
     for msg in history:
         role_label = "User" if msg.role == "user" else "Assistant"
-        lines.append(f"\n{'='*60}")
+        lines.append(f"\n{'=' * 60}")
         lines.append(f"{role_label}:")
-        lines.append('='*60)
+        lines.append("=" * 60)
 
         if msg.parts:
             for part in msg.parts:
-                if hasattr(part, 'text') and part.text:
+                if hasattr(part, "text") and part.text:
                     lines.append(part.text)
 
     # Add observability logs
-    lines.append(f"\n\n{'='*60}")
+    lines.append(f"\n\n{'=' * 60}")
     lines.append("OBSERVABILITY LOGS")
-    lines.append('='*60)
+    lines.append("=" * 60)
 
     for event in observer.events:
         lines.append(f"\n[{event.timestamp.strftime('%H:%M:%S')}] {event.event_type.upper()}")
@@ -224,9 +219,9 @@ def test_export_text_verbose_format(mock_agent):
 
     # Add session stats
     stats = observer.get_session_stats()
-    lines.append(f"\n{'='*60}")
+    lines.append(f"\n{'=' * 60}")
     lines.append("SESSION STATISTICS")
-    lines.append('='*60)
+    lines.append("=" * 60)
     lines.append(f"Total Events:     {stats['event_count']}")
     lines.append(f"Tool Calls:       {stats['tool_calls']}")
 

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-from .base import BaseAgent, AgentConfig
-from .protocol import AgentTask, AgentResult, create_result
 from ..skills.writer_prompt import WRITER_AGENT_PROMPT
+from .base import AgentConfig, BaseAgent
+from .protocol import AgentResult, AgentTask, create_result
 
 if TYPE_CHECKING:
     from ..llm import LLMAgent
@@ -161,7 +161,7 @@ class WriterAgent(BaseAgent):
         # Add context if present
         if task.context:
             if "parsed_resume" in task.context:
-                prompt_parts.append(f"\nParsed resume data available in context")
+                prompt_parts.append("\nParsed resume data available in context")
             if "target_role" in task.context:
                 prompt_parts.append(f"\nTarget role: {task.context['target_role']}")
 
