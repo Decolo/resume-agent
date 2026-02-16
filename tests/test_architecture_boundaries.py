@@ -81,7 +81,7 @@ def test_architecture_boundaries() -> None:
                 if imported.startswith("resume_agent.web"):
                     violations.append(f"{module} imports {imported}; only web package may depend on web adapters")
 
-        if module.startswith("resume_agent.providers"):
+        if module.startswith(("resume_agent.providers", "packages.providers")):
             for imported in imports:
                 if imported.startswith(provider_forbidden_prefixes):
                     violations.append(

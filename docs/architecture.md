@@ -12,7 +12,7 @@ The repository has one core runtime and multiple entry adapters:
 3. Core runtime (`resume_agent/llm.py`, `resume_agent/agent.py`, `resume_agent/agent_factory.py`)
 4. Domain tools (`resume_agent/tools/*`)
 5. Multi-agent orchestration (`resume_agent/agents/*`)
-6. Provider adapters (`resume_agent/providers/*`)
+6. Provider adapters (`resume_agent/providers/*`, mirrored target: `packages/providers/*`)
 7. Shared contracts (`resume_agent/contracts/*`, mirrored target: `packages/contracts/*`)
 
 ## Dependency Direction

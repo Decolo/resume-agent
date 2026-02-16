@@ -1,25 +1,7 @@
-"""Provider protocol definition."""
+"""Compatibility wrapper for provider protocol definition."""
 
 from __future__ import annotations
 
-from typing import AsyncIterator, List, Optional, Protocol
+from packages.providers.resume_agent_providers.base import ChatProvider
 
-from .types import GenerationConfig, LLMResponse, Message, StreamDelta, ToolSchema
-
-
-class ChatProvider(Protocol):
-    """Protocol for provider implementations."""
-
-    async def generate(
-        self,
-        messages: List[Message],
-        tools: Optional[List[ToolSchema]],
-        config: GenerationConfig,
-    ) -> LLMResponse: ...
-
-    async def generate_stream(
-        self,
-        messages: List[Message],
-        tools: Optional[List[ToolSchema]],
-        config: GenerationConfig,
-    ) -> AsyncIterator[StreamDelta]: ...
+__all__ = ["ChatProvider"]
