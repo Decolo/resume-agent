@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .llm import LLMAgent, LLMConfig, load_config
 from .skills import RESUME_EXPERT_PROMPT
@@ -101,7 +101,12 @@ class ResumeAgent:
                 func=tool.execute,
             )
 
-    async def run(self, user_input: str) -> str:
+    async def run(
+        self,
+        user_input: str,
+        stream: bool = False,
+        on_stream_delta: Optional[Callable[[Any], None]] = None,
+    ) -> str:
         """Run the agent with user input and return final response."""
         if self.agent_config.verbose:
             print(f"\n👤 User: {user_input[:100]}{'...' if len(user_input) > 100 else ''}")
@@ -110,6 +115,8 @@ class ResumeAgent:
         response = await self.agent.run(
             user_input=user_input,
             max_steps=self.agent_config.max_steps,
+            stream=stream,
+            on_stream_delta=on_stream_delta,
         )
 
         if self.agent_config.verbose:

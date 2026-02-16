@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 from ..skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
 from .base import AgentConfig, BaseAgent
@@ -191,7 +191,13 @@ class OrchestratorAgent(BaseAgent):
 
         return "\n".join(prompt_parts)
 
-    async def run(self, user_input: str, max_steps: Optional[int] = None) -> str:
+    async def run(
+        self,
+        user_input: str,
+        max_steps: Optional[int] = None,
+        stream: bool = False,
+        on_stream_delta: Optional[Callable[[Any], None]] = None,
+    ) -> str:
         """Run the orchestrator with user input.
 
         This is the main entry point for user interactions.
@@ -213,6 +219,8 @@ class OrchestratorAgent(BaseAgent):
         return await self.llm_agent.run(
             user_input=user_input,
             max_steps=max_steps or self.config.max_steps,
+            stream=stream,
+            on_stream_delta=on_stream_delta,
         )
 
     def reset(self) -> None:

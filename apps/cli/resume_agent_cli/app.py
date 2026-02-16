@@ -6,7 +6,7 @@ import select
 import sys
 import threading
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -68,6 +68,7 @@ def print_banner():
 ╠═══════════════════════════════════════════════════════════╣
 ║  Quick Commands:                                          ║
 ║    /help     - Show all commands                          ║
+║    /stream   - Toggle streaming output                    ║
 ║    /save     - Save current session                       ║
 ║    /load     - Load a previous session (shows picker)     ║
 ║    /sessions - List all saved sessions                    ║
@@ -100,6 +101,7 @@ def print_help():
 | `/reject` | Reject pending tool call(s) |
 | `/pending` | List pending tool approvals |
 | `/auto-approve [on|off|status]` | Control auto-approval for write tools |
+| `/stream [on|off|status]` | Control streaming output in interactive mode |
 | `/agents` | Show agent statistics (multi-agent mode) |
 | `/trace` | Show delegation trace (multi-agent mode) |
 | `/delegation-tree` | Show delegation stats (multi-agent mode) |
@@ -231,7 +233,10 @@ def _set_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent], enable
 
 
 async def handle_command(
-    command: str, agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None
+    command: str,
+    agent: Union[ResumeAgent, OrchestratorAgent],
+    session_manager: Optional[SessionManager] = None,
+    runtime_options: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Handle special commands. Returns True if should continue, False to exit."""
     cmd = command.lower().strip()
@@ -623,6 +628,24 @@ async def handle_command(
         else:
             console.print("Usage: /auto-approve [on|off|status]", style="yellow")
 
+    elif cmd.startswith("/stream"):
+        if runtime_options is None:
+            console.print("Streaming controls unavailable in this mode.", style="yellow")
+            return True
+        parts = cmd.split(maxsplit=1)
+        action = parts[1].strip().lower() if len(parts) > 1 else "status"
+        if action in {"status", "state"}:
+            state = "on" if bool(runtime_options.get("stream_enabled", False)) else "off"
+            console.print(f"Streaming is {state}.", style="green" if state == "on" else "yellow")
+        elif action in {"on", "true", "1", "yes"}:
+            runtime_options["stream_enabled"] = True
+            console.print("✓ Streaming enabled.", style="green")
+        elif action in {"off", "false", "0", "no"}:
+            runtime_options["stream_enabled"] = False
+            console.print("✓ Streaming disabled.", style="yellow")
+        else:
+            console.print("Usage: /stream [on|off|status]", style="yellow")
+
     elif cmd.startswith("/export"):
         # Parse export command: /export [file|clipboard] [format] [verbose]
         parts = cmd.split()
@@ -966,12 +989,15 @@ async def _prompt_pending_tool_action(
 
 
 async def run_interactive(
-    agent: Union[ResumeAgent, OrchestratorAgent], session_manager: Optional[SessionManager] = None
+    agent: Union[ResumeAgent, OrchestratorAgent],
+    session_manager: Optional[SessionManager] = None,
+    stream_enabled_default: bool = True,
 ):
     """Run interactive chat loop."""
     # Setup prompt with history
     history_file = Path.home() / ".resume_agent_history"
     session = PromptSession(history=FileHistory(str(history_file)))
+    runtime_options: Dict[str, Any] = {"stream_enabled": bool(stream_enabled_default)}
 
     print_banner()
 
@@ -981,6 +1007,10 @@ async def run_interactive(
     else:
         console.print("🤖 Running in single-agent mode", style="dim")
     console.print("✅ Write approval enabled — file writes require approval", style="green")
+    console.print(
+        f"✅ Streaming {'ON' if runtime_options['stream_enabled'] else 'OFF'} — use /stream [on|off|status]",
+        style="green" if runtime_options["stream_enabled"] else "yellow",
+    )
 
     while True:
         try:
@@ -999,7 +1029,12 @@ async def run_interactive(
 
             # Handle commands
             if user_input.startswith("/"):
-                should_continue = await handle_command(user_input, agent, session_manager)
+                should_continue = await handle_command(
+                    user_input,
+                    agent,
+                    session_manager,
+                    runtime_options=runtime_options,
+                )
                 if not should_continue:
                     break
                 continue
@@ -1008,7 +1043,27 @@ async def run_interactive(
             console.print("\n🤔 Thinking... (Press ESC to interrupt)", style="dim")
 
             try:
-                agent_task = asyncio.create_task(agent.run(user_input))
+                stream_enabled = bool(runtime_options.get("stream_enabled", False))
+                stream_state = {"printed": False}
+
+                def on_stream_delta(delta: Any) -> None:
+                    if not stream_enabled:
+                        return
+                    text = getattr(delta, "text", None)
+                    if not text:
+                        return
+                    if not stream_state["printed"]:
+                        console.print()
+                        stream_state["printed"] = True
+                    console.print(text, end="", soft_wrap=True, highlight=False, markup=False)
+
+                agent_task = asyncio.create_task(
+                    agent.run(
+                        user_input,
+                        stream=stream_enabled,
+                        on_stream_delta=on_stream_delta if stream_enabled else None,
+                    )
+                )
                 stop_event = threading.Event()
                 esc_future = None
                 if sys.stdin.isatty():
@@ -1048,8 +1103,13 @@ async def run_interactive(
                     await esc_future
 
                 response = await agent_task
-                console.print()
-                console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
+                if stream_state["printed"]:
+                    console.print()
+                    if response.startswith("Error:"):
+                        console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
+                else:
+                    console.print()
+                    console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
 
                 # Auto-prompt if tool approvals are pending
                 if _list_pending_tool_calls(agent):
@@ -1114,6 +1174,19 @@ def main():
         action="store_true",
         help="Force single-agent mode (overrides config)",
     )
+    parser.add_argument(
+        "--stream",
+        dest="stream",
+        action="store_true",
+        help="Enable streaming output (interactive default is on)",
+    )
+    parser.add_argument(
+        "--no-stream",
+        dest="stream",
+        action="store_false",
+        help="Disable streaming output",
+    )
+    parser.set_defaults(stream=None)
 
     args = parser.parse_args()
 
@@ -1189,11 +1262,36 @@ def main():
     if args.prompt:
         # Non-interactive mode
         async def run_once():
+            stream_enabled = bool(args.stream) if args.stream is not None else False
+            stream_state = {"printed": False}
+
+            def on_stream_delta(delta: Any) -> None:
+                if not stream_enabled:
+                    return
+                text = getattr(delta, "text", None)
+                if not text:
+                    return
+                stream_state["printed"] = True
+                console.print(text, end="", soft_wrap=True, highlight=False, markup=False)
+
             if isinstance(agent, OrchestratorAgent):
-                response = await agent.run(args.prompt)
+                response = await agent.run(
+                    args.prompt,
+                    stream=stream_enabled,
+                    on_stream_delta=on_stream_delta if stream_enabled else None,
+                )
             else:
-                response = await agent.run(args.prompt)
-            console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
+                response = await agent.run(
+                    args.prompt,
+                    stream=stream_enabled,
+                    on_stream_delta=on_stream_delta if stream_enabled else None,
+                )
+            if stream_state["printed"]:
+                console.print()
+                if response.startswith("Error:"):
+                    console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
+            else:
+                console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
 
             if _list_pending_tool_calls(agent):
                 import sys
@@ -1215,7 +1313,14 @@ def main():
         asyncio.run(run_once())
     else:
         # Interactive mode
-        asyncio.run(run_interactive(agent, session_manager))
+        interactive_stream_default = True if args.stream is None else bool(args.stream)
+        asyncio.run(
+            run_interactive(
+                agent,
+                session_manager,
+                stream_enabled_default=interactive_stream_default,
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 from .agent import AgentConfig, ResumeAgent
 from .agents.base import AgentConfig as SpecializedAgentConfig
@@ -282,13 +282,31 @@ class AutoAgent:
         matches = re.findall(r"[\w./-]+\.(md|markdown|html?|json|pdf|docx|txt)\b", text)
         return len(matches)
 
-    async def run(self, user_input: str) -> str:
+    async def run(
+        self,
+        user_input: str,
+        stream: bool = False,
+        on_stream_delta: Optional[Callable[[Any], None]] = None,
+    ) -> str:
         if await self._should_use_multi(user_input):
-            return await self.multi_agent.run(user_input)
-        return await self.single_agent.run(user_input)
+            return await self.multi_agent.run(
+                user_input,
+                stream=stream,
+                on_stream_delta=on_stream_delta,
+            )
+        return await self.single_agent.run(
+            user_input,
+            stream=stream,
+            on_stream_delta=on_stream_delta,
+        )
 
-    async def chat(self, user_input: str) -> str:
-        return await self.run(user_input)
+    async def chat(
+        self,
+        user_input: str,
+        stream: bool = False,
+        on_stream_delta: Optional[Callable[[Any], None]] = None,
+    ) -> str:
+        return await self.run(user_input, stream=stream, on_stream_delta=on_stream_delta)
 
     def reset(self) -> None:
         self.single_agent.reset()
