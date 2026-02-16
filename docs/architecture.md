@@ -9,7 +9,7 @@ The repository has one core runtime and multiple entry adapters:
 
 1. CLI adapter (`resume_agent/cli.py`)
 2. Web/API adapter (`resume_agent/web/*`)
-3. Core runtime (`resume_agent/llm.py`, `resume_agent/agent.py`, `resume_agent/agent_factory.py`)
+3. Core runtime (`resume_agent/llm.py`, `resume_agent/agent.py`, `resume_agent/agent_factory.py`; mirrored target: `packages/core/*`)
 4. Domain tools (`resume_agent/tools/*`)
 5. Multi-agent orchestration (`resume_agent/agents/*`)
 6. Provider adapters (`resume_agent/providers/*`, mirrored target: `packages/providers/*`)

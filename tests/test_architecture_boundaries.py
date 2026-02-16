@@ -93,4 +93,11 @@ def test_architecture_boundaries() -> None:
                 if imported.startswith("apps."):
                     violations.append(f"{module} imports {imported}; packages layer must not depend on apps layer")
 
+        if module.startswith("packages.core"):
+            for imported in imports:
+                if imported.startswith(("resume_agent.web", "resume_agent.cli")):
+                    violations.append(
+                        f"{module} imports {imported}; core package must stay isolated from app adapter layers"
+                    )
+
     assert not violations, "Architecture boundary violation(s):\n" + "\n".join(sorted(violations))
