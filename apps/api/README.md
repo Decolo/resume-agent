@@ -7,3 +7,4 @@ Current compatibility policy:
 1. FastAPI app source lives in `apps/api/resume_agent_api/app.py`.
 2. `resume_agent/web/app.py` remains a compatibility shim forwarding to this module.
 3. API routers/store still live under `resume_agent/web/*` until follow-up slices.
+4. Static UI assets are owned by `apps/web/ui` with legacy fallback during migration.

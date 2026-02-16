@@ -66,8 +66,11 @@ def _parse_fallback_chain(value: str) -> List[Dict[str, str]]:
 
 
 def _resolve_ui_dir() -> Path:
-    """Resolve UI directory during transition before Slice F moves static assets."""
+    """Resolve UI directory with apps/web as source and legacy fallback."""
     repo_root = Path(__file__).resolve().parents[3]
+    apps_web_ui_dir = repo_root / "apps" / "web" / "ui"
+    if apps_web_ui_dir.exists():
+        return apps_web_ui_dir
     legacy_ui_dir = repo_root / "resume_agent" / "web" / "ui"
     if legacy_ui_dir.exists():
         return legacy_ui_dir

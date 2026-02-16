@@ -8,7 +8,7 @@ Deep design details stay in specialized docs under `docs/architecture/`.
 The repository has one core runtime and multiple entry adapters:
 
 1. CLI adapter (source: `apps/cli/*`, compatibility path: `resume_agent/cli.py`)
-2. Web/API adapter (source: `apps/api/*`, compatibility path: `resume_agent/web/*`)
+2. Web/API adapter (sources: `apps/api/*` and `apps/web/*`, compatibility path: `resume_agent/web/*`)
 3. Core runtime (`resume_agent/llm.py`, `resume_agent/agent.py`, `resume_agent/agent_factory.py`; mirrored target: `packages/core/*`)
 4. Domain tools (`resume_agent/tools/*`)
 5. Multi-agent orchestration (`resume_agent/agents/*`)
@@ -38,7 +38,7 @@ Automated boundary checks:
 
 ### Web Path
 
-`apps/api/resume_agent_api/app.py` (compat: `resume_agent/web/app.py`) -> API routers -> `InMemoryRuntimeStore` -> workspace/artifact providers + runtime control.
+`apps/api/resume_agent_api/app.py` (compat: `resume_agent/web/app.py`) -> API routers -> `InMemoryRuntimeStore` -> workspace/artifact providers + runtime control. Static UI assets are served from `apps/web/ui` with legacy fallback to `resume_agent/web/ui`.
 
 ## Key Constraints
 
