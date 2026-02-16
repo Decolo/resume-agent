@@ -41,7 +41,5 @@ def test_apps_and_packages_do_not_import_legacy_resume_agent_namespace() -> None
     assert not violations, "Legacy namespace import violation(s):\n" + "\n".join(sorted(violations))
 
 
-def test_legacy_resume_agent_package_is_reduced_to_minimal_shell() -> None:
-    py_files = sorted(LEGACY_PACKAGE_ROOT.rglob("*.py"))
-    relative = {str(path.relative_to(REPO_ROOT)) for path in py_files}
-    assert relative == {"resume_agent/__init__.py"}
+def test_legacy_resume_agent_package_is_removed() -> None:
+    assert not LEGACY_PACKAGE_ROOT.exists()
