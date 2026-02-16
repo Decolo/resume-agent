@@ -39,6 +39,7 @@ This index organizes the docs by task so you can find things quickly.
 
 ### Ops
 - **[Release Gates and Rollback Playbook](./ops/release-gates.md)** - Release readiness checks and rollback steps
+- **[Branch Protection Baseline](./ops/branch-protection.md)** - Required checks and PR workflow baseline
 
 ### Plans
 - **[Web Productization Roadmap v2](./plans/web-productization-roadmap-v2.md)** - Active execution roadmap
