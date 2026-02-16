@@ -11,29 +11,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..contracts.web.runtime import (
+    ACTIVE_RUN_STATES,
+    DEFAULT_ALLOWED_UPLOAD_MIME_TYPES,
+    DEFAULT_COST_PER_MILLION_TOKENS,
+    TERMINAL_RUN_STATES,
+    WORKFLOW_ORDER,
+)
 from .artifact_storage import ArtifactStorageProvider
 from .errors import APIError
 from .workspace import WorkspaceFile, WorkspaceFileContent, WorkspaceProvider
 
-TERMINAL_RUN_STATES = {"completed", "failed", "interrupted"}
-ACTIVE_RUN_STATES = {"queued", "running", "waiting_approval", "interrupting"}
 WRITE_INTENT_KEYWORDS = ("write", "update", "modify", "edit", "create", "copy")
-WORKFLOW_ORDER = {
-    "draft": 0,
-    "resume_uploaded": 1,
-    "jd_provided": 2,
-    "gap_analyzed": 3,
-    "rewrite_applied": 4,
-    "exported": 5,
-    "cancelled": 6,
-}
-DEFAULT_ALLOWED_UPLOAD_MIME_TYPES = (
-    "text/markdown",
-    "text/plain",
-    "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-)
-DEFAULT_COST_PER_MILLION_TOKENS = 0.08
 logger = logging.getLogger("resume_agent.web.api")
 
 

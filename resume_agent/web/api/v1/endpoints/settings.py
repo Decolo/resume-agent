@@ -2,37 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 
+from .....contracts.web.settings import (
+    CleanupResponse,
+    FallbackModelResponse,
+    ProviderPolicyResponse,
+    RetryPolicyResponse,
+)
 from ....store import InMemoryRuntimeStore
 from ..deps import get_store
 
 router = APIRouter(prefix="/settings", tags=["settings"])
-
-
-class RetryPolicyResponse(BaseModel):
-    max_attempts: int
-    base_delay_seconds: float
-    max_delay_seconds: float
-
-
-class FallbackModelResponse(BaseModel):
-    provider: str
-    model: str
-
-
-class ProviderPolicyResponse(BaseModel):
-    retry: RetryPolicyResponse
-    fallback_chain: List[FallbackModelResponse]
-
-
-class CleanupResponse(BaseModel):
-    removed_sessions: int
-    removed_workspace_files: int
-    removed_artifact_files: int
 
 
 @router.get("/provider-policy", response_model=ProviderPolicyResponse)

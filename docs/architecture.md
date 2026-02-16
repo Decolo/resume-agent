@@ -13,6 +13,7 @@ The repository has one core runtime and multiple entry adapters:
 4. Domain tools (`resume_agent/tools/*`)
 5. Multi-agent orchestration (`resume_agent/agents/*`)
 6. Provider adapters (`resume_agent/providers/*`)
+7. Shared contracts (`resume_agent/contracts/*`, mirrored target: `packages/contracts/*`)
 
 ## Dependency Direction
 
@@ -22,6 +23,7 @@ Intended direction:
 2. core runtime -> tools/providers/agents
 3. providers -> external SDKs only
 4. providers must not depend on app/web/tool layers
+5. `packages/*` (monorepo slices) must not depend on `apps/*`
 
 Automated boundary checks:
 
