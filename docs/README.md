@@ -37,6 +37,9 @@ This index organizes the docs by task so you can find things quickly.
 ### Product
 - **[Productization Checklist](./product/productization-checklist.md)** - Product readiness notes
 
+### Ops
+- **[Release Gates and Rollback Playbook](./ops/release-gates.md)** - Release readiness checks and rollback steps
+
 ### Plans
 - **[Web Productization Roadmap v2](./plans/web-productization-roadmap-v2.md)** - Active execution roadmap
 - **[Web Productization Implementation Checklist](./plans/web-productization-implementation-checklist.md)** - Week-by-week and module checklist
