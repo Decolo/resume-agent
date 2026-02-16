@@ -11,8 +11,8 @@ from fastapi import APIRouter, Depends, Header, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ....store import TERMINAL_RUN_STATES, InMemoryRuntimeStore
 from ..deps import get_store, get_tenant_id
-from ....store import InMemoryRuntimeStore, TERMINAL_RUN_STATES
 
 router = APIRouter(prefix="/sessions/{session_id}", tags=["runs"])
 logger = logging.getLogger("resume_agent.web.api")
@@ -34,6 +34,8 @@ class GetRunResponse(BaseModel):
     started_at: Optional[str]
     ended_at: Optional[str]
     error: Optional[dict]
+    usage_tokens: int
+    estimated_cost_usd: float
 
 
 class InterruptRunResponse(BaseModel):
@@ -81,6 +83,8 @@ async def get_run(
         started_at=run.started_at,
         ended_at=run.ended_at,
         error=run.error,
+        usage_tokens=run.usage_tokens,
+        estimated_cost_usd=run.estimated_cost_usd,
     )
 
 
@@ -93,9 +97,7 @@ async def interrupt_run(
     tenant_id: str = Depends(get_tenant_id),
 ) -> InterruptRunResponse:
     run = await store.interrupt_run(session_id=session_id, run_id=run_id, tenant_id=tenant_id)
-    response.status_code = (
-        status.HTTP_200_OK if run.status in TERMINAL_RUN_STATES else status.HTTP_202_ACCEPTED
-    )
+    response.status_code = status.HTTP_200_OK if run.status in TERMINAL_RUN_STATES else status.HTTP_202_ACCEPTED
     return InterruptRunResponse(run_id=run.run_id, status=run.status)
 
 

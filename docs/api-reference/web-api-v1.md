@@ -15,8 +15,20 @@ It is intentionally minimal and decision-complete for implementation.
 - Development mode (default): no auth required, implicit tenant `local-dev`
 - Token mode (`RESUME_AGENT_WEB_AUTH_MODE=token`):
   - `Authorization: Bearer <token>`
-  - `X-Tenant-ID: <tenant>`
+- `X-Tenant-ID: <tenant>`
 - Cross-tenant resource access returns `404` (`SESSION_NOT_FOUND`) to avoid leakage.
+
+## Runtime Policy Env Vars (Week 7)
+
+- `RESUME_AGENT_WEB_ARTIFACT_ROOT`: local artifact store root (default `workspace/web_artifacts`)
+- `RESUME_AGENT_WEB_SESSION_TTL_SECONDS`: session/workspace TTL (`0` disables)
+- `RESUME_AGENT_WEB_ARTIFACT_TTL_SECONDS`: artifact TTL (`0` disables)
+- `RESUME_AGENT_WEB_CLEANUP_INTERVAL_SECONDS`: background cleanup interval seconds
+- `RESUME_AGENT_WEB_COST_PER_MILLION_TOKENS`: cost estimation baseline for run/session telemetry
+- `RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_ATTEMPTS`
+- `RESUME_AGENT_WEB_PROVIDER_RETRY_BASE_DELAY_SECONDS`
+- `RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_DELAY_SECONDS`
+- `RESUME_AGENT_WEB_PROVIDER_FALLBACK_CHAIN` (comma-separated `provider:model`)
 
 ## Common Error Shape
 
@@ -83,9 +95,27 @@ Response `200`:
   "jd_text": "We need a frontend engineer...",
   "jd_url": null,
   "latest_export_path": null,
+  "usage": {
+    "run_count": 2,
+    "completed_run_count": 1,
+    "total_tokens": 3124,
+    "total_estimated_cost_usd": 0.00025
+  },
   "settings": {
     "auto_approve": false
   }
+}
+```
+
+### `GET /sessions/{session_id}/usage`
+
+Response `200`:
+```json
+{
+  "run_count": 2,
+  "completed_run_count": 1,
+  "total_tokens": 3124,
+  "total_estimated_cost_usd": 0.00025
 }
 ```
 
@@ -164,7 +194,9 @@ Response `200`:
   "status": "waiting_approval",
   "started_at": "2026-02-14T21:01:00Z",
   "ended_at": null,
-  "error": null
+  "error": null,
+  "usage_tokens": 0,
+  "estimated_cost_usd": 0.0
 }
 ```
 
@@ -250,6 +282,40 @@ Request:
 ```json
 {
   "enabled": true
+}
+```
+
+---
+
+## Operational Settings APIs
+
+### `GET /settings/provider-policy`
+
+Response `200`:
+```json
+{
+  "retry": {
+    "max_attempts": 3,
+    "base_delay_seconds": 1.0,
+    "max_delay_seconds": 30.0
+  },
+  "fallback_chain": [
+    {"provider": "openai", "model": "gpt-4o-mini"},
+    {"provider": "gemini", "model": "gemini-2.5-flash"}
+  ]
+}
+```
+
+### `POST /settings/cleanup`
+
+Triggers TTL cleanup immediately (session/workspace/artifact lifecycle).
+
+Response `200`:
+```json
+{
+  "removed_sessions": 1,
+  "removed_workspace_files": 3,
+  "removed_artifact_files": 2
 }
 ```
 

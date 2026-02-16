@@ -7,9 +7,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from pydantic import BaseModel, Field
 
+from ....store import InMemoryRuntimeStore
 from ..deps import get_store, get_tenant_id
 from ..upload import read_upload_with_limit
-from ....store import InMemoryRuntimeStore
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -26,6 +26,13 @@ class CreateSessionResponse(BaseModel):
     settings: dict
 
 
+class SessionUsageResponse(BaseModel):
+    run_count: int
+    completed_run_count: int
+    total_tokens: int
+    total_estimated_cost_usd: float
+
+
 class GetSessionResponse(BaseModel):
     session_id: str
     workflow_state: str
@@ -36,6 +43,7 @@ class GetSessionResponse(BaseModel):
     jd_text: Optional[str] = None
     jd_url: Optional[str] = None
     latest_export_path: Optional[str] = None
+    usage: SessionUsageResponse
 
 
 class SetAutoApproveRequest(BaseModel):
@@ -90,6 +98,7 @@ async def get_session(
     tenant_id: str = Depends(get_tenant_id),
 ) -> GetSessionResponse:
     session = await store.get_session(session_id, tenant_id=tenant_id)
+    usage = await store.get_session_usage(session_id=session_id, tenant_id=tenant_id)
     return GetSessionResponse(
         session_id=session.session_id,
         workflow_state=session.workflow_state,
@@ -100,7 +109,18 @@ async def get_session(
         jd_text=session.jd_text,
         jd_url=session.jd_url,
         latest_export_path=session.latest_export_path,
+        usage=usage,
     )
+
+
+@router.get("/{session_id}/usage", response_model=SessionUsageResponse)
+async def get_session_usage(
+    session_id: str,
+    store: InMemoryRuntimeStore = Depends(get_store),
+    tenant_id: str = Depends(get_tenant_id),
+) -> SessionUsageResponse:
+    usage = await store.get_session_usage(session_id=session_id, tenant_id=tenant_id)
+    return SessionUsageResponse(**usage)
 
 
 @router.post("/{session_id}/settings/auto-approve", response_model=SetAutoApproveResponse)

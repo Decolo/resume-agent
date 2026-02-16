@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 import os
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from hmac import compare_digest
 from pathlib import Path
-from time import perf_counter
-from contextlib import asynccontextmanager
-from time import monotonic
+from time import monotonic, perf_counter
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.v1.router import api_v1_router
+from .artifact_storage import LocalArtifactStorageProvider
 from .errors import APIError, api_error_handler, validation_error_handler
 from .store import InMemoryRuntimeStore
 from .workspace import RemoteWorkspaceProvider
@@ -48,6 +49,22 @@ def _api_error_response(status_code: int, code: str, message: str, details: dict
     return JSONResponse(status_code=err.status_code, content=err.to_dict())
 
 
+def _parse_fallback_chain(value: str) -> List[Dict[str, str]]:
+    chain: List[Dict[str, str]] = []
+    for item in (value or "").split(","):
+        raw = item.strip()
+        if not raw:
+            continue
+        if ":" not in raw:
+            continue
+        provider, model = raw.split(":", 1)
+        provider = provider.strip()
+        model = model.strip()
+        if provider and model:
+            chain.append({"provider": provider, "model": model})
+    return chain
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     ui_dir = Path(__file__).resolve().parent / "ui"
@@ -56,6 +73,14 @@ def create_app() -> FastAPI:
     max_requests_per_minute = int(os.getenv("RESUME_AGENT_WEB_RATE_LIMIT_RPM", "300"))
     max_runs_per_session = int(os.getenv("RESUME_AGENT_WEB_MAX_RUNS_PER_SESSION", "100"))
     max_upload_bytes = int(os.getenv("RESUME_AGENT_WEB_MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
+    cost_per_million_tokens = float(os.getenv("RESUME_AGENT_WEB_COST_PER_MILLION_TOKENS", "0.08"))
+    session_ttl_seconds = int(os.getenv("RESUME_AGENT_WEB_SESSION_TTL_SECONDS", "0"))
+    artifact_ttl_seconds = int(os.getenv("RESUME_AGENT_WEB_ARTIFACT_TTL_SECONDS", "0"))
+    cleanup_interval_seconds = int(os.getenv("RESUME_AGENT_WEB_CLEANUP_INTERVAL_SECONDS", "300"))
+    provider_retry_max_attempts = int(os.getenv("RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_ATTEMPTS", "3"))
+    provider_retry_base_delay_seconds = float(os.getenv("RESUME_AGENT_WEB_PROVIDER_RETRY_BASE_DELAY_SECONDS", "1.0"))
+    provider_retry_max_delay_seconds = float(os.getenv("RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_DELAY_SECONDS", "30.0"))
+    provider_fallback_chain = _parse_fallback_chain(os.getenv("RESUME_AGENT_WEB_PROVIDER_FALLBACK_CHAIN", ""))
     allowed_upload_mime_types = [
         item.strip()
         for item in os.getenv(
@@ -65,17 +90,31 @@ def create_app() -> FastAPI:
         if item.strip()
     ]
 
-    workspace_root = Path(
-        os.getenv("RESUME_AGENT_WEB_WORKSPACE_ROOT", "workspace/web_sessions")
-    ).resolve()
+    workspace_root = Path(os.getenv("RESUME_AGENT_WEB_WORKSPACE_ROOT", "workspace/web_sessions")).resolve()
+    artifact_root = Path(os.getenv("RESUME_AGENT_WEB_ARTIFACT_ROOT", "workspace/web_artifacts")).resolve()
     workspace_provider = RemoteWorkspaceProvider(workspace_root)
+    artifact_provider = LocalArtifactStorageProvider(artifact_root)
+    provider_error_policy: Dict[str, Any] = {
+        "retry": {
+            "max_attempts": max(provider_retry_max_attempts, 1),
+            "base_delay_seconds": max(provider_retry_base_delay_seconds, 0.0),
+            "max_delay_seconds": max(provider_retry_max_delay_seconds, 0.0),
+        },
+        "fallback_chain": provider_fallback_chain,
+    }
     store = InMemoryRuntimeStore(
         workspace_provider=workspace_provider,
+        artifact_storage_provider=artifact_provider,
         provider_name=os.getenv("RESUME_AGENT_DEFAULT_PROVIDER", "stub"),
         model_name=os.getenv("RESUME_AGENT_DEFAULT_MODEL", "stub-model"),
         max_runs_per_session=max_runs_per_session,
         max_upload_bytes=max_upload_bytes,
         allowed_upload_mime_types=allowed_upload_mime_types,
+        cost_per_million_tokens=cost_per_million_tokens,
+        session_ttl_seconds=session_ttl_seconds,
+        artifact_ttl_seconds=artifact_ttl_seconds,
+        cleanup_interval_seconds=cleanup_interval_seconds,
+        provider_error_policy=provider_error_policy,
     )
     rate_limiter = InMemoryRateLimiter(max_requests_per_minute=max_requests_per_minute)
 
@@ -138,7 +177,7 @@ def create_app() -> FastAPI:
             path_params = request.scope.get("path_params", {})
             meta = store.runtime_metadata()
             logger.info(
-                "api_request method=%s path=%s status=%s duration_ms=%.2f session_id=%s run_id=%s provider=%s model=%s",
+                "api_request method=%s path=%s status=%s duration_ms=%.2f session_id=%s run_id=%s provider=%s model=%s retry_max_attempts=%s fallback_chain_size=%s",
                 request.method,
                 request.url.path,
                 500,
@@ -147,6 +186,8 @@ def create_app() -> FastAPI:
                 path_params.get("run_id", "-"),
                 meta["provider"],
                 meta["model"],
+                meta.get("retry_max_attempts", "-"),
+                meta.get("fallback_chain_size", "-"),
             )
             raise
 
@@ -154,7 +195,7 @@ def create_app() -> FastAPI:
         path_params = request.scope.get("path_params", {})
         meta = store.runtime_metadata()
         logger.info(
-            "api_request method=%s path=%s status=%s duration_ms=%.2f session_id=%s run_id=%s provider=%s model=%s",
+            "api_request method=%s path=%s status=%s duration_ms=%.2f session_id=%s run_id=%s provider=%s model=%s retry_max_attempts=%s fallback_chain_size=%s",
             request.method,
             request.url.path,
             response.status_code,
@@ -163,6 +204,8 @@ def create_app() -> FastAPI:
             path_params.get("run_id", "-"),
             meta["provider"],
             meta["model"],
+            meta.get("retry_max_attempts", "-"),
+            meta.get("fallback_chain_size", "-"),
         )
         return response
 

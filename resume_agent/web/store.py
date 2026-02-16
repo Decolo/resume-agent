@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .artifact_storage import ArtifactStorageProvider
 from .errors import APIError
 from .workspace import WorkspaceFile, WorkspaceFileContent, WorkspaceProvider
 
@@ -31,6 +33,8 @@ DEFAULT_ALLOWED_UPLOAD_MIME_TYPES = (
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 )
+DEFAULT_COST_PER_MILLION_TOKENS = 0.08
+logger = logging.getLogger("resume_agent.web.api")
 
 
 def utc_now_iso() -> str:
@@ -69,6 +73,9 @@ class RunRecord:
     event_seq: int = 0
     interrupt_requested: bool = False
     pending_approval_id: Optional[str] = None
+    usage_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    usage_finalized: bool = False
     wait_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     @property
@@ -101,29 +108,47 @@ class InMemoryRuntimeStore:
     def __init__(
         self,
         workspace_provider: WorkspaceProvider,
+        artifact_storage_provider: Optional[ArtifactStorageProvider] = None,
         provider_name: str = "stub",
         model_name: str = "stub-model",
         max_runs_per_session: int = 100,
         max_upload_bytes: int = 5 * 1024 * 1024,
         allowed_upload_mime_types: Optional[List[str]] = None,
+        cost_per_million_tokens: float = DEFAULT_COST_PER_MILLION_TOKENS,
+        session_ttl_seconds: int = 0,
+        artifact_ttl_seconds: int = 0,
+        cleanup_interval_seconds: int = 300,
+        provider_error_policy: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._sessions: Dict[str, SessionRecord] = {}
         self._lock = asyncio.Lock()
         self._run_queue: asyncio.Queue[Tuple[Optional[str], Optional[str]]] = asyncio.Queue()
         self._stop_requested = False
         self._worker_task: Optional[asyncio.Task] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
         self._workspace_provider = workspace_provider
+        self._artifact_storage_provider = artifact_storage_provider
         self.provider_name = provider_name
         self.model_name = model_name
         self.max_runs_per_session = max_runs_per_session
         self.max_upload_bytes = max_upload_bytes
         self.allowed_upload_mime_types = set(allowed_upload_mime_types or DEFAULT_ALLOWED_UPLOAD_MIME_TYPES)
+        self.cost_per_million_tokens = max(cost_per_million_tokens, 0.0)
+        self.session_ttl_seconds = max(session_ttl_seconds, 0)
+        self.artifact_ttl_seconds = max(artifact_ttl_seconds, 0)
+        self.cleanup_interval_seconds = max(cleanup_interval_seconds, 1)
+        self.provider_error_policy = provider_error_policy or {
+            "retry": {"max_attempts": 3, "base_delay_seconds": 1.0, "max_delay_seconds": 30.0},
+            "fallback_chain": [],
+        }
 
     async def start(self) -> None:
         """Start background run worker."""
         if self._worker_task is None:
             self._stop_requested = False
             self._worker_task = asyncio.create_task(self._run_worker())
+        if self._cleanup_task is None and (self.session_ttl_seconds > 0 or self.artifact_ttl_seconds > 0):
+            self._cleanup_task = asyncio.create_task(self._cleanup_worker())
 
     async def stop(self) -> None:
         """Stop background run worker."""
@@ -132,6 +157,13 @@ class InMemoryRuntimeStore:
         if self._worker_task:
             await self._worker_task
             self._worker_task = None
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
 
     async def create_session(self, workspace_name: str, auto_approve: bool, tenant_id: str) -> SessionRecord:
         session_id = make_id("sess")
@@ -150,7 +182,12 @@ class InMemoryRuntimeStore:
 
     def runtime_metadata(self) -> Dict[str, str]:
         """Static provider/model values used by API observability logs."""
-        return {"provider": self.provider_name, "model": self.model_name}
+        return {
+            "provider": self.provider_name,
+            "model": self.model_name,
+            "retry_max_attempts": str(self.provider_error_policy.get("retry", {}).get("max_attempts", 0)),
+            "fallback_chain_size": str(len(self.provider_error_policy.get("fallback_chain", []))),
+        }
 
     async def get_session(self, session_id: str, tenant_id: Optional[str] = None) -> SessionRecord:
         async with self._lock:
@@ -235,11 +272,18 @@ class InMemoryRuntimeStore:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         export_name = f"exports/{Path(source_path).stem}-export-{timestamp}.md"
         export_content = self._build_export_content(source_content.content)
-        artifact = await self._workspace_provider.write_file(
-            session_id=session_id,
-            relative_path=export_name,
-            content=export_content,
-        )
+        if self._artifact_storage_provider:
+            artifact = await self._artifact_storage_provider.write_artifact(
+                session_id=session_id,
+                artifact_path=export_name,
+                content=export_content,
+            )
+        else:
+            artifact = await self._workspace_provider.write_file(
+                session_id=session_id,
+                relative_path=export_name,
+                content=export_content,
+            )
 
         async with self._lock:
             session_locked = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
@@ -319,6 +363,29 @@ class InMemoryRuntimeStore:
                 raise APIError(404, "RUN_NOT_FOUND", f"Run '{run_id}' not found")
             return run
 
+    async def get_session_usage(
+        self,
+        session_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        async with self._lock:
+            session = self._session_for_tenant_locked(session_id=session_id, tenant_id=tenant_id)
+            runs = list(session.runs.values())
+
+        total_tokens = sum(max(run.usage_tokens, 0) for run in runs)
+        total_cost = sum(max(run.estimated_cost_usd, 0.0) for run in runs)
+        completed_runs = sum(1 for run in runs if run.status in TERMINAL_RUN_STATES)
+        return {
+            "run_count": len(runs),
+            "completed_run_count": completed_runs,
+            "total_tokens": total_tokens,
+            "total_estimated_cost_usd": round(total_cost, 8),
+        }
+
+    def get_provider_policy(self) -> Dict[str, Any]:
+        """Return effective provider retry/fallback policy."""
+        return self.provider_error_policy
+
     async def upload_session_file(
         self,
         session_id: str,
@@ -341,7 +408,15 @@ class InMemoryRuntimeStore:
         tenant_id: Optional[str] = None,
     ) -> List[WorkspaceFile]:
         await self.get_session(session_id=session_id, tenant_id=tenant_id)
-        return await self._workspace_provider.list_files(session_id=session_id)
+        workspace_files = await self._workspace_provider.list_files(session_id=session_id)
+        if not self._artifact_storage_provider:
+            return workspace_files
+
+        artifacts = await self._artifact_storage_provider.list_artifacts(session_id=session_id)
+        merged: Dict[str, WorkspaceFile] = {item.path: item for item in workspace_files}
+        for item in artifacts:
+            merged[item.path] = item
+        return [merged[path] for path in sorted(merged.keys())]
 
     async def read_session_file(
         self,
@@ -350,7 +425,18 @@ class InMemoryRuntimeStore:
         tenant_id: Optional[str] = None,
     ) -> WorkspaceFileContent:
         await self.get_session(session_id=session_id, tenant_id=tenant_id)
-        return await self._workspace_provider.read_file(session_id=session_id, relative_path=file_path)
+        try:
+            return await self._workspace_provider.read_file(
+                session_id=session_id,
+                relative_path=file_path,
+            )
+        except APIError as exc:
+            if exc.code != "FILE_NOT_FOUND" or not self._artifact_storage_provider:
+                raise
+            return await self._artifact_storage_provider.read_artifact(
+                session_id=session_id,
+                artifact_path=file_path,
+            )
 
     async def list_pending_approvals(
         self,
@@ -710,6 +796,8 @@ class InMemoryRuntimeStore:
                         session.pending_approvals_count = max(0, session.pending_approvals_count - 1)
                 run.ended_at = utc_now_iso()
                 run.error = error
+                if not run.usage_finalized:
+                    self._finalize_run_usage_locked(run)
                 run.pending_approval_id = None
                 if session.active_run_id == run_id:
                     session.active_run_id = None
@@ -741,6 +829,17 @@ class InMemoryRuntimeStore:
                     "payload": payload,
                 }
             )
+
+    def _finalize_run_usage_locked(self, run: RunRecord) -> None:
+        text_size = len(run.message or "")
+        for event in run.events:
+            text_size += len(event.get("type", ""))
+            text_size += len(str(event.get("payload", {})))
+        estimated_tokens = max(text_size // 4, 1)
+        estimated_cost = (estimated_tokens / 1_000_000) * self.cost_per_million_tokens
+        run.usage_tokens = estimated_tokens
+        run.estimated_cost_usd = round(estimated_cost, 8)
+        run.usage_finalized = True
 
     def _session_for_tenant_locked(self, session_id: str, tenant_id: Optional[str]) -> SessionRecord:
         session = self._sessions.get(session_id)
@@ -818,6 +917,55 @@ class InMemoryRuntimeStore:
             if session and (session.resume_path is None or session.resume_path == normalized_path):
                 session.resume_path = normalized_path
         return written
+
+    async def cleanup_expired_resources(self) -> Dict[str, int]:
+        """Cleanup expired session/workspace/artifact resources."""
+        removed_sessions: List[str] = []
+
+        if self.session_ttl_seconds > 0:
+            now = datetime.now(timezone.utc).timestamp()
+            async with self._lock:
+                for session_id, session in list(self._sessions.items()):
+                    if session.active_run_id:
+                        active = session.runs.get(session.active_run_id)
+                        if active and active.status in ACTIVE_RUN_STATES:
+                            continue
+                    try:
+                        created_epoch = datetime.fromisoformat(session.created_at.replace("Z", "+00:00")).timestamp()
+                    except ValueError:
+                        # If parsing fails, keep the session to avoid accidental data loss.
+                        logger.warning("skip_cleanup_invalid_timestamp session_id=%s", session_id)
+                        continue
+                    if now - created_epoch >= self.session_ttl_seconds:
+                        removed_sessions.append(session_id)
+                        del self._sessions[session_id]
+
+        removed_workspace_files = 0
+        removed_artifact_files = 0
+        for session_id in removed_sessions:
+            removed_workspace_files += await self._workspace_provider.delete_workspace(session_id=session_id)
+            if self._artifact_storage_provider:
+                removed_artifact_files += await self._artifact_storage_provider.delete_artifacts_for_session(
+                    session_id=session_id
+                )
+
+        if self.artifact_ttl_seconds > 0 and self._artifact_storage_provider:
+            removed_artifact_files += await self._artifact_storage_provider.cleanup_expired(
+                ttl_seconds=self.artifact_ttl_seconds
+            )
+
+        return {
+            "removed_sessions": len(removed_sessions),
+            "removed_workspace_files": removed_workspace_files,
+            "removed_artifact_files": removed_artifact_files,
+        }
+
+    async def _cleanup_worker(self) -> None:
+        while not self._stop_requested:
+            await asyncio.sleep(self.cleanup_interval_seconds)
+            if self._stop_requested:
+                break
+            await self.cleanup_expired_resources()
 
     @staticmethod
     def _build_export_content(source: bytes) -> bytes:

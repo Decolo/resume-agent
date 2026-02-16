@@ -60,6 +60,10 @@ class WorkspaceProvider(ABC):
     async def write_file(self, session_id: str, relative_path: str, content: bytes) -> WorkspaceFile:
         """Write or overwrite a file in a session workspace."""
 
+    @abstractmethod
+    async def delete_workspace(self, session_id: str) -> int:
+        """Delete one session workspace. Return number of removed files."""
+
 
 class RemoteWorkspaceProvider(WorkspaceProvider):
     """Remote-workspace abstraction backed by local disk for Phase 1."""
@@ -131,6 +135,20 @@ class RemoteWorkspaceProvider(WorkspaceProvider):
             )
 
         return await asyncio.to_thread(_write)
+
+    async def delete_workspace(self, session_id: str) -> int:
+        session_root = (self.root_dir / session_id).resolve()
+        if not session_root.exists():
+            return 0
+
+        def _delete() -> int:
+            import shutil
+
+            removed = sum(1 for file_path in session_root.rglob("*") if file_path.is_file())
+            shutil.rmtree(session_root, ignore_errors=True)
+            return removed
+
+        return await asyncio.to_thread(_delete)
 
     def _ensure_session_dir(self, session_id: str) -> Path:
         session_root = (self.root_dir / session_id).resolve()

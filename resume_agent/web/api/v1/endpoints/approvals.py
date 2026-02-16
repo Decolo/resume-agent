@@ -5,8 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ..deps import get_store, get_tenant_id
 from ....store import ApprovalRecord, InMemoryRuntimeStore
+from ..deps import get_store, get_tenant_id
 
 router = APIRouter(prefix="/sessions/{session_id}", tags=["approvals"])
 

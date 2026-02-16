@@ -43,9 +43,9 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 - [x] Add strict upload constraints (size/type/path validation).
 
 ## Week 7
-- [ ] Add object storage backend and lifecycle cleanup (TTL).
-- [ ] Add cost telemetry (`tokens`, `estimated_cost`) per run/session.
-- [ ] Add fallback and retry policy configuration for provider errors.
+- [x] Add object storage backend and lifecycle cleanup (TTL).
+- [x] Add cost telemetry (`tokens`, `estimated_cost`) per run/session.
+- [x] Add fallback and retry policy configuration for provider errors.
 
 ## Week 8
 - [ ] Add dashboards/alerts for error rate, latency, cost, queue depth.

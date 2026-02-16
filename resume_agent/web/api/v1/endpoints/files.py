@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from ....store import InMemoryRuntimeStore
 from ..deps import get_store, get_tenant_id
 from ..upload import read_upload_with_limit
-from ....store import InMemoryRuntimeStore
 
 router = APIRouter(prefix="/sessions/{session_id}", tags=["files"])
 
@@ -70,10 +70,7 @@ async def list_files(
 ) -> ListFilesResponse:
     files = await store.list_session_files(session_id=session_id, tenant_id=tenant_id)
     return ListFilesResponse(
-        files=[
-            FileItem(path=item.path, size=item.size, updated_at=item.updated_at)
-            for item in files
-        ]
+        files=[FileItem(path=item.path, size=item.size, updated_at=item.updated_at) for item in files]
     )
 
 

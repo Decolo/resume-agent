@@ -52,4 +52,3 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
             }
         },
     )
-

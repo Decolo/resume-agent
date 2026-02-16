@@ -63,6 +63,8 @@ def test_create_and_get_session() -> None:
         assert get_body["session_id"] == body["session_id"]
         assert get_body["active_run_id"] is None
         assert get_body["pending_approvals_count"] == 0
+        assert get_body["usage"]["total_tokens"] == 0
+        assert get_body["usage"]["total_estimated_cost_usd"] == 0.0
 
 
 def test_create_message_returns_run_id() -> None:
@@ -77,6 +79,29 @@ def test_create_message_returns_run_id() -> None:
         body = response.json()
         assert body["run_id"].startswith("run_")
         assert body["status"] in {"queued", "running", "completed"}
+
+
+def test_get_run_exposes_usage_telemetry_after_completion() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        run = client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={"message": "Summarize this resume"},
+        ).json()
+        _stream_envelopes(client, session["session_id"], run["run_id"])
+
+        run_state = client.get(f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}")
+        assert run_state.status_code == 200
+        body = run_state.json()
+        assert body["usage_tokens"] > 0
+        assert body["estimated_cost_usd"] >= 0.0
+
+        usage = client.get(f"/api/v1/sessions/{session['session_id']}/usage")
+        assert usage.status_code == 200
+        usage_body = usage.json()
+        assert usage_body["run_count"] == 1
+        assert usage_body["completed_run_count"] == 1
+        assert usage_body["total_tokens"] == body["usage_tokens"]
 
 
 def test_stream_returns_contract_compliant_events() -> None:
@@ -159,9 +184,7 @@ def test_reject_flow_completes_without_tool_result() -> None:
         assert "tool_result" not in event_types
         assert event_types[-1] == "run_completed"
 
-        run_state = client.get(
-            f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}"
-        ).json()
+        run_state = client.get(f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}").json()
         assert run_state["status"] == "completed"
 
 
@@ -173,9 +196,7 @@ def test_interrupt_flow_returns_interrupted_terminal_event() -> None:
             json={"message": "Run a long analysis"},
         ).json()
 
-        interrupt_response = client.post(
-            f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}/interrupt"
-        )
+        interrupt_response = client.post(f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}/interrupt")
         assert interrupt_response.status_code in {200, 202}
 
         envelopes = _stream_envelopes(client, session["session_id"], run["run_id"])
@@ -185,9 +206,7 @@ def test_interrupt_flow_returns_interrupted_terminal_event() -> None:
         assert "run_interrupted" in event_types
         assert event_types[-1] == "run_interrupted"
 
-        run_state = client.get(
-            f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}"
-        ).json()
+        run_state = client.get(f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}").json()
         assert run_state["status"] == "interrupted"
 
 
@@ -225,9 +244,7 @@ def test_interrupt_terminal_run_returns_200_with_current_status() -> None:
         ).json()
 
         _stream_envelopes(client, session["session_id"], run["run_id"])
-        interrupt = client.post(
-            f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}/interrupt"
-        )
+        interrupt = client.post(f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}/interrupt")
         assert interrupt.status_code == 200
         assert interrupt.json()["status"] == "completed"
 
@@ -336,9 +353,7 @@ def test_get_file_rejects_path_escape() -> None:
     with TestClient(create_app()) as client:
         session = client.post("/api/v1/sessions", json={}).json()
 
-        response = client.get(
-            f"/api/v1/sessions/{session['session_id']}/files/%2E%2E/secrets.txt"
-        )
+        response = client.get(f"/api/v1/sessions/{session['session_id']}/files/%2E%2E/secrets.txt")
         assert response.status_code == 422
         body = response.json()
         assert body["error"]["code"] == "INVALID_PATH"
@@ -361,8 +376,33 @@ def test_api_logs_include_observability_fields(caplog) -> None:
         and "run_id=" in record.message
         and "provider=" in record.message
         and "model=" in record.message
+        and "retry_max_attempts=" in record.message
+        and "fallback_chain_size=" in record.message
         for record in caplog.records
     )
+
+
+def test_provider_policy_endpoint_returns_configured_values(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_ATTEMPTS", "5")
+    monkeypatch.setenv("RESUME_AGENT_WEB_PROVIDER_RETRY_BASE_DELAY_SECONDS", "0.2")
+    monkeypatch.setenv("RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_DELAY_SECONDS", "2.5")
+    monkeypatch.setenv(
+        "RESUME_AGENT_WEB_PROVIDER_FALLBACK_CHAIN",
+        "openai:gpt-4o-mini,gemini:gemini-2.5-flash",
+    )
+    with TestClient(create_app()) as client:
+        response = client.get("/api/v1/settings/provider-policy")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["retry"] == {
+            "max_attempts": 5,
+            "base_delay_seconds": 0.2,
+            "max_delay_seconds": 2.5,
+        }
+        assert body["fallback_chain"] == [
+            {"provider": "openai", "model": "gpt-4o-mini"},
+            {"provider": "gemini", "model": "gemini-2.5-flash"},
+        ]
 
 
 def test_resume_and_jd_workflow_transitions() -> None:
@@ -453,6 +493,47 @@ def test_export_endpoint_creates_artifact_and_marks_exported() -> None:
         state = client.get(f"/api/v1/sessions/{session_id}").json()
         assert state["latest_export_path"] == body["artifact_path"]
         assert state["workflow_state"] == "exported"
+
+
+def test_cleanup_endpoint_removes_expired_artifacts_without_dropping_session(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_ARTIFACT_TTL_SECONDS", "1")
+    monkeypatch.setenv("RESUME_AGENT_WEB_SESSION_TTL_SECONDS", "0")
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        session_id = session["session_id"]
+        client.post(
+            f"/api/v1/sessions/{session_id}/resume",
+            files={"file": ("resume.md", b"# Resume", "text/markdown")},
+        )
+        export = client.post(f"/api/v1/sessions/{session_id}/export")
+        assert export.status_code == 201
+        artifact_path = export.json()["artifact_path"]
+        time.sleep(2.1)
+
+        cleanup = client.post("/api/v1/settings/cleanup")
+        assert cleanup.status_code == 200
+        assert cleanup.json()["removed_artifact_files"] >= 1
+
+        encoded = artifact_path.replace("/", "%2F")
+        missing_artifact = client.get(f"/api/v1/sessions/{session_id}/files/{encoded}")
+        assert missing_artifact.status_code == 404
+        # Session itself still exists since session TTL is disabled.
+        assert client.get(f"/api/v1/sessions/{session_id}").status_code == 200
+
+
+def test_cleanup_endpoint_removes_expired_sessions(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_SESSION_TTL_SECONDS", "1")
+    monkeypatch.setenv("RESUME_AGENT_WEB_ARTIFACT_TTL_SECONDS", "0")
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        session_id = session["session_id"]
+        time.sleep(2.1)
+
+        cleanup = client.post("/api/v1/settings/cleanup")
+        assert cleanup.status_code == 200
+        assert cleanup.json()["removed_sessions"] >= 1
+        missing = client.get(f"/api/v1/sessions/{session_id}")
+        assert missing.status_code == 404
 
 
 def test_web_ui_page_served() -> None:
