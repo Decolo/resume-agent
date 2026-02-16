@@ -139,6 +139,58 @@ The key components are:
 - **Google Gemini** is the default (via `resume_agent/llm.py`).
 - **OpenAI-compatible endpoints** can be used via `resume_agent/llm_openai.py` when wired in.
 
+## Development
+
+### Setup Development Environment
+
+```bash
+# Install with dev dependencies
+uv sync
+
+# Install pre-commit hooks (runs linting/formatting before commits)
+uv run pre-commit install
+```
+
+### Code Quality Tools
+
+```bash
+# Run linter
+uv run ruff check .
+
+# Auto-fix linting issues
+uv run ruff check --fix .
+
+# Format code
+uv run ruff format .
+
+# Type checking
+uv run mypy
+
+# Run tests
+uv run pytest
+
+# Run tests with coverage
+uv run pytest --cov=resume_agent --cov-report=html
+```
+
+### Pre-commit Hooks
+
+Pre-commit hooks automatically run before each commit to catch issues early:
+- **ruff**: Linting and auto-fixes
+- **ruff-format**: Code formatting
+- **mypy**: Type checking (on configured files)
+- **Standard checks**: Large files, merge conflicts, YAML syntax, trailing whitespace
+
+To run manually on all files:
+```bash
+uv run pre-commit run --all-files
+```
+
+To bypass hooks (not recommended):
+```bash
+git commit --no-verify
+```
+
 ## License
 
 MIT License

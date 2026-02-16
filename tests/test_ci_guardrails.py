@@ -44,7 +44,7 @@ def test_ci_required_job_commands_present() -> None:
     jobs = workflow.get("jobs", {})
 
     expected_run_fragments = {
-        "test": "uv run --extra dev pytest -q",
+        "test": "uv run --extra dev pytest",
         "lint": "uv run --extra dev ruff check .",
         "typecheck": "uv run --extra dev mypy",
     }
