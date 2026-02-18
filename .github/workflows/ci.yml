@@ -37,7 +37,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run tests
-        run: uv run --extra dev pytest --cov=resume_agent --cov-report=term-missing --cov-fail-under=50 -q
+        run: uv run --extra dev pytest --cov=apps --cov=packages --cov-report=term-missing --cov-fail-under=50 -q
 
   lint:
     name: lint (ruff)
