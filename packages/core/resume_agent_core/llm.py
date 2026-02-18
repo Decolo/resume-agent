@@ -310,6 +310,11 @@ class LLMAgent:
         # Auto-approve tool calls that require approval
         self._auto_approve_tools = False
 
+        # Pluggable hooks for API integration
+        self._approval_handler: Optional[Callable] = None  # async (function_calls) → (approved_calls, rejection_reason)
+        self._tool_event_handler: Optional[Callable] = None  # async (event_type, tool_name, args, result?, success?)
+        self._interrupt_checker: Optional[Callable] = None  # async () → bool
+
     def register_tool(
         self,
         name: str,
@@ -352,6 +357,10 @@ class LLMAgent:
         }
 
         for step in range(1, max_steps + 1):
+            # Check for interrupt before each step
+            if self._interrupt_checker and await self._interrupt_checker():
+                raise asyncio.CancelledError("Run interrupted")
+
             self.observer.log_step_start(
                 step,
                 user_input if step == 1 else None,
@@ -424,10 +433,33 @@ class LLMAgent:
 
             # 7. Pause before executing any write tools (approval required)
             if self._requires_tool_approval(function_calls) and not self._auto_approve_tools:
-                self._pending_tool_calls = list(function_calls)
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                return "Tool call(s) require approval before execution. Use /approve or /reject."
+                if self._approval_handler:
+                    # API mode: delegate to approval handler
+                    approved, rejection = await self._approval_handler(function_calls)
+                    if not approved:
+                        # Write rejection result into history so LLM knows it was rejected
+                        tool_message = Message(
+                            role="tool",
+                            parts=[
+                                MessagePart.from_function_response(
+                                    FunctionResponse(
+                                        name=fc.name,
+                                        response={"result": f"Rejected: {rejection}"},
+                                        call_id=fc.id,
+                                    )
+                                )
+                                for fc in function_calls
+                            ],
+                        )
+                        self.history_manager.add_message(tool_message)
+                        continue
+                    function_calls = approved
+                else:
+                    # CLI mode: pause and wait for /approve
+                    self._pending_tool_calls = list(function_calls)
+                    step_duration = (time.time() - start_time) * 1000
+                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                    return "Tool call(s) require approval before execution. Use /approve or /reject."
 
             # 7. Loop guard to prevent runaway tool-only loops
             guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
@@ -491,6 +523,7 @@ class LLMAgent:
     async def _call_llm_stream(self, on_stream_delta: Optional[Callable[[StreamDelta], None]] = None) -> LLMResponse:
         """Call LLM with streaming and aggregate into a final response."""
         text_chunks: List[str] = []
+        accumulated_text = ""
         function_calls_map: Dict[str, FunctionCall] = {}
         function_call_order: List[str] = []
         arg_buffers: Dict[str, str] = {}
@@ -502,10 +535,38 @@ class LLMAgent:
             tools=self._get_tools(),
             config=self._build_generation_config(),
         ):
-            if on_stream_delta:
-                on_stream_delta(delta)
+            normalized_text = ""
             if delta.text:
-                text_chunks.append(delta.text)
+                normalized_text = self._normalize_stream_text_delta(accumulated_text, delta.text)
+                if normalized_text:
+                    accumulated_text += normalized_text
+                    text_chunks.append(normalized_text)
+
+            callback_delta: Optional[StreamDelta] = None
+            if on_stream_delta:
+                callback_delta = StreamDelta(
+                    text=normalized_text if delta.text is not None else None,
+                    function_call_start=delta.function_call_start,
+                    function_call_delta=delta.function_call_delta,
+                    function_call_id=delta.function_call_id,
+                    function_call_index=delta.function_call_index,
+                    function_call_end=delta.function_call_end,
+                    finish_reason=delta.finish_reason,
+                    usage=delta.usage,
+                )
+                has_callback_payload = bool(
+                    callback_delta.text
+                    or callback_delta.function_call_start
+                    or callback_delta.function_call_delta
+                    or callback_delta.function_call_end
+                    or callback_delta.finish_reason
+                    or callback_delta.usage
+                )
+                if has_callback_payload:
+                    if asyncio.iscoroutinefunction(on_stream_delta):
+                        await on_stream_delta(callback_delta)
+                    else:
+                        on_stream_delta(callback_delta)
 
             if delta.function_call_start:
                 call = delta.function_call_start
@@ -577,6 +638,29 @@ class LLMAgent:
             text="".join(text_chunks).strip(),
             function_calls=function_calls,
         )
+
+    @staticmethod
+    def _normalize_stream_text_delta(accumulated_text: str, incoming_text: str) -> str:
+        """Normalize provider text deltas that may be cumulative snapshots.
+
+        Some providers emit `delta.text` as the full generated text-so-far instead of
+        token increments. This keeps streaming UI stable and prevents duplicate output.
+        """
+        if not incoming_text:
+            return ""
+        if not accumulated_text:
+            return incoming_text
+
+        if incoming_text.startswith(accumulated_text):
+            return incoming_text[len(accumulated_text) :]
+        if accumulated_text.endswith(incoming_text):
+            return ""
+
+        overlap_max = min(len(accumulated_text), len(incoming_text))
+        for size in range(overlap_max, 0, -1):
+            if accumulated_text.endswith(incoming_text[:size]):
+                return incoming_text[size:]
+        return incoming_text
 
     def _build_generation_config(self) -> GenerationConfig:
         return GenerationConfig(
@@ -675,6 +759,18 @@ class LLMAgent:
     def is_auto_approve_enabled(self) -> bool:
         return self._auto_approve_tools
 
+    def set_approval_handler(self, handler: Optional[Callable]) -> None:
+        """Set async approval handler: (function_calls) → (approved_calls, rejection_reason)."""
+        self._approval_handler = handler
+
+    def set_tool_event_handler(self, handler: Optional[Callable]) -> None:
+        """Set async tool event handler: (event_type, tool_name, args, result?, success?)."""
+        self._tool_event_handler = handler
+
+    def set_interrupt_checker(self, checker: Optional[Callable]) -> None:
+        """Set async interrupt checker: () → bool."""
+        self._interrupt_checker = checker
+
     def list_pending_tool_calls(self) -> List[Dict[str, Any]]:
         pending = []
         for fc in self._pending_tool_calls:
@@ -731,6 +827,10 @@ class LLMAgent:
         result_str = ""
         cached = False
         tool_error = None
+
+        # Notify tool start
+        if self._tool_event_handler:
+            await self._tool_event_handler("tool_start", func_name, func_args, None, None)
 
         # Check cache first (only for cacheable tools)
         if should_cache_tool(func_name):
@@ -803,6 +903,10 @@ class LLMAgent:
             cached=cached,
             agent_id=self.agent_id,
         )
+
+        # Notify tool end
+        if self._tool_event_handler:
+            await self._tool_event_handler("tool_end", func_name, func_args, result_str, success)
 
         return FunctionResponse(
             name=func_name,

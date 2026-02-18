@@ -302,3 +302,41 @@ async def test_llm_stream_reconstructs_multiple_interleaved_tool_calls():
     assert response.function_calls[0].arguments == {"path": "a"}
     assert response.function_calls[1].name == "file_write"
     assert response.function_calls[1].arguments == {"path": "b"}
+
+
+@pytest.mark.asyncio
+async def test_llm_stream_normalizes_cumulative_text_deltas_for_callback_and_response():
+    class FakeProvider:
+        async def generate(self, messages, tools, config):
+            raise AssertionError("generate should not be called in this test")
+
+        async def generate_stream(self, messages, tools, config):
+            # Simulate cumulative snapshots some OpenAI-compatible providers emit.
+            yield StreamDelta(text="谢谢你的认可！😊")
+            yield StreamDelta(text="谢谢你的认可！😊\n确实，那些都是小修小补的问题。")
+            yield StreamDelta(text="谢谢你的认可！😊\n确实，那些都是小修小补的问题。\n你想怎么处理？")
+
+    agent = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="kimi",
+            model="kimi-k2",
+            api_base="https://api.moonshot.cn/v1",
+        )
+    )
+    agent.provider = FakeProvider()
+
+    callback_text_parts: list[str] = []
+
+    def on_stream_delta(delta: StreamDelta) -> None:
+        if delta.text:
+            callback_text_parts.append(delta.text)
+
+    response = await agent._call_llm_stream(on_stream_delta=on_stream_delta)
+
+    assert callback_text_parts == [
+        "谢谢你的认可！😊",
+        "\n确实，那些都是小修小补的问题。",
+        "\n你想怎么处理？",
+    ]
+    assert response.text == "谢谢你的认可！😊\n确实，那些都是小修小补的问题。\n你想怎么处理？"
