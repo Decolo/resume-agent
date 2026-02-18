@@ -24,6 +24,14 @@ from .workspace import RemoteWorkspaceProvider
 
 logger = logging.getLogger("resume_agent.web.api")
 
+_PROVIDER_API_KEY_ENV_MAP = {
+    "gemini": "GEMINI_API_KEY",
+    "kimi": "KIMI_API_KEY",
+    "glm": "GLM_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
+}
+
 
 class InMemoryRateLimiter:
     """Simple fixed-window limiter keyed by tenant id."""
@@ -74,6 +82,14 @@ def _resolve_ui_dir() -> Path:
     return Path(__file__).resolve().parent / "ui"
 
 
+def _resolve_api_key_for_provider(provider_name: str) -> str:
+    """Return provider-scoped API key for real executor mode."""
+    key_env = _PROVIDER_API_KEY_ENV_MAP.get((provider_name or "").strip().lower())
+    if key_env:
+        return os.getenv(key_env, "").strip()
+    return os.getenv("RESUME_AGENT_API_KEY", "").strip()
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     ui_dir = _resolve_ui_dir()
@@ -107,6 +123,8 @@ def create_app() -> FastAPI:
     workspace_root = Path(os.getenv("RESUME_AGENT_WEB_WORKSPACE_ROOT", "workspace/web_sessions")).resolve()
     artifact_root = Path(os.getenv("RESUME_AGENT_WEB_ARTIFACT_ROOT", "workspace/web_artifacts")).resolve()
     state_file = Path(state_file_env).resolve() if state_file_env else None
+    executor_mode = os.getenv("RESUME_AGENT_EXECUTOR_MODE", "stub").strip().lower()
+
     workspace_provider = RemoteWorkspaceProvider(workspace_root)
     artifact_provider = LocalArtifactStorageProvider(artifact_root)
     provider_error_policy: Dict[str, Any] = {
@@ -123,22 +141,70 @@ def create_app() -> FastAPI:
         "max_total_cost_usd": max(alert_max_total_cost_usd, 0.0),
         "max_queue_depth": max(alert_max_queue_depth, 0.0),
     }
-    store = InMemoryRuntimeStore(
-        workspace_provider=workspace_provider,
-        artifact_storage_provider=artifact_provider,
-        provider_name=os.getenv("RESUME_AGENT_DEFAULT_PROVIDER", "stub"),
-        model_name=os.getenv("RESUME_AGENT_DEFAULT_MODEL", "stub-model"),
-        max_runs_per_session=max_runs_per_session,
-        max_upload_bytes=max_upload_bytes,
-        allowed_upload_mime_types=allowed_upload_mime_types,
-        cost_per_million_tokens=cost_per_million_tokens,
-        session_ttl_seconds=session_ttl_seconds,
-        artifact_ttl_seconds=artifact_ttl_seconds,
-        cleanup_interval_seconds=cleanup_interval_seconds,
-        provider_error_policy=provider_error_policy,
-        state_file=state_file,
-        alert_thresholds=alert_thresholds,
-    )
+
+    # Determine provider/model names based on executor mode
+    if executor_mode == "real":
+        provider_name = os.getenv("RESUME_AGENT_DEFAULT_PROVIDER", "gemini").strip().lower()
+        model_name = os.getenv("RESUME_AGENT_DEFAULT_MODEL", "gemini-2.5-flash").strip()
+    else:
+        provider_name = "stub"
+        model_name = "stub-model"
+
+    if executor_mode == "real":
+        from .sqlite_store import SQLiteRuntimeStore
+
+        db_path = Path(os.getenv("RESUME_AGENT_WEB_SQLITE_PATH", "workspace/web_state.db")).resolve()
+        store = SQLiteRuntimeStore(
+            db_path=db_path,
+            workspace_provider=workspace_provider,
+            artifact_storage_provider=artifact_provider,
+            provider_name=provider_name,
+            model_name=model_name,
+            max_runs_per_session=max_runs_per_session,
+            max_upload_bytes=max_upload_bytes,
+            allowed_upload_mime_types=allowed_upload_mime_types,
+            cost_per_million_tokens=cost_per_million_tokens,
+            session_ttl_seconds=session_ttl_seconds,
+            artifact_ttl_seconds=artifact_ttl_seconds,
+            cleanup_interval_seconds=cleanup_interval_seconds,
+            provider_error_policy=provider_error_policy,
+            alert_thresholds=alert_thresholds,
+        )
+    else:
+        store = InMemoryRuntimeStore(
+            workspace_provider=workspace_provider,
+            artifact_storage_provider=artifact_provider,
+            provider_name=provider_name,
+            model_name=model_name,
+            max_runs_per_session=max_runs_per_session,
+            max_upload_bytes=max_upload_bytes,
+            allowed_upload_mime_types=allowed_upload_mime_types,
+            cost_per_million_tokens=cost_per_million_tokens,
+            session_ttl_seconds=session_ttl_seconds,
+            artifact_ttl_seconds=artifact_ttl_seconds,
+            cleanup_interval_seconds=cleanup_interval_seconds,
+            provider_error_policy=provider_error_policy,
+            state_file=state_file,
+            alert_thresholds=alert_thresholds,
+        )
+
+    # Configure LLM for real mode
+    if executor_mode == "real":
+        from packages.core.resume_agent_core import LLMConfig
+
+        llm_config = LLMConfig(
+            api_key=_resolve_api_key_for_provider(provider_name),
+            provider=provider_name,
+            model=model_name,
+            max_tokens=int(os.getenv("RESUME_AGENT_MAX_TOKENS", "4096")),
+            temperature=float(os.getenv("RESUME_AGENT_TEMPERATURE", "0.7")),
+            api_base=os.getenv("RESUME_AGENT_API_BASE", ""),
+            search_grounding=os.getenv("RESUME_AGENT_SEARCH_GROUNDING", "false").lower() == "true",
+        )
+        store._llm_config = llm_config
+
+    store._executor_mode = executor_mode
+
     rate_limiter = InMemoryRateLimiter(max_requests_per_minute=max_requests_per_minute)
 
     @asynccontextmanager
@@ -257,3 +323,7 @@ def main() -> None:
     import uvicorn
 
     uvicorn.run("apps.api.resume_agent_api.app:app", host="127.0.0.1", port=8000)
+
+
+if __name__ == "__main__":
+    main()
