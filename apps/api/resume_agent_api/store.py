@@ -94,6 +94,7 @@ class SessionRecord:
     runs: Dict[str, RunRecord] = field(default_factory=dict)
     approvals: Dict[str, ApprovalRecord] = field(default_factory=dict)
     idempotency_keys: Dict[str, Tuple[str, str]] = field(default_factory=dict)
+    _agent: Optional[Any] = field(default=None, repr=False)  # ResumeAgent instance (not serialized)
 
 
 class InMemoryRuntimeStore:
@@ -145,6 +146,8 @@ class InMemoryRuntimeStore:
             "max_total_cost_usd": 10.0,
             "max_queue_depth": 50.0,
         }
+        self._llm_config: Optional[Any] = None  # LLMConfig for real mode
+        self._executor_mode: str = "stub"  # "stub" or "real"
 
     async def start(self) -> None:
         """Start background run worker."""
@@ -510,6 +513,30 @@ class InMemoryRuntimeStore:
         """Return effective provider retry/fallback policy."""
         return self.provider_error_policy
 
+    def _get_or_create_agent(self, session: SessionRecord) -> Any:
+        """Get or create ResumeAgent for this session."""
+        if session._agent is not None:
+            return session._agent
+
+        if not self._llm_config:
+            raise APIError(500, "INTERNAL_ERROR", "LLM config not initialized for real mode")
+
+        # Import here to avoid circular dependency
+        from packages.core.resume_agent_core import AgentConfig, ResumeAgent
+
+        workspace_dir = str(self._workspace_provider.root_dir / session.session_id)
+        agent = ResumeAgent(
+            llm_config=self._llm_config,
+            agent_config=AgentConfig(workspace_dir=workspace_dir),
+        )
+
+        # Apply auto-approve setting
+        if session.settings.get("auto_approve"):
+            agent.agent.set_auto_approve_tools(True)
+
+        session._agent = agent
+        return agent
+
     async def upload_session_file(
         self,
         session_id: str,
@@ -723,8 +750,148 @@ class InMemoryRuntimeStore:
             if session_id is None or run_id is None:
                 self._run_queue.task_done()
                 break
-            await self._execute_stub_run(session_id=session_id, run_id=run_id)
+            if self._executor_mode == "real":
+                await self._execute_real_run(session_id=session_id, run_id=run_id)
+            else:
+                await self._execute_stub_run(session_id=session_id, run_id=run_id)
             self._run_queue.task_done()
+
+    async def _execute_real_run(self, session_id: str, run_id: str) -> None:
+        """Execute run using real agent with LLM."""
+        try:
+            await self._set_run_status(session_id, run_id, "running")
+            await self._append_event(session_id, run_id, "run_started", {"status": "running"})
+
+            # Get session and agent
+            session = await self.get_session(session_id)
+            agent = self._get_or_create_agent(session)
+            message = await self._get_run_message(session_id, run_id)
+
+            # Set up hooks
+            async def on_stream_delta(delta):
+                if delta.text:
+                    await self._append_event(session_id, run_id, "assistant_delta", {"text": delta.text})
+
+            async def approval_handler(function_calls):
+                """Handle approval for write tools."""
+                # Create approval records for all write tools
+                approvals = []
+                for fc in function_calls:
+                    target_path = fc.arguments.get("path", "unknown") if fc.arguments else "unknown"
+                    approval = await self._create_approval(
+                        session_id,
+                        run_id,
+                        target_path,
+                        tool_name=fc.name,
+                        args=dict(fc.arguments) if fc.arguments else {},
+                    )
+                    approvals.append(approval)
+                    await self._append_event(
+                        session_id,
+                        run_id,
+                        "tool_call_proposed",
+                        {
+                            "approval_id": approval.approval_id,
+                            "tool_name": approval.tool_name,
+                            "args": approval.args,
+                        },
+                    )
+
+                await self._set_run_status(session_id, run_id, "waiting_approval")
+                await self._wait_until_approval_or_interrupt(session_id, run_id)
+
+                # Check interrupt
+                run = await self.get_run(session_id, run_id)
+                if run.interrupt_requested:
+                    return [], "interrupted"
+
+                # Check approval status
+                approved_calls = []
+                for approval in approvals:
+                    status = await self._get_approval_status(session_id, approval.approval_id)
+                    if status == "rejected":
+                        return [], "user_rejected"
+                    approved_calls.append(
+                        type(
+                            "FunctionCall",
+                            (),
+                            {"name": approval.tool_name, "arguments": approval.args, "id": approval.approval_id},
+                        )()
+                    )
+
+                await self._set_run_status(session_id, run_id, "running")
+                return approved_calls, None
+
+            async def tool_event_handler(event_type, tool_name, args, result, success):
+                """Handle tool execution events."""
+                if event_type == "tool_end":
+                    await self._append_event(
+                        session_id,
+                        run_id,
+                        "tool_result",
+                        {
+                            "tool_name": tool_name,
+                            "success": success,
+                            "result": result or "",
+                        },
+                    )
+
+            async def interrupt_checker():
+                """Check if run should be interrupted."""
+                run = await self.get_run(session_id, run_id)
+                return run.interrupt_requested
+
+            # Install hooks
+            agent.agent.set_approval_handler(approval_handler)
+            agent.agent.set_tool_event_handler(tool_event_handler)
+            agent.agent.set_interrupt_checker(interrupt_checker)
+
+            try:
+                # Run agent
+                final_text = await agent.run(message, stream=True, on_stream_delta=on_stream_delta)
+
+                # Update usage from observer
+                if hasattr(agent.agent, "observer") and hasattr(agent.agent.observer, "total_tokens"):
+                    run = await self.get_run(session_id, run_id)
+                    run.usage_tokens = agent.agent.observer.total_tokens
+                    run.estimated_cost_usd = agent.agent.observer.total_cost
+
+                await self._append_event(
+                    session_id,
+                    run_id,
+                    "run_completed",
+                    {"status": "completed", "final_text": final_text},
+                )
+                await self._set_run_status(session_id, run_id, "completed")
+
+            except asyncio.CancelledError:
+                # Interrupted
+                await self._append_event(session_id, run_id, "run_interrupted", {"status": "interrupted"})
+                await self._set_run_status(session_id, run_id, "interrupted")
+
+            finally:
+                # Clean up hooks
+                agent.agent.set_approval_handler(None)
+                agent.agent.set_tool_event_handler(None)
+                agent.agent.set_interrupt_checker(None)
+
+        except Exception as exc:
+            await self._append_event(
+                session_id,
+                run_id,
+                "run_failed",
+                {
+                    "status": "failed",
+                    "error_code": "INTERNAL_ERROR",
+                    "message": str(exc),
+                },
+            )
+            await self._set_run_status(
+                session_id,
+                run_id,
+                "failed",
+                error={"code": "INTERNAL_ERROR", "message": str(exc)},
+            )
 
     async def _execute_stub_run(self, session_id: str, run_id: str) -> None:
         """Emit deterministic events with approval/interrupt semantics."""
@@ -851,7 +1018,14 @@ class InMemoryRuntimeStore:
         session = await self.get_session(session_id)
         return bool(session.settings.get("auto_approve", False))
 
-    async def _create_approval(self, session_id: str, run_id: str, target_path: str) -> ApprovalRecord:
+    async def _create_approval(
+        self,
+        session_id: str,
+        run_id: str,
+        target_path: str,
+        tool_name: str = "file_write",
+        args: Optional[Dict[str, Any]] = None,
+    ) -> ApprovalRecord:
         async with self._lock:
             session = self._sessions.get(session_id)
             if not session:
@@ -865,8 +1039,8 @@ class InMemoryRuntimeStore:
                 approval_id=approval_id,
                 session_id=session_id,
                 run_id=run_id,
-                tool_name="file_write",
-                args={"path": target_path},
+                tool_name=tool_name,
+                args=args or {"path": target_path},
                 created_at=utc_now_iso(),
             )
             session.approvals[approval_id] = approval

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from ....store import InMemoryRuntimeStore
+from ....store_protocol import RuntimeStore
 from ..deps import get_store, get_tenant_id
 from ..upload import read_upload_with_limit
 
@@ -43,7 +43,7 @@ class ExportResponse(BaseModel):
 async def upload_file(
     session_id: str,
     file: UploadFile = File(...),
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> UploadFileResponse:
     content = await read_upload_with_limit(file=file, max_bytes=store.max_upload_bytes)
@@ -65,7 +65,7 @@ async def upload_file(
 @router.get("/files", response_model=ListFilesResponse)
 async def list_files(
     session_id: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> ListFilesResponse:
     files = await store.list_session_files(session_id=session_id, tenant_id=tenant_id)
@@ -78,7 +78,7 @@ async def list_files(
 async def get_file(
     session_id: str,
     file_path: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> Response:
     content = await store.read_session_file(
@@ -92,7 +92,7 @@ async def get_file(
 @router.post("/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED)
 async def export_resume(
     session_id: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> ExportResponse:
     artifact = await store.export_session(session_id=session_id, tenant_id=tenant_id)

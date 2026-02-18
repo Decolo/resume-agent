@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from pydantic import BaseModel, Field
 
-from ....store import InMemoryRuntimeStore
+from ....store_protocol import RuntimeStore
 from ..deps import get_store, get_tenant_id
 from ..upload import read_upload_with_limit
 
@@ -75,7 +75,7 @@ class SubmitJDResponse(BaseModel):
 @router.post("", response_model=CreateSessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_session(
     request: CreateSessionRequest,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> CreateSessionResponse:
     session = await store.create_session(
@@ -94,7 +94,7 @@ async def create_session(
 @router.get("/{session_id}", response_model=GetSessionResponse)
 async def get_session(
     session_id: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> GetSessionResponse:
     session = await store.get_session(session_id, tenant_id=tenant_id)
@@ -116,7 +116,7 @@ async def get_session(
 @router.get("/{session_id}/usage", response_model=SessionUsageResponse)
 async def get_session_usage(
     session_id: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> SessionUsageResponse:
     usage = await store.get_session_usage(session_id=session_id, tenant_id=tenant_id)
@@ -127,7 +127,7 @@ async def get_session_usage(
 async def set_auto_approve(
     session_id: str,
     request: SetAutoApproveRequest,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> SetAutoApproveResponse:
     updated = await store.set_auto_approve(
@@ -142,7 +142,7 @@ async def set_auto_approve(
 async def upload_resume(
     session_id: str,
     file: UploadFile = File(...),
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> UploadResumeResponse:
     content = await read_upload_with_limit(file=file, max_bytes=store.max_upload_bytes)
@@ -166,7 +166,7 @@ async def upload_resume(
 async def submit_jd(
     session_id: str,
     request: SubmitJDRequest,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> SubmitJDResponse:
     result = await store.submit_jd(

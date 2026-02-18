@@ -5,7 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ....store import ApprovalRecord, InMemoryRuntimeStore
+from ....store import ApprovalRecord
+from ....store_protocol import RuntimeStore
 from ..deps import get_store, get_tenant_id
 
 router = APIRouter(prefix="/sessions/{session_id}", tags=["approvals"])
@@ -37,7 +38,7 @@ class ApprovalActionResponse(BaseModel):
 @router.get("/approvals", response_model=ListApprovalsResponse)
 async def list_approvals(
     session_id: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> ListApprovalsResponse:
     approvals = await store.list_pending_approvals(session_id=session_id, tenant_id=tenant_id)
@@ -49,7 +50,7 @@ async def approve(
     session_id: str,
     approval_id: str,
     request: ApproveRequest,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> ApprovalActionResponse:
     approval = await store.approve_approval(
@@ -69,7 +70,7 @@ async def approve(
 async def reject(
     session_id: str,
     approval_id: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> ApprovalActionResponse:
     approval = await store.reject_approval(

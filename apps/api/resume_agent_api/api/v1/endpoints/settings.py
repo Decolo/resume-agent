@@ -16,7 +16,7 @@ from packages.contracts.resume_agent_contracts.web.settings import (
     RuntimeMetricsResponse,
 )
 
-from ....store import InMemoryRuntimeStore
+from ....store_protocol import RuntimeStore
 from ..deps import get_store
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 @router.get("/provider-policy", response_model=ProviderPolicyResponse)
 async def get_provider_policy(
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
 ) -> ProviderPolicyResponse:
     policy: Dict[str, Any] = store.get_provider_policy()
     retry: Dict[str, Any] = policy.get("retry", {})
@@ -48,7 +48,7 @@ async def get_provider_policy(
 
 @router.post("/cleanup", response_model=CleanupResponse)
 async def run_cleanup(
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
 ) -> CleanupResponse:
     result = await store.cleanup_expired_resources()
     return CleanupResponse(**result)
@@ -56,7 +56,7 @@ async def run_cleanup(
 
 @router.get("/metrics", response_model=RuntimeMetricsResponse)
 async def get_runtime_metrics(
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
 ) -> RuntimeMetricsResponse:
     metrics = await store.get_runtime_metrics()
     return RuntimeMetricsResponse(**metrics)
@@ -64,7 +64,7 @@ async def get_runtime_metrics(
 
 @router.get("/alerts", response_model=AlertsResponse)
 async def get_alerts(
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
 ) -> AlertsResponse:
     alerts = await store.get_alerts()
     return AlertsResponse(items=[AlertItemResponse(**item) for item in alerts])

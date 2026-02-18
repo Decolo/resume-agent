@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from ...store import InMemoryRuntimeStore
+from ...store_protocol import RuntimeStore
 
 
-def get_store(request: Request) -> InMemoryRuntimeStore:
+def get_store(request: Request) -> RuntimeStore:
     """Access shared runtime store from app state."""
     return request.app.state.runtime_store
 

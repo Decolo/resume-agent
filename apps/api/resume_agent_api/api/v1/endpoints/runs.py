@@ -12,7 +12,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ....redaction import redact_text
-from ....store import TERMINAL_RUN_STATES, InMemoryRuntimeStore
+from ....store import TERMINAL_RUN_STATES
+from ....store_protocol import RuntimeStore
 from ..deps import get_store, get_tenant_id
 
 router = APIRouter(prefix="/sessions/{session_id}", tags=["runs"])
@@ -48,7 +49,7 @@ class InterruptRunResponse(BaseModel):
 async def create_message_run(
     session_id: str,
     request: CreateMessageRequest,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> CreateMessageResponse:
     run, _is_reused = await store.create_run(
@@ -75,7 +76,7 @@ async def create_message_run(
 async def get_run(
     session_id: str,
     run_id: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> GetRunResponse:
     run = await store.get_run(session_id=session_id, run_id=run_id, tenant_id=tenant_id)
@@ -95,7 +96,7 @@ async def interrupt_run(
     session_id: str,
     run_id: str,
     response: Response,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
 ) -> InterruptRunResponse:
     run = await store.interrupt_run(session_id=session_id, run_id=run_id, tenant_id=tenant_id)
@@ -107,7 +108,7 @@ async def interrupt_run(
 async def stream_run_events(
     session_id: str,
     run_id: str,
-    store: InMemoryRuntimeStore = Depends(get_store),
+    store: RuntimeStore = Depends(get_store),
     tenant_id: str = Depends(get_tenant_id),
     last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
