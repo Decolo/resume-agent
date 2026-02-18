@@ -2,18 +2,15 @@
 
 import asyncio
 import os
-import re
 import select
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
@@ -27,116 +24,6 @@ from packages.core.resume_agent_core.session import SessionManager
 from .config_validator import Severity, has_errors, validate_config
 
 console = Console()
-_STREAM_RENDER_MODES = {"raw", "md", "hybrid"}
-_ANSI_CSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
-_ANSI_OSC_RE = re.compile(r"\x1B\][^\x1b\x07]*(?:\x07|\x1b\\)")
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_MD_RENDER_BOUNDARY_RE = re.compile(r"[\n。！？!?]|```")
-
-
-def _sanitize_stream_text(text: str) -> str:
-    cleaned = _ANSI_OSC_RE.sub("", text or "")
-    cleaned = _ANSI_CSI_RE.sub("", cleaned)
-    cleaned = _CONTROL_CHAR_RE.sub("", cleaned)
-    return cleaned
-
-
-class StreamOutputRenderer:
-    """Render streaming deltas in terminal-friendly formats."""
-
-    def __init__(self, mode: str = "md") -> None:
-        normalized = (mode or "md").strip().lower()
-        self.mode = normalized if normalized in _STREAM_RENDER_MODES else "md"
-        self.started = False
-        self.last_newline = True
-        self.last_update = 0.0
-        self.boundary_update_interval = 0.06
-        self.max_update_interval = 0.35
-        self.buffer_parts: list[str] = []
-        self.live: Optional[Live] = None
-
-    def _start(self) -> None:
-        if self.started:
-            return
-        self.started = True
-        if self.mode == "md":
-            self.live = Live(Markdown(""), console=console, refresh_per_second=12)
-            self.live.__enter__()
-            self.last_newline = True
-            return
-
-        console.print("\n🤖 Assistant:", style="green")
-        self.last_newline = True
-
-    def on_delta(self, delta: Any) -> None:
-        text = _sanitize_stream_text(str(getattr(delta, "text", "") or ""))
-        if text:
-            self._start()
-            if self.mode == "md":
-                self.buffer_parts.append(text)
-                now = time.monotonic()
-                elapsed = now - self.last_update
-                has_boundary = bool(_MD_RENDER_BOUNDARY_RE.search(text))
-                # Reduce Markdown reflow jitter by preferring sentence/line boundaries,
-                # while still forcing periodic refresh on long continuous tokens.
-                should_refresh = False
-                if has_boundary and elapsed >= self.boundary_update_interval:
-                    should_refresh = True
-                elif elapsed >= self.max_update_interval:
-                    should_refresh = True
-                if should_refresh:
-                    assert self.live is not None
-                    self.live.update(Markdown("".join(self.buffer_parts)))
-                    self.last_update = now
-            else:
-                console.file.write(text)
-                console.file.flush()
-                self.last_newline = text.endswith("\n")
-
-        function_call = getattr(delta, "function_call_start", None)
-        if not function_call:
-            return
-
-        tool_name = str(getattr(function_call, "name", "") or "tool")
-        if self.mode == "md":
-            note = f"\n\n*Tool call proposed:* `{tool_name}`\n\n"
-            self.buffer_parts.append(note)
-            now = time.monotonic()
-            if self.live is not None:
-                self.live.update(Markdown("".join(self.buffer_parts)))
-                self.last_update = now
-            return
-
-        self._start()
-        if not self.last_newline:
-            console.print()
-        console.print(f"🔧 Tool call proposed: {tool_name}", style="dim")
-        self.last_newline = True
-
-    def finish(self, final_response: str) -> None:
-        if self.mode == "md":
-            if self.live is not None:
-                text = _sanitize_stream_text(final_response or "")
-                if text:
-                    self.live.update(Markdown(text))
-                self.live.__exit__(None, None, None)
-                self.live = None
-            if final_response.startswith("Error:"):
-                console.print(Panel(Markdown(final_response), title="🤖 Assistant", border_style="red"))
-            return
-
-        if self.started and not self.last_newline:
-            console.print()
-        if final_response.startswith("Error:"):
-            console.print(Panel(Markdown(final_response), title="🤖 Assistant", border_style="red"))
-            return
-        if self.mode == "hybrid":
-            console.print(Panel(Markdown(final_response), title="🤖 Assistant (final)", border_style="green"))
-
-    def close(self) -> None:
-        if self.live is not None:
-            self.live.__exit__(None, None, None)
-            self.live = None
 
 
 def _wait_for_escape(stop_event: threading.Event) -> bool:
@@ -182,7 +69,6 @@ def print_banner():
 ║  Quick Commands:                                          ║
 ║    /help     - Show all commands                          ║
 ║    /stream   - Toggle streaming output                    ║
-║    /stream-render - Set streaming render mode             ║
 ║    /save     - Save current session                       ║
 ║    /load     - Load a previous session (shows picker)     ║
 ║    /sessions - List all saved sessions                    ║
@@ -216,7 +102,6 @@ def print_help():
 | `/pending` | List pending tool approvals |
 | `/auto-approve [on|off|status]` | Control auto-approval for write tools |
 | `/stream [on|off|status]` | Control streaming output in interactive mode |
-| `/stream-render [raw|md|hybrid|status]` | Control streaming render mode |
 | `/agents` | Show agent statistics (multi-agent mode) |
 | `/trace` | Show delegation trace (multi-agent mode) |
 | `/delegation-tree` | Show delegation stats (multi-agent mode) |
@@ -761,21 +646,6 @@ async def handle_command(
         else:
             console.print("Usage: /stream [on|off|status]", style="yellow")
 
-    elif cmd == "/stream-render" or cmd.startswith("/stream-render "):
-        if runtime_options is None:
-            console.print("Streaming render controls unavailable in this mode.", style="yellow")
-            return True
-        parts = cmd.split(maxsplit=1)
-        action = parts[1].strip().lower() if len(parts) > 1 else "status"
-        if action in {"status", "state"}:
-            mode = str(runtime_options.get("stream_render_mode", "md"))
-            console.print(f"Streaming render mode: {mode}", style="green")
-        elif action in _STREAM_RENDER_MODES:
-            runtime_options["stream_render_mode"] = action
-            console.print(f"✓ Streaming render mode set to {action}.", style="green")
-        else:
-            console.print("Usage: /stream-render [raw|md|hybrid|status]", style="yellow")
-
     elif cmd.startswith("/export"):
         # Parse export command: /export [file|clipboard] [format] [verbose]
         parts = cmd.split()
@@ -1122,7 +992,6 @@ async def run_interactive(
     agent: Union[ResumeAgent, OrchestratorAgent],
     session_manager: Optional[SessionManager] = None,
     stream_enabled_default: bool = True,
-    stream_render_mode_default: str = "md",
 ):
     """Run interactive chat loop."""
     # Setup prompt with history
@@ -1130,9 +999,6 @@ async def run_interactive(
     session = PromptSession(history=FileHistory(str(history_file)))
     runtime_options: Dict[str, Any] = {
         "stream_enabled": bool(stream_enabled_default),
-        "stream_render_mode": (
-            stream_render_mode_default if stream_render_mode_default in _STREAM_RENDER_MODES else "md"
-        ),
     }
 
     print_banner()
@@ -1146,10 +1012,6 @@ async def run_interactive(
     console.print(
         f"✅ Streaming {'ON' if runtime_options['stream_enabled'] else 'OFF'} — use /stream [on|off|status]",
         style="green" if runtime_options["stream_enabled"] else "yellow",
-    )
-    console.print(
-        f"✅ Stream render mode: {runtime_options['stream_render_mode']} — use /stream-render [raw|md|hybrid|status]",
-        style="dim",
     )
 
     while True:
@@ -1184,18 +1046,11 @@ async def run_interactive(
 
             try:
                 stream_enabled = bool(runtime_options.get("stream_enabled", False))
-                renderer = StreamOutputRenderer(mode=str(runtime_options.get("stream_render_mode", "md")))
-
-                def on_stream_delta(delta: Any) -> None:
-                    if not stream_enabled:
-                        return
-                    renderer.on_delta(delta)
 
                 agent_task = asyncio.create_task(
                     agent.run(
                         user_input,
                         stream=stream_enabled,
-                        on_stream_delta=on_stream_delta if stream_enabled else None,
                     )
                 )
                 stop_event = threading.Event()
@@ -1220,7 +1075,6 @@ async def run_interactive(
                         esc_pressed = False
 
                 if esc_pressed:
-                    renderer.close()
                     stop_event.set()
                     if not agent_task.done():
                         agent_task.cancel()
@@ -1238,22 +1092,18 @@ async def run_interactive(
                     await esc_future
 
                 response = await agent_task
-                if stream_enabled:
-                    renderer.finish(response)
+                console.print()
+                if response.startswith("Error:"):
+                    console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
                 else:
-                    console.print()
                     console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
 
                 # Auto-prompt if tool approvals are pending
                 if _list_pending_tool_calls(agent):
                     await _prompt_pending_tool_action(agent, session, console)
             except KeyboardInterrupt:
-                if "renderer" in locals():
-                    renderer.close()
                 console.print("\n⚠️ Interrupted.", style="yellow")
             except Exception as e:
-                if "renderer" in locals():
-                    renderer.close()
                 console.print(f"\n❌ Error: {str(e)}", style="red")
 
         except KeyboardInterrupt:
@@ -1322,12 +1172,6 @@ def main():
         dest="stream",
         action="store_false",
         help="Disable streaming output",
-    )
-    parser.add_argument(
-        "--stream-render",
-        choices=sorted(_STREAM_RENDER_MODES),
-        default="md",
-        help="Streaming render mode: raw, md, or hybrid (default: md)",
     )
     parser.set_defaults(stream=None)
 
@@ -1406,26 +1250,13 @@ def main():
         # Non-interactive mode
         async def run_once():
             stream_enabled = bool(args.stream) if args.stream is not None else False
-            renderer = StreamOutputRenderer(mode=args.stream_render)
 
-            def on_stream_delta(delta: Any) -> None:
-                if stream_enabled:
-                    renderer.on_delta(delta)
-
-            if isinstance(agent, OrchestratorAgent):
-                response = await agent.run(
-                    args.prompt,
-                    stream=stream_enabled,
-                    on_stream_delta=on_stream_delta if stream_enabled else None,
-                )
-            else:
-                response = await agent.run(
-                    args.prompt,
-                    stream=stream_enabled,
-                    on_stream_delta=on_stream_delta if stream_enabled else None,
-                )
-            if stream_enabled:
-                renderer.finish(response)
+            response = await agent.run(
+                args.prompt,
+                stream=stream_enabled,
+            )
+            if response.startswith("Error:"):
+                console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
             else:
                 console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
 
@@ -1455,7 +1286,6 @@ def main():
                 agent,
                 session_manager,
                 stream_enabled_default=interactive_stream_default,
-                stream_render_mode_default=args.stream_render,
             )
         )
 
