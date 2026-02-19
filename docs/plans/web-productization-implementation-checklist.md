@@ -48,31 +48,31 @@ This checklist executes `web-productization-roadmap-v2.md` in a delivery-friendl
 - [x] Add fallback and retry policy configuration for provider errors.
 
 ## Week 8
-- [ ] Add dashboards/alerts for error rate, latency, cost, queue depth.
-- [ ] Load test target concurrency and tune runtime limits.
+- [x] Add dashboards/alerts for error rate, latency, cost, queue depth.
+- [x] Load test target concurrency and tune runtime limits.
 - [x] Finalize release checklist and rollback playbook.
 
 ## Module Checklist (Cross-cutting)
 
 - **Agent Runtime**
-  - [ ] Preserve existing tool-loop guard behavior in API mode.
-  - [ ] Preserve write approval semantics exactly (pause before execution).
-  - [ ] Ensure cancellation is idempotent and leaves session in consistent state.
+  - [x] Preserve existing tool-loop guard behavior in API mode.
+  - [x] Preserve write approval semantics exactly (pause before execution).
+  - [x] Ensure cancellation is idempotent and leaves session in consistent state.
 
 - **Provider Compatibility**
-  - [ ] Keep normalized request/response boundary in provider adapters.
-  - [ ] Add contract tests for Gemini + OpenAI-compatible tool call formats.
-  - [ ] Add regression tests for provider-specific constraints (temperature/thinking/etc.).
+  - [x] Keep normalized request/response boundary in provider adapters.
+  - [x] Add contract tests for Gemini + OpenAI-compatible tool call formats.
+  - [x] Add regression tests for provider-specific constraints (temperature/thinking/etc.).
 
 - **Session & Persistence**
-  - [ ] Persist workflow stage and pending approvals per session.
-  - [ ] Persist run events for debugging and replay.
-  - [ ] Ensure backwards compatibility of session schema versions.
+  - [x] Persist workflow stage and pending approvals per session.
+  - [x] Persist run events for debugging and replay.
+  - [x] Ensure backwards compatibility of session schema versions.
 
 - **Security**
   - [x] File path sandbox enforcement in remote workspace.
-  - [ ] Audit log for approvals and file mutations.
-  - [ ] Redaction policy for sensitive user content in logs.
+  - [x] Audit log for approvals and file mutations.
+  - [x] Redaction policy for sensitive user content in logs.
 
 ## Release Gates
 

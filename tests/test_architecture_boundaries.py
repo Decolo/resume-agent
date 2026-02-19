@@ -1,7 +1,4 @@
-"""Architecture boundary tests.
-
-These tests enforce dependency direction mechanically so drift is caught in CI.
-"""
+"""Architecture boundary tests for monorepo final topology."""
 
 from __future__ import annotations
 
@@ -9,7 +6,10 @@ import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = REPO_ROOT / "resume_agent"
+SOURCE_ROOTS = (
+    REPO_ROOT / "packages",
+    REPO_ROOT / "apps",
+)
 
 
 def _module_name(file_path: Path) -> str:
@@ -36,8 +36,6 @@ def _imported_modules(file_path: Path, current_module: str) -> set[str]:
                 imported.add(node.module)
             continue
 
-        # Relative import resolution:
-        # level=1 means current package, level=2 means parent package, etc.
         ascend = max(node.level - 1, 0)
         if ascend > len(package_parts):
             continue
@@ -54,33 +52,44 @@ def _imported_modules(file_path: Path, current_module: str) -> set[str]:
 
 def test_architecture_boundaries() -> None:
     violations: list[str] = []
-    py_files = sorted(PACKAGE_ROOT.rglob("*.py"))
-
-    provider_forbidden_prefixes = (
-        "resume_agent.agents",
-        "resume_agent.tools",
-        "resume_agent.web",
-        "resume_agent.cli",
-        "resume_agent.agent",
-        "resume_agent.agent_factory",
-    )
+    py_files: list[Path] = []
+    for root in SOURCE_ROOTS:
+        if root.exists():
+            py_files.extend(sorted(root.rglob("*.py")))
 
     for file_path in py_files:
         module = _module_name(file_path)
         imports = _imported_modules(file_path, module)
 
-        if not module.startswith("resume_agent.web"):
+        for imported in imports:
+            if imported.startswith("resume_agent"):
+                violations.append(f"{module} imports {imported}; implementation must live under apps/* or packages/*")
+
+        if module.startswith("packages."):
             for imported in imports:
-                if imported.startswith("resume_agent.web"):
+                if imported.startswith("apps."):
+                    violations.append(f"{module} imports {imported}; packages layer must not depend on apps layer")
+
+        if module.startswith("packages.providers"):
+            for imported in imports:
+                if imported.startswith(("packages.core", "apps.")):
                     violations.append(
-                        f"{module} imports {imported}; only web package may depend on web adapters"
+                        f"{module} imports {imported}; providers must remain isolated from core/app layers"
                     )
 
-        if module.startswith("resume_agent.providers"):
+        if module.startswith("packages.contracts"):
             for imported in imports:
-                if imported.startswith(provider_forbidden_prefixes):
-                    violations.append(
-                        f"{module} imports {imported}; providers must stay isolated from app/web/tool layers"
-                    )
+                if imported.startswith(("packages.core", "packages.providers", "apps.")):
+                    violations.append(f"{module} imports {imported}; contracts must be app/core agnostic")
+
+        if module.startswith("apps.api"):
+            for imported in imports:
+                if imported.startswith("apps.cli"):
+                    violations.append(f"{module} imports {imported}; api app must not depend on cli app")
+
+        if module.startswith("apps.cli"):
+            for imported in imports:
+                if imported.startswith("apps.api"):
+                    violations.append(f"{module} imports {imported}; cli app must not depend on api app")
 
     assert not violations, "Architecture boundary violation(s):\n" + "\n".join(sorted(violations))

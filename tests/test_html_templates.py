@@ -2,7 +2,7 @@
 
 import pytest
 
-from resume_agent.templates import AVAILABLE_TEMPLATES, load_template_css
+from packages.core.resume_agent_core.templates import AVAILABLE_TEMPLATES, load_template_css
 
 
 class TestTemplateLoading:

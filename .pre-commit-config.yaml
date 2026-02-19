@@ -1,0 +1,41 @@
+# Pre-commit hooks for resume-agent
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      # Run the linter
+      - id: ruff
+        args: [--fix]
+      # Run the formatter
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - types-PyYAML
+          - types-requests
+        # Only run on files configured in pyproject.toml
+        files: ^(resume_agent/config_validator\.py|resume_agent/providers/.*)$
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Prevent committing large files
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      # Check for merge conflict markers
+      - id: check-merge-conflict
+      # Check YAML syntax
+      - id: check-yaml
+        args: [--unsafe]  # Allow custom YAML tags
+      # Check for files that would conflict on case-insensitive filesystems
+      - id: check-case-conflict
+      # Ensure files end with newline
+      - id: end-of-file-fixer
+      # Trim trailing whitespace
+      - id: trailing-whitespace

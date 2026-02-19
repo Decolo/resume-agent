@@ -191,8 +191,8 @@ Auto-save is always enabled when a `SessionManager` is present.
 ### Components
 
 1. **SessionSerializer**: Converts agent state to/from JSON
-   - `serialize_message()`: Gemini `types.Content` → JSON
-   - `deserialize_message()`: JSON → `types.Content`
+   - `serialize_message()`: provider-agnostic `Message` → JSON
+   - `deserialize_message()`: JSON → provider-agnostic `Message`
    - `serialize_history()`: Full conversation history
    - `serialize_observability()`: Events + session stats
    - `serialize_multi_agent_state()`: Delegation, context, agent stats
@@ -335,7 +335,7 @@ mkdir -p workspace/sessions
 **Solution**:
 ```bash
 # Validate JSON syntax
-cat workspace/sessions/session_xyz.json | python -m json.tool
+cat workspace/sessions/session_xyz.json | python3 -m json.tool
 
 # Check schema version
 grep schema_version workspace/sessions/session_xyz.json
@@ -415,31 +415,27 @@ Phase 3 is **fully backward compatible** with Phase 2:
 
 - ✅ All existing functionality preserved
 - ✅ No breaking changes to CLI or API
-- ✅ Session persistence is opt-in (disabled by default)
+- ✅ Session persistence is initialized by CLI runtime by default
 - ✅ Works with both single-agent and multi-agent modes
 
-**To enable**:
-1. Update `config/config.yaml`: `session.enabled: true`
+**To use**:
+1. Run CLI with a workspace (`uv run resume-agent --workspace ./examples/my_resume`)
 2. Use `/save`, `/load`, `/sessions` commands
 
-## Next Steps (Phase 4)
+## Current Scope
 
-After Phase 3, Phase 4 will add multi-provider support:
-- OpenAI API support (GPT-4, GPT-4o)
-- Claude API support (Claude 3.5 Sonnet, Opus)
-- DeepSeek API support
-- Provider-agnostic abstraction layer
-- Cost comparison across providers
+Session persistence currently works for both single-agent and multi-agent flows on the monorepo runtime (`apps/*` + `packages/*`).
 
 ## API Reference
 
 ### SessionSerializer
 
 ```python
-from resume_agent.session import SessionSerializer
+from packages.core.resume_agent_core.session import SessionSerializer
+from packages.providers.resume_agent_providers.types import Message, MessagePart
 
 # Serialize a message
-msg = types.Content(role="user", parts=[...])
+msg = Message(role="user", parts=[MessagePart.from_text("hello")])
 serialized = SessionSerializer.serialize_message(msg)
 
 # Deserialize a message
@@ -455,7 +451,7 @@ obs_data = SessionSerializer.serialize_observability(observer)
 ### SessionManager
 
 ```python
-from resume_agent.session import SessionManager
+from packages.core.resume_agent_core.session import SessionManager
 
 # Initialize
 session_manager = SessionManager(workspace_dir="./workspace")
@@ -482,7 +478,7 @@ session_manager.delete_session(session_id)
 ### SessionIndex
 
 ```python
-from resume_agent.session import SessionIndex
+from packages.core.resume_agent_core.session import SessionIndex
 
 # Initialize
 index = SessionIndex(index_path=Path("sessions/.index.json"))

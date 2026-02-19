@@ -2,7 +2,7 @@
 
 import pytest
 
-from resume_agent.tools.ats_scorer import ATSScorerTool
+from packages.core.resume_agent_core.tools.ats_scorer import ATSScorerTool
 
 
 @pytest.fixture

@@ -2,10 +2,10 @@
 
 import pytest
 
-from resume_agent.agent import AgentConfig, ResumeAgent
-from resume_agent.llm import LLMConfig
-from resume_agent.providers.types import Message, MessagePart
-from resume_agent.session import SessionManager
+from packages.core.resume_agent_core.agent import AgentConfig, ResumeAgent
+from packages.core.resume_agent_core.llm import LLMConfig
+from packages.core.resume_agent_core.session import SessionManager
+from packages.providers.resume_agent_providers.types import Message, MessagePart
 
 
 @pytest.mark.asyncio

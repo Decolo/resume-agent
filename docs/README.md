@@ -23,10 +23,13 @@ This index organizes the docs by task so you can find things quickly.
 - **[API Reference](./api-reference/phase1-quick-reference.md)** - Code examples and API usage
 - **[Web API v1 Contract](./api-reference/web-api-v1.md)** - Headless web backend API contract
 - **[SSE Event Contract v1](./api-reference/sse-events-v1.md)** - Streaming event schema
+- **[Architecture Map](./architecture.md)** - High-level module/dependency map
+- **[Quality Score](./quality-score.md)** - Baseline quality metrics and trend tracking
 
 ### Architecture
 - **[Phase 1 Improvements](./architecture/phase1-improvements.md)** - Technical improvements
 - **[Run State Machine v1](./architecture/run-state-machine.md)** - Run/approval lifecycle and transitions
+- **[Monorepo Ownership Map](./architecture/monorepo-ownership-map.md)** - Current-to-target module ownership mapping
 
 ### Learn
 - **[Event Loop & Async Patterns](./learn/event-loop-async-patterns.md)** - Async concepts and patterns
@@ -39,12 +42,15 @@ This index organizes the docs by task so you can find things quickly.
 
 ### Ops
 - **[Release Gates and Rollback Playbook](./ops/release-gates.md)** - Release readiness checks and rollback steps
+- **[Branch Protection Baseline](./ops/branch-protection.md)** - Required checks and PR workflow baseline
 
 ### Plans
 - **[Web Productization Roadmap v2](./plans/web-productization-roadmap-v2.md)** - Active execution roadmap
 - **[Web Productization Implementation Checklist](./plans/web-productization-implementation-checklist.md)** - Week-by-week and module checklist
 - **[Web Phase 1 Acceptance](./plans/web-phase1-acceptance.md)** - Integration acceptance scenarios
 - **[Product Direction Ideas](./plans/product-direction-ideas.md)** - Active exploration notes
+- **[Active Plan Folder](./plans/active/README.md)** - Where in-progress plans should live
+- **[Completed Plan Folder](./plans/completed/README.md)** - Where finished plans should move
 
 ### Archive
 - **[Archive Index](./archive/README.md)** - Completed or outdated docs retained for reference

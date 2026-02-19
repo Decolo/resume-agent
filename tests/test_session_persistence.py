@@ -2,14 +2,14 @@
 
 import pytest
 
-from resume_agent.llm import HistoryManager, LLMAgent, LLMConfig
-from resume_agent.observability import AgentObserver
-from resume_agent.providers.types import FunctionCall, FunctionResponse, Message, MessagePart
-from resume_agent.session import (
+from packages.core.resume_agent_core.llm import HistoryManager, LLMAgent, LLMConfig
+from packages.core.resume_agent_core.observability import AgentObserver
+from packages.core.resume_agent_core.session import (
     SessionIndex,
     SessionManager,
     SessionSerializer,
 )
+from packages.providers.resume_agent_providers.types import FunctionCall, FunctionResponse, Message, MessagePart
 
 
 class TestSessionSerializer:

@@ -7,7 +7,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from resume_agent.web.app import create_app
+from apps.api.resume_agent_api.app import create_app
 
 
 def _extract_envelopes(raw_stream: str) -> list[dict]:
@@ -161,6 +161,35 @@ def test_approve_flow_emits_expected_order() -> None:
         assert session_state["pending_approvals_count"] == 0
 
 
+def test_write_is_paused_until_approval() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={"auto_approve": False}).json()
+        session_id = session["session_id"]
+        target_path = "frontend-resume-improved-2026-02-03.md"
+        run = client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={"message": f"Modify {target_path}"},
+        ).json()
+
+        approval = _wait_for_pending_approval(client, session_id)
+        assert approval["args"]["path"] == target_path
+
+        # Pause semantics: proposal exists, but write must not happen before explicit approval.
+        before_approve = client.get(f"/api/v1/sessions/{session_id}/files/{target_path}")
+        assert before_approve.status_code == 404
+
+        approve = client.post(
+            f"/api/v1/sessions/{session_id}/approvals/{approval['approval_id']}/approve",
+            json={"apply_to_future": False},
+        )
+        assert approve.status_code == 200
+
+        _stream_envelopes(client, session_id, run["run_id"])
+        after_approve = client.get(f"/api/v1/sessions/{session_id}/files/{target_path}")
+        assert after_approve.status_code == 200
+        assert "Updated by run" in after_approve.text
+
+
 def test_reject_flow_completes_without_tool_result() -> None:
     with TestClient(create_app()) as client:
         session = client.post("/api/v1/sessions", json={"auto_approve": False}).json()
@@ -247,6 +276,70 @@ def test_interrupt_terminal_run_returns_200_with_current_status() -> None:
         interrupt = client.post(f"/api/v1/sessions/{session['session_id']}/runs/{run['run_id']}/interrupt")
         assert interrupt.status_code == 200
         assert interrupt.json()["status"] == "completed"
+
+
+def test_interrupt_waiting_approval_is_idempotent_and_cleans_pending_state() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={"auto_approve": False}).json()
+        session_id = session["session_id"]
+        run = client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={"message": "Update frontend-resume-improved-2026-02-03.md"},
+        ).json()
+
+        approval = _wait_for_pending_approval(client, session_id)
+        first_interrupt = client.post(f"/api/v1/sessions/{session_id}/runs/{run['run_id']}/interrupt")
+        assert first_interrupt.status_code in {200, 202}
+        second_interrupt = client.post(f"/api/v1/sessions/{session_id}/runs/{run['run_id']}/interrupt")
+        assert second_interrupt.status_code in {200, 202}
+
+        envelopes = _stream_envelopes(client, session_id, run["run_id"])
+        event_types = [event["type"] for event in envelopes]
+        assert event_types[-1] == "run_interrupted"
+        assert "tool_result" not in event_types
+
+        run_state = client.get(f"/api/v1/sessions/{session_id}/runs/{run['run_id']}").json()
+        assert run_state["status"] == "interrupted"
+
+        approvals = client.get(f"/api/v1/sessions/{session_id}/approvals").json()
+        assert approvals["items"] == []
+        session_state = client.get(f"/api/v1/sessions/{session_id}").json()
+        assert session_state["pending_approvals_count"] == 0
+
+        # Approval can no longer be actioned after run interruption.
+        post_interrupt_approve = client.post(
+            f"/api/v1/sessions/{session_id}/approvals/{approval['approval_id']}/approve",
+            json={"apply_to_future": False},
+        )
+        assert post_interrupt_approve.status_code == 409
+
+
+def test_active_run_prevents_parallel_runs_until_terminal() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={"auto_approve": False}).json()
+        session_id = session["session_id"]
+        run = client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={"message": "Edit frontend-resume-improved-2026-02-03.md"},
+        ).json()
+
+        _wait_for_pending_approval(client, session_id)
+        blocked = client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={"message": "Summarize resume content"},
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "ACTIVE_RUN_EXISTS"
+
+        interrupt = client.post(f"/api/v1/sessions/{session_id}/runs/{run['run_id']}/interrupt")
+        assert interrupt.status_code in {200, 202}
+        _stream_envelopes(client, session_id, run["run_id"])
+
+        next_run = client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={"message": "Summarize resume content"},
+        )
+        assert next_run.status_code == 202
 
 
 def test_set_auto_approve_endpoint_updates_session_settings() -> None:
@@ -403,6 +496,45 @@ def test_provider_policy_endpoint_returns_configured_values(monkeypatch) -> None
             {"provider": "openai", "model": "gpt-4o-mini"},
             {"provider": "gemini", "model": "gemini-2.5-flash"},
         ]
+
+
+def test_runtime_metrics_endpoint_reports_contract_fields() -> None:
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        run = client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={"message": "Summarize resume content"},
+        ).json()
+        _stream_envelopes(client, session["session_id"], run["run_id"])
+
+        response = client.get("/api/v1/settings/metrics")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["sessions"] >= 1
+        assert body["runs_total"] >= 1
+        assert body["runs_completed"] >= 1
+        assert body["total_tokens"] > 0
+        assert body["total_estimated_cost_usd"] >= 0.0
+        assert {"error_rate", "avg_latency_ms", "p95_latency_ms", "queue_depth"} <= set(body.keys())
+
+
+def test_alerts_endpoint_returns_alert_when_threshold_exceeded(monkeypatch) -> None:
+    monkeypatch.setenv("RESUME_AGENT_WEB_ALERT_MAX_TOTAL_COST_USD", "0")
+    with TestClient(create_app()) as client:
+        session = client.post("/api/v1/sessions", json={}).json()
+        run = client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={"message": "Summarize resume content"},
+        ).json()
+        _stream_envelopes(client, session["session_id"], run["run_id"])
+
+        response = client.get("/api/v1/settings/alerts")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert items
+        by_name = {item["name"]: item for item in items}
+        assert "total_estimated_cost_usd" in by_name
+        assert by_name["total_estimated_cost_usd"]["status"] == "alert"
 
 
 def test_resume_and_jd_workflow_transitions() -> None:

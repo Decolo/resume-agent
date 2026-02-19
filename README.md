@@ -51,7 +51,7 @@ export GEMINI_API_KEY="your-gemini-api-key"
 uv run resume-agent --workspace ./examples/my_resume
 
 # Or with Python
-uv run python -m resume_agent.cli
+uv run python -m apps.cli.resume_agent_cli.app
 
 # Single prompt mode
 uv run resume-agent --prompt "Parse my resume and analyze it"
@@ -85,20 +85,14 @@ For detailed instructions, see [Documentation Index](./docs/README.md).
 
 ```
 resume-agent/
-├── resume_agent/
-│   ├── __init__.py
-│   ├── agent.py          # Core agent loop
-│   ├── llm.py            # Gemini LLM client
-│   ├── llm_openai.py     # OpenAI-compatible LLM client
-│   ├── cli.py            # Command-line interface
-│   ├── tools/
-│   │   ├── base.py           # Base tool class
-│   │   ├── file_tool.py      # File read/write/list
-│   │   ├── bash_tool.py      # Shell command execution
-│   │   ├── resume_parser.py  # PDF/DOCX/MD parsing
-│   │   └── resume_writer.py  # Multi-format output
-│   └── skills/
-│       └── resume_expert.py  # System prompt
+├── apps/
+│   ├── cli/resume_agent_cli/ # CLI app entrypoint
+│   ├── api/resume_agent_api/ # FastAPI backend + routers
+│   └── web/ui/               # Static web UI assets
+├── packages/
+│   ├── core/resume_agent_core/           # Runtime, tools, orchestration
+│   ├── providers/resume_agent_providers/ # LLM provider adapters
+│   └── contracts/resume_agent_contracts/ # Shared contracts/constants
 ├── config/
 │   ├── config.local.yaml # Local config (default, keep secrets here)
 │   └── config.yaml       # Optional shared defaults
@@ -129,15 +123,68 @@ User Input → LLM (with tools) → Tool Calls → Tool Results → LLM → ... 
 
 The key components are:
 
-1. **LLM Client** (`llm.py`, `llm_openai.py`): Gemini client plus OpenAI-compatible adapter
-2. **Tools** (`tools/`): Connect the LLM to local system capabilities
-3. **Agent Loop** (`agent.py`): Orchestrates the conversation and tool execution
-4. **System Prompt** (`skills/`): Provides domain expertise
+1. **CLI/API Adapters** (`apps/cli/*`, `apps/api/*`)
+2. **Core Runtime** (`packages/core/resume_agent_core/*`)
+3. **Tools + Multi-agent System** (`packages/core/resume_agent_core/tools/*`, `packages/core/resume_agent_core/agents/*`)
+4. **Provider Layer** (`packages/providers/resume_agent_providers/*`)
+5. **Contracts** (`packages/contracts/resume_agent_contracts/*`)
 
 ## Supported LLM Providers
 
-- **Google Gemini** is the default (via `resume_agent/llm.py`).
-- **OpenAI-compatible endpoints** can be used via `resume_agent/llm_openai.py` when wired in.
+- **Google Gemini** is the default (via `packages/providers/resume_agent_providers/gemini.py`).
+- **OpenAI-compatible endpoints** are provided by `packages/providers/resume_agent_providers/openai_compat.py`.
+
+## Development
+
+### Setup Development Environment
+
+```bash
+# Install with dev dependencies
+uv sync
+
+# Install pre-commit hooks (runs linting/formatting before commits)
+uv run pre-commit install
+```
+
+### Code Quality Tools
+
+```bash
+# Run linter
+uv run ruff check .
+
+# Auto-fix linting issues
+uv run ruff check --fix .
+
+# Format code
+uv run ruff format .
+
+# Type checking
+uv run mypy
+
+# Run tests
+uv run pytest
+
+# Run tests with coverage
+uv run pytest --cov=packages --cov=apps --cov-report=html
+```
+
+### Pre-commit Hooks
+
+Pre-commit hooks automatically run before each commit to catch issues early:
+- **ruff**: Linting and auto-fixes
+- **ruff-format**: Code formatting
+- **mypy**: Type checking (on configured files)
+- **Standard checks**: Large files, merge conflicts, YAML syntax, trailing whitespace
+
+To run manually on all files:
+```bash
+uv run pre-commit run --all-files
+```
+
+To bypass hooks (not recommended):
+```bash
+git commit --no-verify
+```
 
 ## License
 

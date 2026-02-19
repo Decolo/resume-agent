@@ -2,7 +2,7 @@
 
 import pytest
 
-from resume_agent.preview import PendingWriteManager
+from packages.core.resume_agent_core.preview import PendingWriteManager
 
 
 class TestPendingWriteManager:
@@ -125,7 +125,7 @@ class TestFileWriteToolPreview:
 
     @pytest.fixture
     def write_tool(self, tmp_path):
-        from resume_agent.tools.file_tool import FileWriteTool
+        from packages.core.resume_agent_core.tools.file_tool import FileWriteTool
 
         tool = FileWriteTool(workspace_dir=str(tmp_path))
         return tool
@@ -167,7 +167,7 @@ class TestResumeWriterToolPreview:
 
     @pytest.fixture
     def writer_tool(self, tmp_path):
-        from resume_agent.tools.resume_writer import ResumeWriterTool
+        from packages.core.resume_agent_core.tools.resume_writer import ResumeWriterTool
 
         tool = ResumeWriterTool(workspace_dir=str(tmp_path))
         return tool

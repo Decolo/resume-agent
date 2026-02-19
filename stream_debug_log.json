@@ -1,0 +1,332 @@
+[
+  {
+    "idx": 1,
+    "ts": 1771299120.458,
+    "text": "Hello",
+    "text_repr": "'Hello'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 2,
+    "ts": 1771299120.458,
+    "text": "!",
+    "text_repr": "'!'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 3,
+    "ts": 1771299120.458,
+    "text": " I'm",
+    "text_repr": "\" I'm\"",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 4,
+    "ts": 1771299120.458,
+    "text": " your",
+    "text_repr": "' your'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 5,
+    "ts": 1771299120.459,
+    "text": " expert",
+    "text_repr": "' expert'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 6,
+    "ts": 1771299120.459,
+    "text": " resume",
+    "text_repr": "' resume'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 7,
+    "ts": 1771299120.459,
+    "text": " consultant",
+    "text_repr": "' consultant'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 8,
+    "ts": 1771299120.459,
+    "text": " and",
+    "text_repr": "' and'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 9,
+    "ts": 1771299120.459,
+    "text": " career",
+    "text_repr": "' career'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 10,
+    "ts": 1771299120.686,
+    "text": " coach",
+    "text_repr": "' coach'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 11,
+    "ts": 1771299120.686,
+    "text": ",",
+    "text_repr": "','",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 12,
+    "ts": 1771299120.686,
+    "text": " ready",
+    "text_repr": "' ready'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 13,
+    "ts": 1771299120.686,
+    "text": " to",
+    "text_repr": "' to'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 14,
+    "ts": 1771299120.686,
+    "text": " help",
+    "text_repr": "' help'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 15,
+    "ts": 1771299120.686,
+    "text": " you",
+    "text_repr": "' you'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 16,
+    "ts": 1771299120.686,
+    "text": " craft",
+    "text_repr": "' craft'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 17,
+    "ts": 1771299120.686,
+    "text": " a",
+    "text_repr": "' a'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 18,
+    "ts": 1771299120.686,
+    "text": " compelling",
+    "text_repr": "' compelling'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 19,
+    "ts": 1771299120.686,
+    "text": ",",
+    "text_repr": "','",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 20,
+    "ts": 1771299120.827,
+    "text": " ATS",
+    "text_repr": "' ATS'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 21,
+    "ts": 1771299120.827,
+    "text": "-",
+    "text_repr": "'-'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 22,
+    "ts": 1771299120.827,
+    "text": "optimized",
+    "text_repr": "'optimized'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 23,
+    "ts": 1771299120.827,
+    "text": " resume",
+    "text_repr": "' resume'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 24,
+    "ts": 1771299120.827,
+    "text": " that",
+    "text_repr": "' that'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 25,
+    "ts": 1771299120.828,
+    "text": " highlights",
+    "text_repr": "' highlights'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 26,
+    "ts": 1771299120.828,
+    "text": " your",
+    "text_repr": "' your'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 27,
+    "ts": 1771299120.828,
+    "text": " achievements",
+    "text_repr": "' achievements'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 28,
+    "ts": 1771299120.828,
+    "text": " and",
+    "text_repr": "' and'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 29,
+    "ts": 1771299120.828,
+    "text": " lands",
+    "text_repr": "' lands'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 30,
+    "ts": 1771299120.915,
+    "text": " you",
+    "text_repr": "' you'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 31,
+    "ts": 1771299120.915,
+    "text": " interviews",
+    "text_repr": "' interviews'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 32,
+    "ts": 1771299120.915,
+    "text": ".",
+    "text_repr": "'.'",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": null
+  },
+  {
+    "idx": 33,
+    "ts": 1771299120.916,
+    "text": null,
+    "text_repr": "None",
+    "fc_start": "None",
+    "fc_delta": null,
+    "fc_end": false,
+    "finish": "stop"
+  }
+]

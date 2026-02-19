@@ -72,7 +72,7 @@ result = asyncio.run(my_async_function())
 ### 2. asyncio.run() 的作用
 
 ```python
-# cli.py 中的入口点
+# apps/cli/resume_agent_cli/app.py 中的入口点
 def main():
     # ... 同步代码 ...
     asyncio.run(run_interactive(agent, session_manager))
@@ -196,7 +196,7 @@ await Promise.all([task1(), task2()]);
 
 ### 问题：如何在异步环境中获取用户输入？
 
-在 `resume_agent/cli.py` 的 `run_interactive()` 函数中：
+在 `apps/cli/resume_agent_cli/app.py` 的 `run_interactive()` 函数中：
 
 ```python
 async def run_interactive(agent, session_manager):

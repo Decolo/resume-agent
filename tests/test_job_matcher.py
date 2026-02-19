@@ -2,7 +2,7 @@
 
 import pytest
 
-from resume_agent.tools.job_matcher import JobMatcherTool
+from packages.core.resume_agent_core.tools.job_matcher import JobMatcherTool
 
 
 @pytest.fixture

@@ -2,15 +2,15 @@
 
 import pytest
 
-from resume_agent.cache import ToolCache, get_tool_ttl, should_cache_tool
-from resume_agent.llm import HistoryManager
-from resume_agent.observability import AgentObserver
-from resume_agent.providers.types import Message, MessagePart
+from packages.core.resume_agent_core.cache import ToolCache, get_tool_ttl, should_cache_tool
+from packages.core.resume_agent_core.llm import HistoryManager
+from packages.core.resume_agent_core.observability import AgentObserver
 
 # Import modules to test
-from resume_agent.retry import PermanentError, RetryConfig, TransientError, retry_with_backoff
-from resume_agent.tools.bash_tool import BashTool
-from resume_agent.tools.file_tool import MAX_FILE_SIZE, FileReadTool
+from packages.core.resume_agent_core.retry import PermanentError, RetryConfig, TransientError, retry_with_backoff
+from packages.core.resume_agent_core.tools.bash_tool import BashTool
+from packages.core.resume_agent_core.tools.file_tool import MAX_FILE_SIZE, FileReadTool
+from packages.providers.resume_agent_providers.types import Message, MessagePart
 
 
 class TestRetryLogic:

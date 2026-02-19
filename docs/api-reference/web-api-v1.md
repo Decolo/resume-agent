@@ -29,6 +29,11 @@ It is intentionally minimal and decision-complete for implementation.
 - `RESUME_AGENT_WEB_PROVIDER_RETRY_BASE_DELAY_SECONDS`
 - `RESUME_AGENT_WEB_PROVIDER_RETRY_MAX_DELAY_SECONDS`
 - `RESUME_AGENT_WEB_PROVIDER_FALLBACK_CHAIN` (comma-separated `provider:model`)
+- `RESUME_AGENT_WEB_STATE_FILE` (optional persisted runtime state JSON path)
+- `RESUME_AGENT_WEB_ALERT_MAX_ERROR_RATE`
+- `RESUME_AGENT_WEB_ALERT_MAX_P95_LATENCY_MS`
+- `RESUME_AGENT_WEB_ALERT_MAX_TOTAL_COST_USD`
+- `RESUME_AGENT_WEB_ALERT_MAX_QUEUE_DEPTH`
 
 ## Common Error Shape
 
@@ -285,6 +290,13 @@ Request:
 }
 ```
 
+Response `200`:
+```json
+{
+  "enabled": true
+}
+```
+
 ---
 
 ## Operational Settings APIs
@@ -319,10 +331,41 @@ Response `200`:
 }
 ```
 
+### `GET /settings/metrics`
+
 Response `200`:
 ```json
 {
-  "enabled": true
+  "sessions": 2,
+  "queue_depth": 0,
+  "pending_approvals": 0,
+  "runs_total": 4,
+  "runs_active": 0,
+  "runs_completed": 3,
+  "runs_failed": 1,
+  "runs_interrupted": 0,
+  "error_rate": 0.25,
+  "avg_latency_ms": 812.4,
+  "p95_latency_ms": 1350.1,
+  "total_tokens": 10240,
+  "total_estimated_cost_usd": 0.001024
+}
+```
+
+### `GET /settings/alerts`
+
+Response `200`:
+```json
+{
+  "items": [
+    {
+      "name": "total_estimated_cost_usd",
+      "status": "ok",
+      "value": 0.001024,
+      "threshold": 10.0,
+      "message": "total_estimated_cost_usd=0.001024 within threshold=10.0"
+    }
+  ]
 }
 ```
 

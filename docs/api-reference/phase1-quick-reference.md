@@ -1,9 +1,9 @@
 """Quick Reference Guide for Phase 1 Improvements"""
 
-# RETRY LOGIC (resume_agent/retry.py)
+# RETRY LOGIC (packages/core/resume_agent_core/retry.py)
 # ====================================
 
-from resume_agent.retry import RetryConfig, retry_with_backoff, TransientError, PermanentError
+from packages.core.resume_agent_core.retry import RetryConfig, retry_with_backoff, TransientError, PermanentError
 
 # Configure retry behavior
 config = RetryConfig(
@@ -30,10 +30,10 @@ except PermanentError:
     pass
 
 
-# OBSERVABILITY (resume_agent/observability.py)
+# OBSERVABILITY (packages/core/resume_agent_core/observability.py)
 # ==============================================
 
-from resume_agent.observability import AgentObserver, AgentEvent
+from packages.core.resume_agent_core.observability import AgentObserver, AgentEvent
 
 observer = AgentObserver()
 
@@ -73,10 +73,10 @@ print(f"Cache hit rate: {stats['cache_hit_rate']:.1%}")
 observer.print_session_summary()
 
 
-# CACHING (resume_agent/cache.py)
+# CACHING (packages/core/resume_agent_core/cache.py)
 # ===============================
 
-from resume_agent.cache import ToolCache, should_cache_tool, get_tool_ttl
+from packages.core.resume_agent_core.cache import ToolCache, should_cache_tool, get_tool_ttl
 
 cache = ToolCache()
 
@@ -105,11 +105,11 @@ print(f"Hit rate: {stats['hit_rate']:.1%}")
 cache.print_stats()
 
 
-# HISTORY MANAGEMENT (resume_agent/llm.py)
+# HISTORY MANAGEMENT (packages/core/resume_agent_core/llm.py)
 # ========================================
 
-from resume_agent.llm import HistoryManager
-from google.genai import types
+from packages.core.resume_agent_core.llm import HistoryManager
+from packages.providers.resume_agent_providers.types import Message, MessagePart
 
 manager = HistoryManager(
     max_messages=50,      # Keep last 50 messages
@@ -117,9 +117,9 @@ manager = HistoryManager(
 )
 
 # Add message (automatically prunes if needed)
-msg = types.Content(
+msg = Message(
     role="user",
-    parts=[types.Part.from_text(text="Hello")]
+    parts=[MessagePart.from_text(text="Hello")]
 )
 manager.add_message(msg)
 
@@ -130,10 +130,10 @@ history = manager.get_history()
 manager.clear()
 
 
-# TOOL RESULT METADATA (resume_agent/tools/base.py)
+# TOOL RESULT METADATA (packages/core/resume_agent_core/tools/base.py)
 # ================================================
 
-from resume_agent.tools.base import ToolResult
+from packages.core.resume_agent_core.tools.base import ToolResult
 
 result = ToolResult(
     success=True,
@@ -151,10 +151,10 @@ result = ToolResult(
 message = result.to_message()
 
 
-# FILE TOOL SECURITY (resume_agent/tools/file_tool.py)
+# FILE TOOL SECURITY (packages/core/resume_agent_core/tools/file_tool.py)
 # ===================================================
 
-from resume_agent.tools.file_tool import FileReadTool, MAX_FILE_SIZE
+from packages.core.resume_agent_core.tools.file_tool import FileReadTool, MAX_FILE_SIZE
 
 tool = FileReadTool(workspace_dir=".")
 
@@ -167,10 +167,10 @@ if not result.success:
     print(f"Error: {result.error}")
 
 
-# BASH TOOL SECURITY (resume_agent/tools/bash_tool.py)
+# BASH TOOL SECURITY (packages/core/resume_agent_core/tools/bash_tool.py)
 # ==================================================
 
-from resume_agent.tools.bash_tool import BashTool
+from packages.core.resume_agent_core.tools.bash_tool import BashTool
 
 tool = BashTool()
 
@@ -183,10 +183,10 @@ if not result.success:
     print(f"Error: {result.error}")
 
 
-# RESUME PARSER CACHING (resume_agent/tools/resume_parser.py)
+# RESUME PARSER CACHING (packages/core/resume_agent_core/tools/resume_parser.py)
 # ==========================================================
 
-from resume_agent.tools.resume_parser import ResumeParserTool
+from packages.core.resume_agent_core.tools.resume_parser import ResumeParserTool
 
 tool = ResumeParserTool(workspace_dir=".")
 
@@ -201,17 +201,17 @@ print(f"Cached: {result2.cached}")  # True
 # (mtime changed, so cache miss)
 
 
-# INTEGRATION IN GEMINI AGENT (resume_agent/llm.py)
-# ================================================
+# INTEGRATION IN LLM AGENT (packages/core/resume_agent_core/llm.py)
+# ================================================================
 
-from resume_agent.llm import GeminiAgent, LLMConfig
+from packages.core.resume_agent_core.llm import LLMAgent, LLMConfig
 
 config = LLMConfig(
     api_key="your-api-key",
     model="gemini-2.0-flash"
 )
 
-agent = GeminiAgent(config)
+agent = LLMAgent(config)
 
 # Automatically initialized:
 # - agent.history_manager (HistoryManager)

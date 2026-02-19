@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-- `resume_agent/` holds the application code. Core orchestration lives in `resume_agent/agent.py` and `resume_agent/cli.py`.
-- `resume_agent/agents/` contains agent implementations and coordination logic; `resume_agent/tools/` contains tool integrations (file, bash, parser/writer).
-- `resume_agent/skills/` stores prompt assets and domain expertise.
+- `apps/` holds application entrypoints and adapters. CLI is in `apps/cli/resume_agent_cli/`; API is in `apps/api/resume_agent_api/`; static web assets are in `apps/web/ui/`.
+- `packages/core/resume_agent_core/` contains orchestration, tools, multi-agent runtime, skills, and templates.
+- `packages/providers/resume_agent_providers/` contains provider adapters; `packages/contracts/resume_agent_contracts/` contains shared API/session contracts.
 - `config/` contains runtime configuration such as `config.local.yaml` (default) and optional `config.yaml`.
 - `tests/` contains pytest suites.
 - `docs/` and `examples/` contain user guides and sample resumes; `output/` is used for generated artifacts.
@@ -23,7 +23,7 @@ pip install -e .
 uv run resume-agent --workspace ./examples/my_resume
 
 # Run via module
-uv run python -m resume_agent.cli
+uv run python -m apps.cli.resume_agent_cli.app
 
 # Helper launcher
 ./run_agent.sh ./examples/my_resume
@@ -33,7 +33,7 @@ uv run python -m resume_agent.cli
 
 - Python code uses 4-space indentation and follows existing module structure.
 - Prefer `snake_case` for functions/variables, `PascalCase` for classes, and `snake_case` for modules.
-- Keep public-facing CLI text concise and user-focused; align new prompts with the tone in `resume_agent/skills/`.
+- Keep public-facing CLI text concise and user-focused; align new prompts with the tone in `packages/core/resume_agent_core/skills/`.
 
 ## Testing Guidelines
 
