@@ -315,11 +315,11 @@ async def test_workflow_promotion(tmp_store):
 
 @pytest.mark.asyncio
 async def test_cleanup_expired_sessions(tmp_store):
-    tmp_store.session_ttl_seconds = 1
+    tmp_store.session_ttl_seconds = 0.1  # Reduce wait time
     session = await tmp_store.create_session("ws", auto_approve=True, tenant_id="t1")
 
     # Wait for TTL to expire
-    await asyncio.sleep(1.1)
+    await asyncio.sleep(0.15)
 
     result = await tmp_store.cleanup_expired_resources()
     assert result["removed_sessions"] == 1
