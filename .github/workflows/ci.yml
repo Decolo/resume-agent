@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - dev
   pull_request:
     branches:
       - main
@@ -19,23 +18,7 @@ concurrency:
 
 jobs:
   lint:
-    name: lint + typecheck
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-      - run: uv sync --frozen --extra dev
-      - run: uv run --extra dev ruff check .
-      - run: uv run --extra dev mypy
-
-  test:
-    name: test (py3.11)
+    name: lint (ruff)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -44,8 +27,32 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v4
+      - run: uv sync --frozen --extra dev
+      - run: uv run --extra dev ruff check .
+
+  typecheck:
+    name: typecheck (mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          enable-cache: true
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --frozen --extra dev
+      - run: uv run --extra dev mypy
+
+  test:
+    name: test (py3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v4
       - run: uv sync --frozen --extra dev
       - name: Run tests
         run: >
