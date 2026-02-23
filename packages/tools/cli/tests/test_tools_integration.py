@@ -5,6 +5,8 @@ All tools here are heuristic-based (no LLM calls), so no mocking needed.
 """
 
 import pytest
+from resume_agent_core.preview import PendingWriteManager
+from resume_agent_core.templates import AVAILABLE_TEMPLATES
 from resume_agent_tools_cli import (
     ATSScorerTool,
     JobMatcherTool,
@@ -12,9 +14,6 @@ from resume_agent_tools_cli import (
     ResumeValidatorTool,
     ResumeWriterTool,
 )
-
-from packages.core.resume_agent_core.preview import PendingWriteManager
-from packages.core.resume_agent_core.templates import AVAILABLE_TEMPLATES
 
 SAMPLE_RESUME = """\
 # Jane Smith
