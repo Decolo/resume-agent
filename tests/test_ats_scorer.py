@@ -1,8 +1,7 @@
 """Tests for ATS scoring tool."""
 
 import pytest
-
-from packages.core.resume_agent_core.tools.ats_scorer import ATSScorerTool
+from resume_agent_tools_cli import ATSScorerTool
 
 
 @pytest.fixture

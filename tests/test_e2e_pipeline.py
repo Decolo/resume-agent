@@ -5,14 +5,16 @@ All tools here are heuristic-based (no LLM calls), so no mocking needed.
 """
 
 import pytest
+from resume_agent_tools_cli import (
+    ATSScorerTool,
+    JobMatcherTool,
+    ResumeParserTool,
+    ResumeValidatorTool,
+    ResumeWriterTool,
+)
 
 from packages.core.resume_agent_core.preview import PendingWriteManager
 from packages.core.resume_agent_core.templates import AVAILABLE_TEMPLATES
-from packages.core.resume_agent_core.tools.ats_scorer import ATSScorerTool
-from packages.core.resume_agent_core.tools.job_matcher import JobMatcherTool
-from packages.core.resume_agent_core.tools.resume_parser import ResumeParserTool
-from packages.core.resume_agent_core.tools.resume_validator import ResumeValidatorTool
-from packages.core.resume_agent_core.tools.resume_writer import ResumeWriterTool
 
 SAMPLE_RESUME = """\
 # Jane Smith

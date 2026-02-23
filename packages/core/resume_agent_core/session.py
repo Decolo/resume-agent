@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -254,6 +255,21 @@ class SessionManager:
         self.sessions_dir.mkdir(exist_ok=True)
         self.index = SessionIndex(self.sessions_dir / ".index.json")
 
+    @staticmethod
+    def _sanitize_session_name(session_name: str) -> str:
+        """Normalize custom session name into a filesystem-safe token."""
+        normalized = session_name.strip()
+        if not normalized:
+            return ""
+
+        # Prevent path traversal and keep names compact for readability.
+        normalized = normalized.replace("/", "_").replace("\\", "_")
+        normalized = re.sub(r"\s+", "_", normalized)
+        normalized = re.sub(r"[^A-Za-z0-9._-]", "_", normalized)
+        normalized = re.sub(r"_+", "_", normalized)
+        normalized = normalized.strip("._-")
+        return normalized[:64]
+
     def save_session(
         self,
         agent: Any,
@@ -278,7 +294,11 @@ class SessionManager:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             unique_id = str(uuid.uuid4())[:8]
             if session_name:
-                session_id = f"session_{timestamp}_{session_name}_{unique_id}"
+                safe_name = self._sanitize_session_name(session_name)
+                if safe_name:
+                    session_id = f"session_{timestamp}_{safe_name}_{unique_id}"
+                else:
+                    session_id = f"session_{timestamp}_{unique_id}"
             else:
                 session_id = f"session_{timestamp}_{unique_id}"
 

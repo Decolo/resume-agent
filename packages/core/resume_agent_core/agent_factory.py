@@ -22,20 +22,6 @@ from .skills.formatter_prompt import FORMATTER_AGENT_PROMPT
 from .skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
 from .skills.parser_prompt import PARSER_AGENT_PROMPT
 from .skills.writer_prompt import WRITER_AGENT_PROMPT
-from .tools import (
-    ATSScorerTool,
-    BashTool,
-    FileListTool,
-    FileReadTool,
-    FileRenameTool,
-    FileWriteTool,
-    JobMatcherTool,
-    ResumeParserTool,
-    ResumeValidatorTool,
-    ResumeWriterTool,
-    WebFetchTool,
-    WebReadTool,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +104,7 @@ def create_agent(
     workspace_dir: str = ".",
     session_manager: Optional[Any] = None,
     verbose: bool = False,
+    tools: Optional[Dict] = None,
 ) -> Union[ResumeAgent, OrchestratorAgent]:
     """Factory function to create the appropriate agent.
 
@@ -130,6 +117,8 @@ def create_agent(
         agent_config: Agent configuration
         workspace_dir: Workspace directory for tools
         session_manager: Optional session manager for persistence
+        verbose: Enable verbose logging
+        tools: Optional pre-created tools dictionary
 
     Returns:
         ResumeAgent or OrchestratorAgent depending on configuration
@@ -150,6 +139,7 @@ def create_agent(
             llm_config=llm_config,
             agent_config=agent_config or AgentConfig(workspace_dir=workspace_dir, verbose=verbose),
             session_manager=session_manager,
+            tools=tools,
         )
         multi_agent = create_multi_agent_system(
             llm_config=llm_config,
@@ -157,6 +147,7 @@ def create_agent(
             workspace_dir=workspace_dir,
             session_manager=session_manager,
             verbose=verbose,
+            tools=tools,
         )
         return AutoAgent(single_agent=single_agent, multi_agent=multi_agent, raw_config=raw_config)
 
@@ -167,6 +158,7 @@ def create_agent(
             llm_config=llm_config,
             agent_config=agent_config or AgentConfig(workspace_dir=workspace_dir, verbose=verbose),
             session_manager=session_manager,
+            tools=tools,
         )
 
     # Multi-agent mode
@@ -177,6 +169,7 @@ def create_agent(
         workspace_dir=workspace_dir,
         session_manager=session_manager,
         verbose=verbose,
+        tools=tools,
     )
 
 
@@ -319,6 +312,7 @@ def create_multi_agent_system(
     workspace_dir: str = ".",
     session_manager: Optional[Any] = None,
     verbose: bool = False,
+    tools: Optional[Dict] = None,
 ) -> OrchestratorAgent:
     """Create a complete multi-agent system.
 
@@ -326,6 +320,9 @@ def create_multi_agent_system(
         llm_config: LLM configuration
         ma_config: Multi-agent configuration
         workspace_dir: Workspace directory for tools
+        session_manager: Optional session manager
+        verbose: Enable verbose logging
+        tools: Optional pre-created tools dictionary
 
     Returns:
         Configured OrchestratorAgent with all specialized agents
@@ -353,21 +350,9 @@ def create_multi_agent_system(
         config=delegation_config,
     )
 
-    # Create tools
-    tools = {
-        "file_read": FileReadTool(workspace_dir),
-        "file_write": FileWriteTool(workspace_dir),
-        "file_list": FileListTool(workspace_dir),
-        "file_rename": FileRenameTool(workspace_dir),
-        "bash": BashTool(workspace_dir),
-        "resume_parse": ResumeParserTool(workspace_dir),
-        "resume_write": ResumeWriterTool(workspace_dir),
-        "ats_score": ATSScorerTool(workspace_dir),
-        "job_match": JobMatcherTool(workspace_dir),
-        "resume_validate": ResumeValidatorTool(workspace_dir),
-        "web_fetch": WebFetchTool(),
-        "web_read": WebReadTool(),
-    }
+    # Use provided tools or create empty dict (caller should provide tools)
+    if tools is None:
+        tools = {}
 
     # Create specialized agents
     parser_agent = _create_parser_agent(

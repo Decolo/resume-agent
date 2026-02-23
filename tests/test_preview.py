@@ -125,7 +125,7 @@ class TestFileWriteToolPreview:
 
     @pytest.fixture
     def write_tool(self, tmp_path):
-        from packages.core.resume_agent_core.tools.file_tool import FileWriteTool
+        from resume_agent_tools_cli import FileWriteTool
 
         tool = FileWriteTool(workspace_dir=str(tmp_path))
         return tool
@@ -167,7 +167,7 @@ class TestResumeWriterToolPreview:
 
     @pytest.fixture
     def writer_tool(self, tmp_path):
-        from packages.core.resume_agent_core.tools.resume_writer import ResumeWriterTool
+        from resume_agent_tools_cli import ResumeWriterTool
 
         tool = ResumeWriterTool(workspace_dir=str(tmp_path))
         return tool

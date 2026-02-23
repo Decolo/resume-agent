@@ -3,8 +3,7 @@
 import json
 
 import pytest
-
-from packages.core.resume_agent_core.tools.resume_validator import ResumeValidatorTool
+from resume_agent_tools_cli import ResumeValidatorTool
 
 
 @pytest.fixture

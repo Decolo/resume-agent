@@ -2,16 +2,37 @@
 
 ## Project Structure & Module Organization
 
-- `apps/` holds application entrypoints and adapters. CLI is in `apps/cli/resume_agent_cli/`; API is in `apps/api/resume_agent_api/`; static web assets are in `apps/web/ui/`.
-- `packages/core/resume_agent_core/` contains orchestration, tools, multi-agent runtime, skills, and templates.
-- `packages/providers/resume_agent_providers/` contains provider adapters; `packages/contracts/resume_agent_contracts/` contains shared API/session contracts.
-- `config/` contains runtime configuration such as `config.local.yaml` (default) and optional `config.yaml`.
-- `tests/` contains pytest suites.
-- `docs/` and `examples/` contain user guides and sample resumes; `output/` is used for generated artifacts.
-- Runtime session data (Phase 3) is stored under `workspace/sessions/` when enabled.
+### Apps (Entry Points)
+- `apps/cli/resume_agent_cli/` - Interactive CLI with rich terminal UI
+- `apps/web-next/` - Next.js 16 web application
+  - Frontend: React with Vercel AI SDK for streaming chat
+  - Backend: API routes with Cloudflare D1 (SQLite) + R2 (object storage)
+  - Deployment: Cloudflare Pages
+
+### Packages (Core Logic)
+- `packages/domain/resume_agent_domain/` - Pure domain logic
+  - `resume_parser.py`, `resume_writer.py`, `ats_scorer.py`, `job_matcher.py`, `resume_validator.py`
+  - Pure functions with no external dependencies
+  - All prompts in `prompts/` subdirectory
+- `packages/core/resume_agent_core/` - Agent runtime
+  - LLM orchestration, multi-agent system, session management
+  - Caching, retry logic, observability
+- `packages/tools/` - Environment-specific tool adapters
+  - `cli/resume_agent_tools_cli/` - File I/O, bash execution, resume tools for CLI
+  - `web/resume_agent_tools_web/` - JSON updates, export, analysis tools for web
+- `packages/providers/resume_agent_providers/` - LLM provider adapters
+- `packages/contracts/resume_agent_contracts/` - Shared types and contracts
+
+### Configuration & Data
+- `config/` - Runtime configuration (`config.local.yaml` is default, `config.yaml` is fallback)
+- `tests/` - pytest test suites
+- `docs/` - Documentation
+- `examples/` - Sample resumes
+- `workspace/sessions/` - Runtime session data (gitignored)
 
 ## Build, Test, and Development Commands
 
+### Python (CLI)
 ```bash
 # Install dependencies (recommended)
 uv sync
@@ -19,76 +40,134 @@ uv sync
 # Alternative editable install
 pip install -e .
 
-# Run the CLI with a workspace
+# Run the CLI
 uv run resume-agent --workspace ./examples/my_resume
 
 # Run via module
 uv run python -m apps.cli.resume_agent_cli.app
 
-# Helper launcher
-./run_agent.sh ./examples/my_resume
-```
-
-## Coding Style & Naming Conventions
-
-- Python code uses 4-space indentation and follows existing module structure.
-- Prefer `snake_case` for functions/variables, `PascalCase` for classes, and `snake_case` for modules.
-- Keep public-facing CLI text concise and user-focused; align new prompts with the tone in `packages/core/resume_agent_core/skills/`.
-
-## Testing Guidelines
-
-- Tests live in `tests/` and use `pytest` with `pytest-asyncio` for async coverage.
-- Name tests `test_*.py` with functions `test_*`.
-- Run the suite with:
-
-```bash
+# Run tests
 uv run pytest
 ```
 
+### TypeScript (Web)
+```bash
+cd apps/web-next
+
+# Install dependencies
+pnpm install
+
+# Run dev server
+pnpm dev
+
+# Build for production
+pnpm build
+
+# Type check
+pnpm tsc --noEmit
+```
+
+## Architecture Principles
+
+### Dependency Direction
+1. `apps/*` → `packages/core` + `packages/tools/*`
+2. `packages/tools/*` → `packages/domain` + `packages/core`
+3. `packages/core` → `packages/providers`
+4. `packages/domain` → **no dependencies** (pure functions)
+5. `packages/*` must not depend on `apps/*`
+
+### Tool Design Philosophy
+- **CLI tools**: File-based operations (read/write entire files, bash execution)
+- **Web tools**: API-based operations (JSON path updates, structured responses)
+- Both call the same domain functions but with different I/O semantics
+
+### Domain Layer Rules
+- All domain functions must be pure (no side effects, no external dependencies)
+- Return structured dataclasses, not strings
+- Testable without LLM or file system
+
+## Coding Style & Naming Conventions
+
+### Python
+- 4-space indentation
+- `snake_case` for functions/variables/modules
+- `PascalCase` for classes
+- Type hints for public APIs
+- Docstrings for public functions
+
+### TypeScript
+- 2-space indentation
+- `camelCase` for functions/variables
+- `PascalCase` for components/classes/types
+- Explicit return types for exported functions
+
+## Testing Guidelines
+
+### Python Tests
+- Tests live in `tests/` and use `pytest` with `pytest-asyncio`
+- Name tests `test_*.py` with functions `test_*`
+- Run: `uv run pytest`
+
+### TypeScript Tests
+- Component tests with React Testing Library
+- API route tests with MSW (Mock Service Worker)
+- Run: `pnpm test` (when configured)
+
 ## Commit & Pull Request Guidelines
 
-- Commit messages follow Conventional Commits (e.g., `feat: ...`, `fix: ...`, `refactor: ...`, `chore: ...`).
-- PRs should include a clear summary, tests run, and any sample outputs if resume formatting changes (e.g., a snippet from `output/` or `examples/`).
+- Commit messages follow Conventional Commits:
+  - `feat:` - New features
+  - `fix:` - Bug fixes
+  - `refactor:` - Code restructuring
+  - `chore:` - Maintenance tasks
+  - `docs:` - Documentation updates
+- PRs should include:
+  - Clear summary of changes
+  - Test results
+  - Sample outputs for resume formatting changes
 
 ## Security & Configuration Notes
 
-- Store API keys in `config/config.local.yaml` or environment variables; do not commit secrets.
-- Resume files often contain PII—avoid committing real resumes and keep generated artifacts out of version control unless explicitly intended.
-- Session files may include full conversations and PII; do not commit `workspace/sessions/`.
+- Store API keys in `config/config.local.yaml` or environment variables
+- **Never commit secrets**
+- Resume files contain PII—avoid committing real resumes
+- Session files contain full conversations—do not commit `workspace/sessions/`
+- Web app stores API keys in browser localStorage (client-side only)
 
-## Session Persistence (Phase 3)
+## Session Persistence
 
-- Sessions are saved as JSON under `workspace/sessions/` with an index file at `.index.json`.
-- CLI commands: `/save [name]`, `/load <id>`, `/sessions`, `/delete-session <id>`.
-- Auto-save is always enabled — sessions are saved automatically after tool execution.
+### CLI Sessions
+- Saved as JSON under `workspace/sessions/` with `.index.json`
+- Commands: `/save [name]`, `/load <id>`, `/sessions`, `/delete-session <id>`
+- Auto-save enabled by default
 
+### Web Sessions
+- Stored in Cloudflare D1 (SQLite database)
+- Includes `resumeJson`, `workflowState`, `provider` settings
+- Persisted automatically on every change
+
+## Web App Architecture
+
+### Frontend
+- Next.js 16 App Router
+- Vercel AI SDK v6 for streaming chat
+- shadcn/ui components with Tailwind CSS
+- Zustand for resume state management
+- React Query for server state
+
+### Backend
+- API routes in `src/app/api/`
+- Cloudflare D1 for session/message storage
+- Cloudflare R2 for file uploads
+- Drizzle ORM for type-safe queries
+
+### Multi-Provider LLM Support
+- Gemini (native Google AI)
+- OpenAI (including compatible providers: Kimi/Moonshot, DeepSeek, etc.)
+- Custom base URL and model ID support
+- **Important**: Use `.chat()` method for OpenAI-compatible providers (not default `()` which uses Responses API)
 
 ## Plan Mode
 
 - Make the plan extremely concise. Sacrifice grammar for the sake of concision.
 - At the end of each plan, give me a list of unresolved questions to answer, if any.
-
-
-## Skills
-A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.
-### Available skills
-- skill-creator: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Codex's capabilities with specialized knowledge, workflows, or tool integrations. (file: /Users/decolo/.codex/skills/.system/skill-creator/SKILL.md)
-- skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos). (file: /Users/decolo/.codex/skills/.system/skill-installer/SKILL.md)
-### How to use skills
-- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.
-- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
-- How to use a skill (progressive disclosure):
-  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.
-  2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.
-  3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.
-  4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.
-  5) If `assets/` or templates exist, reuse them instead of recreating from scratch.
-- Coordination and sequencing:
-  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.
-  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
-- Context hygiene:
-  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.
-  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
-  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
-- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.

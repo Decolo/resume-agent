@@ -57,13 +57,27 @@ def test_architecture_boundaries() -> None:
         if root.exists():
             py_files.extend(sorted(root.rglob("*.py")))
 
+    # Allowed distribution-style imports (installed packages)
+    allowed_dist_imports = {
+        "resume_agent_core",
+        "resume_agent_domain",
+        "resume_agent_tools_cli",
+        "resume_agent_tools_web",
+    }
+
     for file_path in py_files:
         module = _module_name(file_path)
         imports = _imported_modules(file_path, module)
 
         for imported in imports:
+            # Check if it's a resume_agent import
             if imported.startswith("resume_agent"):
-                violations.append(f"{module} imports {imported}; implementation must live under apps/* or packages/*")
+                # Extract the base package name (e.g., "resume_agent_core" from "resume_agent_core.agent")
+                base_package = imported.split(".")[0]
+                if base_package not in allowed_dist_imports:
+                    violations.append(
+                        f"{module} imports {imported}; unknown resume_agent package (allowed: {', '.join(sorted(allowed_dist_imports))})"
+                    )
 
         if module.startswith("packages."):
             for imported in imports:

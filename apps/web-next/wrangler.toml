@@ -1,0 +1,12 @@
+name = "resume-agent-web"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "resume-agent-db"
+database_id = "placeholder-replace-with-actual-id"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "resume-agent-files"

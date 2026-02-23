@@ -344,3 +344,27 @@ class TestSessionManager:
         assert restored_history[0].parts[0].text == "Hello"
         assert restored_history[1].role == "assistant"
         assert restored_history[1].parts[0].text == "Hi there!"
+
+
+def test_session_name_is_sanitized_for_filesystem(tmp_path):
+    """Custom session names should not create nested paths or invalid filenames."""
+    config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
+    agent = LLMAgent(config=config, system_prompt="Test prompt")
+
+    class MockAgent:
+        def __init__(self):
+            self.agent = agent
+            self.llm_config = config
+            self.agent_config = type("obj", (object,), {"workspace_dir": str(tmp_path)})()
+
+    mock_agent = MockAgent()
+    session_manager = SessionManager(str(tmp_path))
+
+    session_id = session_manager.save_session(mock_agent, session_name="../My Session:V1")
+
+    assert "/" not in session_id
+    assert "\\" not in session_id
+    assert "My_Session_V1" in session_id
+
+    session_file = tmp_path / "sessions" / f"{session_id}.json"
+    assert session_file.exists()

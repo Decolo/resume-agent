@@ -86,13 +86,16 @@ For detailed instructions, see [Documentation Index](./docs/README.md).
 ```
 resume-agent/
 ├── apps/
-│   ├── cli/resume_agent_cli/ # CLI app entrypoint
-│   ├── api/resume_agent_api/ # FastAPI backend + routers
-│   └── web/ui/               # Static web UI assets
+│   ├── cli/resume_agent_cli/      # CLI app entrypoint
+│   └── web-next/                  # Next.js web app (Cloudflare-ready)
 ├── packages/
-│   ├── core/resume_agent_core/           # Runtime, tools, orchestration
-│   ├── providers/resume_agent_providers/ # LLM provider adapters
-│   └── contracts/resume_agent_contracts/ # Shared contracts/constants
+│   ├── domain/resume_agent_domain/        # Pure domain logic (resume parsing, ATS scoring, etc.)
+│   ├── core/resume_agent_core/            # Agent runtime, LLM orchestration
+│   ├── tools/
+│   │   ├── cli/resume_agent_tools_cli/    # CLI-specific tools (file I/O, bash)
+│   │   └── web/resume_agent_tools_web/    # Web-specific tools (JSON updates, export)
+│   ├── providers/resume_agent_providers/  # LLM provider adapters
+│   └── contracts/resume_agent_contracts/  # Shared contracts/constants
 ├── config/
 │   ├── config.local.yaml # Local config (default, keep secrets here)
 │   └── config.yaml       # Optional shared defaults
@@ -123,11 +126,12 @@ User Input → LLM (with tools) → Tool Calls → Tool Results → LLM → ... 
 
 The key components are:
 
-1. **CLI/API Adapters** (`apps/cli/*`, `apps/api/*`)
-2. **Core Runtime** (`packages/core/resume_agent_core/*`)
-3. **Tools + Multi-agent System** (`packages/core/resume_agent_core/tools/*`, `packages/core/resume_agent_core/agents/*`)
-4. **Provider Layer** (`packages/providers/resume_agent_providers/*`)
-5. **Contracts** (`packages/contracts/resume_agent_contracts/*`)
+1. **CLI/Web Apps** (`apps/cli/*`, `apps/web-next/*`)
+2. **Domain Logic** (`packages/domain/resume_agent_domain/*`) - Pure functions for resume operations
+3. **Core Runtime** (`packages/core/resume_agent_core/*`) - Agent orchestration and LLM integration
+4. **Tools** (`packages/tools/cli/*`, `packages/tools/web/*`) - Environment-specific tool adapters
+5. **Provider Layer** (`packages/providers/resume_agent_providers/*`)
+6. **Contracts** (`packages/contracts/resume_agent_contracts/*`)
 
 ## Supported LLM Providers
 

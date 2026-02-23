@@ -1,8 +1,7 @@
 """Tests for job description matching tool."""
 
 import pytest
-
-from packages.core.resume_agent_core.tools.job_matcher import JobMatcherTool
+from resume_agent_tools_cli import JobMatcherTool
 
 
 @pytest.fixture

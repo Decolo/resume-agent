@@ -6,24 +6,148 @@ import select
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Iterable, Optional, Union
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
+from resume_agent_core.agent import AgentConfig, ResumeAgent
+from resume_agent_core.agent_factory import create_agent
+from resume_agent_core.agents.orchestrator_agent import OrchestratorAgent
+from resume_agent_core.llm import LLMConfig, load_config, load_raw_config
+from resume_agent_core.session import SessionManager
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from packages.core.resume_agent_core.agent import AgentConfig, ResumeAgent
-from packages.core.resume_agent_core.agent_factory import create_agent
-from packages.core.resume_agent_core.agents.orchestrator_agent import OrchestratorAgent
-from packages.core.resume_agent_core.llm import LLMConfig, load_config, load_raw_config
-from packages.core.resume_agent_core.session import SessionManager
-
 from .config_validator import Severity, has_errors, validate_config
+from .tool_factory import create_tools
 
 console = Console()
+
+
+def _fuzzy_token_match(token: str, text: str) -> bool:
+    """Case-insensitive token match with subsequence fallback."""
+    token_norm = "".join(token.lower().split())
+    text_norm = "".join(text.lower().split())
+    if not token_norm:
+        return True
+    if token_norm in text_norm:
+        return True
+    index = 0
+    for ch in text_norm:
+        if index < len(token_norm) and ch == token_norm[index]:
+            index += 1
+    return index == len(token_norm)
+
+
+def _session_search_text(session: Dict[str, Any]) -> str:
+    """Build searchable text for session fuzzy filtering."""
+    session_id = str(session.get("id", ""))
+    parts_id = session_id.split("_")
+    fields = [session_id, str(session.get("mode", ""))]
+    if len(parts_id) >= 5:
+        fields.append("_".join(parts_id[3:-1]))
+    if len(parts_id) >= 3:
+        fields.append(parts_id[1])
+        fields.append(parts_id[2])
+        fields.append(f"{parts_id[1]}_{parts_id[2]}")
+    return " ".join(field for field in fields if field)
+
+
+def _session_matches_query(session: Dict[str, Any], query: str) -> bool:
+    query_tokens = [token for token in query.split() if token]
+    if not query_tokens:
+        return True
+    searchable = _session_search_text(session)
+    return all(_fuzzy_token_match(token, searchable) for token in query_tokens)
+
+
+class ResumeCLICompleter(Completer):
+    """Command auto-completer for interactive CLI."""
+
+    COMMANDS = [
+        "/help",
+        "/reset",
+        "/save",
+        "/load",
+        "/sessions",
+        "/delete-session",
+        "/files",
+        "/config",
+        "/export",
+        "/approve",
+        "/reject",
+        "/pending",
+        "/auto-approve",
+        "/stream",
+        "/agents",
+        "/trace",
+        "/delegation-tree",
+        "/quit",
+        "/exit",
+    ]
+
+    def __init__(self, session_manager: Optional[SessionManager] = None):
+        self.session_manager = session_manager
+
+    def _session_refs(self) -> list[str]:
+        if not self.session_manager:
+            return []
+        try:
+            sessions = self.session_manager.list_sessions()
+        except Exception:
+            return []
+
+        refs = ["latest"]
+        for idx, session in enumerate(sessions, start=1):
+            refs.append(str(idx))
+            session_id = session.get("id")
+            if isinstance(session_id, str) and session_id:
+                refs.append(session_id)
+        return list(dict.fromkeys(refs))
+
+    @staticmethod
+    def _yield_options(options: Iterable[str], current: str):
+        start_position = -len(current)
+        current_lower = current.lower()
+        for option in options:
+            if not current or option.lower().startswith(current_lower):
+                yield Completion(option, start_position=start_position)
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+
+        parts = text.split()
+        if text.endswith(" "):
+            parts.append("")
+        if not parts:
+            return
+
+        if len(parts) == 1:
+            current = parts[0]
+            yield from self._yield_options(self.COMMANDS, current)
+            return
+
+        command = parts[0].lower()
+        current = parts[-1]
+
+        if command in {"/stream", "/auto-approve"} and len(parts) == 2:
+            yield from self._yield_options(["on", "off", "status"], current)
+            return
+        if command in {"/load", "/delete-session"} and len(parts) == 2:
+            yield from self._yield_options(self._session_refs(), current)
+            return
+        if command == "/export":
+            if len(parts) == 2:
+                yield from self._yield_options(["file", "clipboard", "clip"], current)
+            elif len(parts) == 3:
+                yield from self._yield_options(["markdown", "json", "text"], current)
+            elif len(parts) >= 4:
+                yield from self._yield_options(["verbose", "-v", "--verbose"], current)
 
 
 def _wait_for_escape(stop_event: threading.Event) -> bool:
@@ -91,7 +215,7 @@ def print_help():
 | `/reset` | Reset conversation history |
 | `/save [name]` | Save current session (optional custom name) |
 | `/load [number]` | Load a saved session (shows picker if no number) |
-| `/sessions` | List all saved sessions with numbers |
+| `/sessions [query]` | List sessions (optionally filtered with fuzzy query) |
 | `/delete-session <number>` | Delete a saved session by number |
 | `/quit` or `/exit` | Exit the agent |
 | `/files` | List files in workspace |
@@ -114,6 +238,7 @@ Save and restore conversation sessions:
 /save                    # Save with auto-generated timestamp
 /save my_resume_v1       # Save with custom name
 /sessions                # List all saved sessions (numbered)
+/sessions backend        # Fuzzy filter by name/id/mode
 /load                    # Show session picker
 /load 1                  # Load session #1 (most recent)
 /load 2                  # Load session #2
@@ -123,6 +248,7 @@ Save and restore conversation sessions:
 **Session features:**
 - 🎯 **Quick load by number**: `/load 1` loads the most recent session
 - 📋 **Interactive picker**: `/load` without arguments shows all sessions
+- 🔎 **Fuzzy search**: `/sessions data eng` filters sessions by token match
 - 🏷️ **Custom names**: `/save my_project_v1` for easy identification
 - 🔄 **Auto-save always enabled**: Sessions automatically saved after each tool execution
 - 📊 **Full state preservation**: History, observability, multi-agent state
@@ -167,7 +293,7 @@ Files are saved to `exports/conversation_YYYYMMDD_HHMMSS[_verbose].{ext}`
 
 def _get_llm_agents(agent: Union[ResumeAgent, OrchestratorAgent]):
     """Return list of LLMAgent instances for pending tool approvals."""
-    from packages.core.resume_agent_core.agent_factory import AutoAgent
+    from resume_agent_core.agent_factory import AutoAgent
 
     agents = []
     if isinstance(agent, AutoAgent):
@@ -239,7 +365,8 @@ async def handle_command(
     runtime_options: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Handle special commands. Returns True if should continue, False to exit."""
-    cmd = command.lower().strip()
+    command_text = command.strip()
+    cmd = command_text.lower()
 
     if cmd in ["/quit", "/exit", "/q"]:
         console.print("\n👋 Goodbye!", style="yellow")
@@ -258,8 +385,8 @@ async def handle_command(
             return True
 
         # Parse: /save [session_name]
-        parts = cmd.split(maxsplit=1)
-        session_name = parts[1] if len(parts) > 1 else None
+        session_name_input = command_text[len("/save") :].strip()
+        session_name = session_name_input if session_name_input else None
 
         try:
             session_id = session_manager.save_session(agent, session_name=session_name)
@@ -286,7 +413,7 @@ async def handle_command(
             return True
 
         # Parse: /load [session_id or number]
-        parts = cmd.split()
+        parts = command_text.split()
 
         # Get available sessions
         sessions = session_manager.list_sessions()
@@ -337,6 +464,9 @@ async def handle_command(
             console.print("\n💡 Usage: /load <number> or /load <full_session_id>", style="dim")
             console.print("   Example: /load 1  (loads the most recent session)", style="dim")
             return True
+        if len(parts) > 2:
+            console.print("Usage: /load <number> or /load <full_session_id>", style="yellow")
+            return True
 
         # Load by number or full session ID
         session_arg = parts[1]
@@ -373,16 +503,23 @@ async def handle_command(
         except Exception as e:
             console.print(f"❌ Failed to load session: {e}", style="red")
 
-    elif cmd == "/sessions":
+    elif cmd.startswith("/sessions"):
         if not session_manager:
             console.print("⚠️ Session management not available.", style="yellow")
             return True
 
+        session_query = command_text[len("/sessions") :].strip()
         sessions = session_manager.list_sessions()
-        if not sessions:
+        if session_query:
+            sessions = [session for session in sessions if _session_matches_query(session, session_query)]
+
+        if not sessions and session_query:
+            console.print(f"No sessions matched query: {session_query}", style="dim")
+        elif not sessions:
             console.print("No saved sessions found.", style="dim")
         else:
-            table = Table(title="📁 Saved Sessions", show_header=True, header_style="bold cyan")
+            title = "📁 Saved Sessions" if not session_query else f"📁 Saved Sessions (filter: {session_query})"
+            table = Table(title=title, show_header=True, header_style="bold cyan")
             table.add_column("#", style="yellow", width=3)
             table.add_column("Name", style="cyan", no_wrap=False)
             table.add_column("Created", style="dim", width=16)
@@ -423,7 +560,9 @@ async def handle_command(
                 )
 
             console.print(table)
-            console.print("\n💡 Quick load: /load <number>  (e.g., /load 1 for most recent)", style="dim")
+            if session_query:
+                console.print("\n💡 Clear filter with /sessions", style="dim")
+            console.print("💡 Quick load: /load <number>  (e.g., /load 1 for most recent)", style="dim")
             console.print("   Full ID load: /load <full_session_id>", style="dim")
 
     elif cmd.startswith("/delete-session"):
@@ -432,10 +571,12 @@ async def handle_command(
             return True
 
         # Parse: /delete-session <session_id or number>
-        parts = cmd.split()
+        parts = command_text.split()
         if len(parts) < 2:
             console.print("Usage: /delete-session <number> or /delete-session <full_session_id>", style="yellow")
             console.print("Tip: Use /sessions to see session numbers", style="dim")
+        elif len(parts) > 2:
+            console.print("Usage: /delete-session <number> or /delete-session <full_session_id>", style="yellow")
         else:
             session_arg = parts[1]
 
@@ -648,17 +789,26 @@ async def handle_command(
 
     elif cmd.startswith("/export"):
         # Parse export command: /export [file|clipboard] [format] [verbose]
-        parts = cmd.split()
-        target = parts[1] if len(parts) > 1 else "file"
-        format_type = parts[2] if len(parts) > 2 else "markdown"
-        verbose = len(parts) > 3 and parts[3] == "verbose"
+        parts = command_text.split()
+        target = parts[1].lower() if len(parts) > 1 else "file"
+        format_type = parts[2].lower() if len(parts) > 2 else "markdown"
+        extra_flags = [part.lower() for part in parts[3:]]
+        valid_flags = {"verbose", "--verbose", "-v"}
+        if any(flag not in valid_flags for flag in extra_flags):
+            console.print("Usage: /export [file|clipboard] [markdown|json|text] [verbose|-v]", style="yellow")
+            return True
+        verbose = any(flag in valid_flags for flag in extra_flags)
 
         if target not in ["file", "clipboard", "clip"]:
-            console.print("Usage: /export [file|clipboard] [markdown|json|text] [verbose]", style="yellow")
+            console.print("Usage: /export [file|clipboard] [markdown|json|text] [verbose|-v]", style="yellow")
+            return True
+
+        if format_type not in {"markdown", "json", "text"}:
+            console.print("Usage: /export [file|clipboard] [markdown|json|text] [verbose|-v]", style="yellow")
             return True
 
         # Get conversation history (handle AutoAgent, OrchestratorAgent, ResumeAgent)
-        from packages.core.resume_agent_core.agent_factory import AutoAgent
+        from resume_agent_core.agent_factory import AutoAgent
 
         if isinstance(agent, AutoAgent):
             llm_agent = agent.agent
@@ -925,7 +1075,7 @@ async def handle_command(
                 console.print(f"❌ Failed to export: {e}", style="red")
 
     else:
-        console.print(f"Unknown command: {command}. Type /help for available commands.", style="red")
+        console.print(f"Unknown command: {command_text}. Type /help for available commands.", style="red")
 
     return True
 
@@ -996,7 +1146,11 @@ async def run_interactive(
     """Run interactive chat loop."""
     # Setup prompt with history
     history_file = Path.home() / ".resume_agent_history"
-    session = PromptSession(history=FileHistory(str(history_file)))
+    session = PromptSession(
+        history=FileHistory(str(history_file)),
+        completer=ResumeCLICompleter(session_manager=session_manager),
+        complete_while_typing=False,
+    )
     runtime_options: Dict[str, Any] = {
         "stream_enabled": bool(stream_enabled_default),
     }
@@ -1222,15 +1376,20 @@ def main():
             verbose=args.verbose,
         )
         session_manager = SessionManager(args.workspace)
-        agent = ResumeAgent(llm_config=llm_config, agent_config=agent_config, session_manager=session_manager)
+        tools = create_tools(args.workspace)
+        agent = ResumeAgent(
+            llm_config=llm_config, agent_config=agent_config, session_manager=session_manager, tools=tools
+        )
     elif args.multi_agent:
         # Force multi-agent mode
         session_manager = SessionManager(args.workspace)
+        tools = create_tools(args.workspace)
         agent = create_agent(
             llm_config=llm_config,
             workspace_dir=args.workspace,
             session_manager=session_manager,
             verbose=args.verbose,
+            tools=tools,
         )
         # Ensure it's multi-agent
         if isinstance(agent, ResumeAgent):
@@ -1238,11 +1397,13 @@ def main():
     else:
         # Use config to determine mode (single, multi, or auto)
         session_manager = SessionManager(args.workspace)
+        tools = create_tools(args.workspace)
         agent = create_agent(
             llm_config=llm_config,
             workspace_dir=args.workspace,
             session_manager=session_manager,
             verbose=args.verbose,
+            tools=tools,
         )
 
     # Run

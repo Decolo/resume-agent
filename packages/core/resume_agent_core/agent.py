@@ -7,20 +7,6 @@ from typing import Any, Callable, Optional
 
 from .llm import LLMAgent, LLMConfig, load_config
 from .skills import RESUME_EXPERT_PROMPT
-from .tools import (
-    ATSScorerTool,
-    BashTool,
-    FileListTool,
-    FileReadTool,
-    FileRenameTool,
-    FileWriteTool,
-    JobMatcherTool,
-    ResumeParserTool,
-    ResumeValidatorTool,
-    ResumeWriterTool,
-    WebFetchTool,
-    WebReadTool,
-)
 
 
 @dataclass
@@ -41,6 +27,7 @@ class ResumeAgent:
         llm_config: Optional[LLMConfig] = None,
         agent_config: Optional[AgentConfig] = None,
         session_manager: Optional[Any] = None,
+        tools: Optional[dict] = None,
     ):
         self.agent_config = agent_config or AgentConfig()
 
@@ -63,27 +50,8 @@ class ResumeAgent:
             self.agent._parent_agent = self
 
         # Initialize and register tools
-        self.tools = self._init_tools()
+        self.tools = tools if tools is not None else {}
         self._register_tools()
-
-    def _init_tools(self) -> dict:
-        """Initialize available tools."""
-        workspace = self.agent_config.workspace_dir
-
-        return {
-            "file_read": FileReadTool(workspace),
-            "file_write": FileWriteTool(workspace),
-            "file_list": FileListTool(workspace),
-            "file_rename": FileRenameTool(workspace),
-            "bash": BashTool(workspace),
-            "resume_parse": ResumeParserTool(workspace),
-            "resume_write": ResumeWriterTool(workspace),
-            "ats_score": ATSScorerTool(workspace),
-            "job_match": JobMatcherTool(workspace),
-            "resume_validate": ResumeValidatorTool(workspace),
-            "web_fetch": WebFetchTool(),
-            "web_read": WebReadTool(),
-        }
 
     def _register_tools(self):
         """Register tools with the LLM agent."""
