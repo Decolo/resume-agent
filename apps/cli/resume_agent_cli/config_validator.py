@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List
 
-from packages.providers.resume_agent_providers import PROVIDER_DEFAULTS
+from resume_agent_providers import PROVIDER_DEFAULTS
 
 
 class Severity(Enum):

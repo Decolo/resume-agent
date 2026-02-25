@@ -1,6 +1,7 @@
 """Test suite for Phase 1 improvements: retry, history, caching, observability."""
 
 import pytest
+from resume_agent_providers.types import Message, MessagePart
 from resume_agent_tools_cli import BashTool, FileReadTool
 from resume_agent_tools_cli.file_tool import MAX_FILE_SIZE
 
@@ -10,7 +11,6 @@ from packages.core.resume_agent_core.observability import AgentObserver
 
 # Import modules to test
 from packages.core.resume_agent_core.retry import PermanentError, RetryConfig, TransientError, retry_with_backoff
-from packages.providers.resume_agent_providers.types import Message, MessagePart
 
 
 class TestRetryLogic:

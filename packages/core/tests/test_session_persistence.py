@@ -1,6 +1,7 @@
 """Tests for session persistence functionality."""
 
 import pytest
+from resume_agent_providers.types import FunctionCall, FunctionResponse, Message, MessagePart
 
 from packages.core.resume_agent_core.llm import HistoryManager, LLMAgent, LLMConfig
 from packages.core.resume_agent_core.observability import AgentObserver
@@ -9,7 +10,6 @@ from packages.core.resume_agent_core.session import (
     SessionManager,
     SessionSerializer,
 )
-from packages.providers.resume_agent_providers.types import FunctionCall, FunctionResponse, Message, MessagePart
 
 
 class TestSessionSerializer:

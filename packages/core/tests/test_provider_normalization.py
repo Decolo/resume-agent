@@ -3,11 +3,11 @@
 from types import SimpleNamespace
 
 import pytest
+from resume_agent_providers.gemini import GeminiProvider
+from resume_agent_providers.openai_compat import OpenAICompatibleProvider
+from resume_agent_providers.types import FunctionCall, GenerationConfig, StreamDelta
 
 from packages.core.resume_agent_core.llm import LLMAgent, LLMConfig
-from packages.providers.resume_agent_providers.gemini import GeminiProvider
-from packages.providers.resume_agent_providers.openai_compat import OpenAICompatibleProvider
-from packages.providers.resume_agent_providers.types import FunctionCall, GenerationConfig, StreamDelta
 
 
 def test_gemini_completion_normalizes_text_and_tool_calls():

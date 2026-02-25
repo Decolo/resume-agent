@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
-from packages.providers.resume_agent_providers.types import (
+from resume_agent_providers.types import (
     FunctionCall,
     FunctionResponse,
     Message,

@@ -1,7 +1,8 @@
 """Tests for function call/response pairing in HistoryManager."""
 
+from resume_agent_providers.types import FunctionCall, FunctionResponse, Message, MessagePart
+
 from packages.core.resume_agent_core.llm import HistoryManager
-from packages.providers.resume_agent_providers.types import FunctionCall, FunctionResponse, Message, MessagePart
 
 
 def create_user_message(text: str) -> Message:

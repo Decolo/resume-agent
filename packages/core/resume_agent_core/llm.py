@@ -7,8 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from packages.providers.resume_agent_providers import create_provider
-from packages.providers.resume_agent_providers.types import (
+from resume_agent_providers import create_provider
+from resume_agent_providers.types import (
     FunctionCall,
     FunctionResponse,
     GenerationConfig,
