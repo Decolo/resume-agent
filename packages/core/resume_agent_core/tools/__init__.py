@@ -1,8 +1,7 @@
 """Core tool abstractions -- BaseTool and ToolResult only.
 
-Concrete tool implementations live in the tools packages:
-- resume_agent_tools_cli  (file, bash, resume parse/write/validate/score/match)
-- resume_agent_tools_web  (web fetch/read, section update, JD analysis)
+Concrete tool implementations live in the tools package:
+- resume_agent_tools_cli  (file, bash, web fetch/read, resume parse/write/validate/score/match)
 """
 
 from .base import BaseTool, ToolResult

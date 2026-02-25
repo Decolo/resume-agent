@@ -1,1 +1,0 @@
-"""Monorepo contracts package scaffold."""

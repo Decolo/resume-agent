@@ -1,4 +1,4 @@
-"""Resume Agent CLI Tools - file, bash, and resume domain tool wrappers."""
+"""Resume Agent CLI Tools - file, bash, resume domain, and web tool wrappers."""
 
 from .bash_tool import BashTool
 from .file_tool import FileListTool, FileReadTool, FileRenameTool, FileWriteTool
@@ -9,6 +9,7 @@ from .resume_tools import (
     ResumeValidatorTool,
     ResumeWriterTool,
 )
+from .web_tool import WebFetchTool, WebReadTool
 
 __all__ = [
     "FileReadTool",
@@ -21,4 +22,6 @@ __all__ = [
     "ATSScorerTool",
     "JobMatcherTool",
     "ResumeValidatorTool",
+    "WebFetchTool",
+    "WebReadTool",
 ]

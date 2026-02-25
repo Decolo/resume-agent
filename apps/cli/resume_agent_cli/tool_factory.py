@@ -13,8 +13,6 @@ from resume_agent_tools_cli import (
     ResumeParserTool,
     ResumeValidatorTool,
     ResumeWriterTool,
-)
-from resume_agent_tools_web import (
     WebFetchTool,
     WebReadTool,
 )
