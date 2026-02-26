@@ -1,16 +1,6 @@
 version = 1
 requires-python = ">=3.10"
 
-[manifest]
-members = [
-    "resume-agent",
-    "resume-agent-cli",
-    "resume-agent-core",
-    "resume-agent-domain",
-    "resume-agent-providers",
-    "resume-agent-tools-cli",
-]
-
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -1393,15 +1383,13 @@ name = "resume-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "google-genai" },
+    { name = "httpx" },
+    { name = "openai" },
     { name = "prompt-toolkit" },
     { name = "pyperclip" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "resume-agent-cli" },
-    { name = "resume-agent-core" },
-    { name = "resume-agent-domain" },
-    { name = "resume-agent-providers" },
-    { name = "resume-agent-tools-cli" },
     { name = "rich" },
 ]
 
@@ -1414,77 +1402,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
-    { name = "prompt-toolkit", specifier = ">=3.0.0" },
-    { name = "pyperclip", specifier = ">=1.11.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
-    { name = "python-dotenv", specifier = ">=1.2.1" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "resume-agent-cli", editable = "apps/cli" },
-    { name = "resume-agent-core", editable = "packages/core" },
-    { name = "resume-agent-domain", editable = "packages/domain" },
-    { name = "resume-agent-providers", editable = "packages/providers" },
-    { name = "resume-agent-tools-cli", editable = "packages/tools/cli" },
-    { name = "rich", specifier = ">=13.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
-]
-
-[[package]]
-name = "resume-agent-cli"
-version = "0.1.0"
-source = { editable = "apps/cli" }
-dependencies = [
-    { name = "prompt-toolkit" },
-    { name = "pyperclip" },
-    { name = "python-dotenv" },
-    { name = "resume-agent-core" },
-    { name = "resume-agent-tools-cli" },
-    { name = "rich" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "prompt-toolkit", specifier = ">=3.0.0" },
-    { name = "pyperclip", specifier = ">=1.11.0" },
-    { name = "python-dotenv", specifier = ">=1.2.1" },
-    { name = "resume-agent-core", editable = "packages/core" },
-    { name = "resume-agent-tools-cli", editable = "packages/tools/cli" },
-    { name = "rich", specifier = ">=13.0.0" },
-]
-
-[[package]]
-name = "resume-agent-core"
-version = "0.1.0"
-source = { editable = "packages/core" }
-dependencies = [
-    { name = "pyyaml" },
-    { name = "resume-agent-domain" },
-    { name = "resume-agent-providers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "resume-agent-domain", editable = "packages/domain" },
-    { name = "resume-agent-providers", editable = "packages/providers" },
-]
-
-[[package]]
-name = "resume-agent-domain"
-version = "0.1.0"
-source = { editable = "packages/domain" }
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
 docx = [
     { name = "python-docx" },
 ]
@@ -1493,69 +1410,27 @@ html = [
 ]
 pdf = [
     { name = "pymupdf" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "markdown", marker = "extra == 'html'", specifier = ">=3.5.0" },
-    { name = "pymupdf", marker = "extra == 'pdf'", specifier = ">=1.24.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
-    { name = "python-docx", marker = "extra == 'docx'", specifier = ">=1.1.0" },
-]
-
-[[package]]
-name = "resume-agent-providers"
-version = "0.1.0"
-source = { editable = "packages/providers" }
-dependencies = [
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "openai" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "google-genai", specifier = ">=1.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "markdown", marker = "extra == 'html'", specifier = ">=3.5.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
     { name = "openai", specifier = ">=1.0.0" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0.0" },
+    { name = "pymupdf", marker = "extra == 'pdf'", specifier = ">=1.24.0" },
+    { name = "pyperclip", specifier = ">=1.11.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
-]
-
-[[package]]
-name = "resume-agent-tools-cli"
-version = "0.1.0"
-source = { editable = "packages/tools/cli" }
-dependencies = [
-    { name = "resume-agent-core" },
-    { name = "resume-agent-domain" },
-]
-
-[package.optional-dependencies]
-docx = [
-    { name = "python-docx" },
-]
-html = [
-    { name = "markdown" },
-]
-pdf = [
-    { name = "pymupdf" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "markdown", marker = "extra == 'html'", specifier = ">=3.5.0" },
-    { name = "pymupdf", marker = "extra == 'pdf'", specifier = ">=1.24.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "python-docx", marker = "extra == 'docx'", specifier = ">=1.1.0" },
-    { name = "resume-agent-core", editable = "packages/core" },
-    { name = "resume-agent-domain", editable = "packages/domain" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.0.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
 ]
 
 [[package]]

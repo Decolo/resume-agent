@@ -57,9 +57,7 @@ jobs:
       - name: Run tests
         run: >
           uv run --extra dev pytest
-          --cov=apps
-          --cov=packages
+          --cov=resume_agent
           --cov-report=term-missing
           --cov-fail-under=50
           -q
-          -k "not web_api_real_mode and not web_api_week1 and not sqlite_store"

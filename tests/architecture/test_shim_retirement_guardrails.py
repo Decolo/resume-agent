@@ -1,16 +1,21 @@
-"""Guardrails enforcing legacy shim retirement."""
+"""Guardrails ensuring no legacy flat-namespace imports remain."""
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOTS = (
-    REPO_ROOT / "apps",
-    REPO_ROOT / "packages",
-)
-LEGACY_PACKAGE_ROOT = REPO_ROOT / "resume_agent"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_ROOT = REPO_ROOT / "resume_agent"
+TESTS_ROOT = REPO_ROOT / "tests"
+
+LEGACY_NAMESPACES = {
+    "resume_agent_core",
+    "resume_agent_domain",
+    "resume_agent_providers",
+    "resume_agent_tools",
+    "resume_agent_cli",
+}
 
 
 def _imported_modules(file_path: Path) -> set[str]:
@@ -19,27 +24,29 @@ def _imported_modules(file_path: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                imported.add(alias.name)
+                imported.add(alias.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            imported.add(node.module)
+            imported.add(node.module.split(".")[0])
     return imported
 
 
-def test_apps_and_packages_do_not_import_legacy_resume_agent_namespace() -> None:
+def test_no_legacy_flat_namespace_imports() -> None:
+    """No source or test file should import the old resume_agent_* packages."""
     violations: list[str] = []
-    py_files: list[Path] = []
-    for root in SOURCE_ROOTS:
-        if root.exists():
-            py_files.extend(sorted(root.rglob("*.py")))
+    roots = [SOURCE_ROOT, TESTS_ROOT]
+    for root in roots:
+        if not root.exists():
+            continue
+        for py_file in sorted(root.rglob("*.py")):
+            for mod in _imported_modules(py_file):
+                if mod in LEGACY_NAMESPACES:
+                    rel = py_file.relative_to(REPO_ROOT)
+                    violations.append(f"{rel} imports legacy namespace {mod}")
 
-    for file_path in py_files:
-        module = ".".join(file_path.relative_to(REPO_ROOT).with_suffix("").parts)
-        for imported in _imported_modules(file_path):
-            if imported == "resume_agent" or imported.startswith("resume_agent."):
-                violations.append(f"{module} imports {imported}")
-
-    assert not violations, "Legacy namespace import violation(s):\n" + "\n".join(sorted(violations))
+    assert not violations, "Legacy namespace import(s) found:\n" + "\n".join(sorted(violations))
 
 
-def test_legacy_resume_agent_package_is_removed() -> None:
-    assert not LEGACY_PACKAGE_ROOT.exists()
+def test_old_monorepo_directories_are_gone() -> None:
+    """The apps/ and packages/ directories should no longer exist."""
+    assert not (REPO_ROOT / "apps").exists(), "apps/ directory still exists"
+    assert not (REPO_ROOT / "packages").exists(), "packages/ directory still exists"

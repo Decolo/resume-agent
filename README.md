@@ -51,7 +51,7 @@ export GEMINI_API_KEY="your-gemini-api-key"
 uv run resume-agent --workspace ./examples/my_resume
 
 # Or with Python
-uv run python -m apps.cli.resume_agent_cli.app
+uv run python -m resume_agent.cli.app
 
 # Single prompt mode
 uv run resume-agent --prompt "Parse my resume and analyze it"
@@ -85,17 +85,18 @@ For detailed instructions, see [Documentation Index](./docs/README.md).
 
 ```
 resume-agent/
-├── apps/
-│   ├── cli/resume_agent_cli/      # CLI app entrypoint
-│   └── web-next/                  # Next.js web app (Cloudflare-ready)
-├── packages/
-│   ├── domain/resume_agent_domain/        # Pure domain logic (resume parsing, ATS scoring, etc.)
-│   ├── core/resume_agent_core/            # Agent runtime, LLM orchestration
-│   ├── tools/
-│   │   ├── cli/resume_agent_tools_cli/    # CLI-specific tools (file I/O, bash)
-│   │   └── web/resume_agent_tools_web/    # Web-specific tools (JSON updates, export)
-│   ├── providers/resume_agent_providers/  # LLM provider adapters
-│   └── contracts/resume_agent_contracts/  # Shared contracts/constants
+├── resume_agent/
+│   ├── cli/           # CLI app entrypoint
+│   ├── core/          # Agent runtime, LLM orchestration
+│   ├── domain/        # Pure domain logic (resume parsing, ATS scoring, etc.)
+│   ├── providers/     # LLM provider adapters
+│   └── tools/         # Tool adapters (file I/O, bash, resume tools)
+├── tests/
+│   ├── architecture/  # Boundary & packaging guardrails
+│   ├── cli/           # CLI tests
+│   ├── core/          # Core runtime tests
+│   ├── domain/        # Domain logic tests
+│   └── tools/         # Tool adapter tests
 ├── config/
 │   ├── config.local.yaml # Local config (default, keep secrets here)
 │   └── config.yaml       # Optional shared defaults
@@ -126,17 +127,16 @@ User Input → LLM (with tools) → Tool Calls → Tool Results → LLM → ... 
 
 The key components are:
 
-1. **CLI/Web Apps** (`apps/cli/*`, `apps/web-next/*`)
-2. **Domain Logic** (`packages/domain/resume_agent_domain/*`) - Pure functions for resume operations
-3. **Core Runtime** (`packages/core/resume_agent_core/*`) - Agent orchestration and LLM integration
-4. **Tools** (`packages/tools/cli/*`, `packages/tools/web/*`) - Environment-specific tool adapters
-5. **Provider Layer** (`packages/providers/resume_agent_providers/*`)
-6. **Contracts** (`packages/contracts/resume_agent_contracts/*`)
+1. **CLI App** (`resume_agent/cli/`)
+2. **Domain Logic** (`resume_agent/domain/`) - Pure functions for resume operations
+3. **Core Runtime** (`resume_agent/core/`) - Agent orchestration and LLM integration
+4. **Tools** (`resume_agent/tools/`) - Tool adapters for file I/O, bash, resume operations
+5. **Provider Layer** (`resume_agent/providers/`)
 
 ## Supported LLM Providers
 
-- **Google Gemini** is the default (via `packages/providers/resume_agent_providers/gemini.py`).
-- **OpenAI-compatible endpoints** are provided by `packages/providers/resume_agent_providers/openai_compat.py`.
+- **Google Gemini** is the default (via `resume_agent/providers/gemini.py`).
+- **OpenAI-compatible endpoints** are provided by `resume_agent/providers/openai_compat.py`.
 
 ## Development
 
@@ -169,7 +169,7 @@ uv run mypy
 uv run pytest
 
 # Run tests with coverage
-uv run pytest --cov=packages --cov=apps --cov-report=html
+uv run pytest --cov=resume_agent --cov-report=html
 ```
 
 ### Pre-commit Hooks

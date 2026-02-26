@@ -1,109 +1,71 @@
-"""Architecture boundary tests for monorepo final topology."""
+"""Architecture boundary tests for flattened package topology.
+
+Enforces the dependency DAG:
+  cli → core, tools, providers
+  tools → domain, core
+  core → domain, providers
+  domain → (nothing)
+  providers → (nothing)
+"""
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOTS = (
-    REPO_ROOT / "packages",
-    REPO_ROOT / "apps",
-)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_ROOT = REPO_ROOT / "resume_agent"
+
+SUBMODULES = {"cli", "core", "domain", "providers", "tools"}
+
+ALLOWED_DEPS: dict[str, set[str]] = {
+    "cli": {"core", "tools", "providers"},
+    "tools": {"domain", "core"},
+    "core": {"domain", "providers"},
+    "domain": set(),
+    "providers": set(),
+}
 
 
-def _module_name(file_path: Path) -> str:
-    relative = file_path.relative_to(REPO_ROOT).with_suffix("")
-    return ".".join(relative.parts)
+def _submodule_of(file_path: Path) -> str | None:
+    rel = file_path.relative_to(SOURCE_ROOT)
+    parts = rel.parts
+    if parts and parts[0] in SUBMODULES:
+        return parts[0]
+    return None
 
 
-def _imported_modules(file_path: Path, current_module: str) -> set[str]:
+def _imported_submodules(file_path: Path) -> set[str]:
     tree = ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
-    imported: set[str] = set()
-    package_parts = current_module.split(".")[:-1]
-
+    result: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                imported.add(alias.name)
-            continue
+                _extract(alias.name, result)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            _extract(node.module, result)
+    return result
 
-        if not isinstance(node, ast.ImportFrom):
-            continue
 
-        if node.level == 0:
-            if node.module:
-                imported.add(node.module)
-            continue
-
-        ascend = max(node.level - 1, 0)
-        if ascend > len(package_parts):
-            continue
-
-        base_parts = package_parts[: len(package_parts) - ascend]
-        if node.module:
-            base_parts.extend(node.module.split("."))
-
-        if base_parts:
-            imported.add(".".join(base_parts))
-
-    return imported
+def _extract(module_name: str, out: set[str]) -> None:
+    """If module_name is resume_agent.<sub>.*, add <sub> to out."""
+    parts = module_name.split(".")
+    if len(parts) >= 2 and parts[0] == "resume_agent" and parts[1] in SUBMODULES:
+        out.add(parts[1])
 
 
 def test_architecture_boundaries() -> None:
     violations: list[str] = []
-    py_files: list[Path] = []
-    for root in SOURCE_ROOTS:
-        if root.exists():
-            py_files.extend(sorted(root.rglob("*.py")))
-
-    # Allowed distribution-style imports (installed packages)
-    allowed_dist_imports = {
-        "resume_agent_core",
-        "resume_agent_domain",
-        "resume_agent_tools_cli",
-        "resume_agent_tools_web",
-    }
-
-    for file_path in py_files:
-        module = _module_name(file_path)
-        imports = _imported_modules(file_path, module)
-
-        for imported in imports:
-            # Check if it's a resume_agent import
-            if imported.startswith("resume_agent"):
-                # Extract the base package name (e.g., "resume_agent_core" from "resume_agent_core.agent")
-                base_package = imported.split(".")[0]
-                if base_package not in allowed_dist_imports:
-                    violations.append(
-                        f"{module} imports {imported}; unknown resume_agent package (allowed: {', '.join(sorted(allowed_dist_imports))})"
-                    )
-
-        if module.startswith("packages."):
-            for imported in imports:
-                if imported.startswith("apps."):
-                    violations.append(f"{module} imports {imported}; packages layer must not depend on apps layer")
-
-        if module.startswith("packages.providers"):
-            for imported in imports:
-                if imported.startswith(("packages.core", "apps.")):
-                    violations.append(
-                        f"{module} imports {imported}; providers must remain isolated from core/app layers"
-                    )
-
-        if module.startswith("packages.contracts"):
-            for imported in imports:
-                if imported.startswith(("packages.core", "packages.providers", "apps.")):
-                    violations.append(f"{module} imports {imported}; contracts must be app/core agnostic")
-
-        if module.startswith("apps.api"):
-            for imported in imports:
-                if imported.startswith("apps.cli"):
-                    violations.append(f"{module} imports {imported}; api app must not depend on cli app")
-
-        if module.startswith("apps.cli"):
-            for imported in imports:
-                if imported.startswith("apps.api"):
-                    violations.append(f"{module} imports {imported}; cli app must not depend on api app")
+    for py_file in sorted(SOURCE_ROOT.rglob("*.py")):
+        owner = _submodule_of(py_file)
+        if owner is None:
+            continue
+        for dep in _imported_submodules(py_file):
+            if dep != owner and dep not in ALLOWED_DEPS.get(owner, set()):
+                rel = py_file.relative_to(REPO_ROOT)
+                violations.append(
+                    f"{rel}: resume_agent.{owner} imports resume_agent.{dep} "
+                    f"(allowed: {sorted(ALLOWED_DEPS.get(owner, set()))})"
+                )
 
     assert not violations, "Architecture boundary violation(s):\n" + "\n".join(sorted(violations))
