@@ -25,6 +25,14 @@ playwright install chromium
 npm install puppeteer-core
 ```
 
+### Vercel Agent Browser (AI-Powered)
+
+```bash
+# Install globally
+npm install -g agent-browser
+agent-browser install
+```
+
 ## Usage
 
 ### 1. Launch Chrome with Remote Debugging
@@ -58,11 +66,19 @@ This verifies that Chrome is accessible via CDP before running the LinkedIn POC.
 python poc/linkedin_browser_poc.py "Your post content here"
 ```
 
-#### TypeScript
+#### TypeScript (Puppeteer)
 
 ```bash
 npx ts-node poc/linkedin_browser_poc.ts
 ```
+
+#### Vercel Agent Browser (AI-Powered)
+
+```bash
+node poc/linkedin_vercel_agent.js "Your post content"
+```
+
+**Advantage**: Uses natural language instructions instead of hardcoded selectors. More resilient to LinkedIn UI changes.
 
 ## How It Works
 
@@ -70,6 +86,22 @@ npx ts-node poc/linkedin_browser_poc.ts
 2. **Navigate**: Goes to `linkedin.com/feed`
 3. **Interact**: Clicks "Start a post", fills content, clicks "Post"
 4. **Verify**: Post appears on your LinkedIn feed
+
+## Comparison: Playwright vs Puppeteer vs Vercel Agent Browser
+
+| Feature | Playwright | Puppeteer | Vercel Agent Browser |
+|---------|-----------|-----------|---------------------|
+| **Installation** | `pip install playwright` | `npm install puppeteer-core` | `npm install -g agent-browser` |
+| **Selector Strategy** | Hardcoded CSS/XPath | Hardcoded CSS/XPath | AI-powered natural language |
+| **Resilience** | Breaks on UI changes | Breaks on UI changes | Adapts to UI changes |
+| **Performance** | Fast | Fast | Slower (LLM overhead) |
+| **Dependencies** | Python + Chromium | Node.js only | Node.js + Rust CLI |
+| **Best For** | Python projects | Node.js projects | Dynamic UIs, less maintenance |
+
+**Recommendation**:
+- Use **Playwright** if you're already in Python (integrates with resume-agent)
+- Use **Vercel Agent Browser** if LinkedIn changes their UI frequently
+- Use **Puppeteer** for lightweight Node.js projects
 
 ## Limitations
 
