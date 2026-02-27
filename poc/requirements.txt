@@ -1,4 +1,0 @@
-# POC Requirements
-# Install with: pip install -r poc/requirements.txt
-
-playwright>=1.40.0
