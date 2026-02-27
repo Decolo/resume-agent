@@ -37,7 +37,14 @@ google-chrome --remote-debugging-port=9222
 ### 2. Run the POC Script
 
 ```bash
+# Basic usage
 node poc/linkedin_vercel_agent.js "Your post content here"
+
+# Custom CDP port
+node poc/linkedin_vercel_agent.js "Your post content" --port 9222
+
+# Dry run (preview without posting)
+node poc/linkedin_vercel_agent.js "Your post content" --dry-run
 ```
 
 ## How It Works
