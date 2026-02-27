@@ -73,5 +73,9 @@ config/config.local.yaml
 config/*.local.yaml
 config/*.local.yml
 
+# Session data
+**/sessions/
+**/sessions/*.json
+**/sessions/.index.json
 
 examples/my_resume

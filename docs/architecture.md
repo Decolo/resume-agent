@@ -5,51 +5,58 @@ Deep design details stay in specialized docs under `docs/architecture/`.
 
 ## System Overview
 
-The repository has one core runtime and multiple entry adapters:
+Single `resume_agent/` package with logical submodules:
 
-1. CLI adapter (`apps/cli/resume_agent_cli/*`)
-2. Web/API adapter (`apps/api/resume_agent_api/*`)
-3. Web static assets (`apps/web/ui/*`)
-4. Core runtime (`packages/core/resume_agent_core/*`)
-5. Provider adapters (`packages/providers/resume_agent_providers/*`)
-6. Shared contracts (`packages/contracts/resume_agent_contracts/*`)
+1. **CLI** - Entry point (`resume_agent/cli/`)
+2. **Domain** - Pure business logic (`resume_agent/domain/`)
+   - Resume parsing, ATS scoring, job matching, validation
+   - Pure functions with no external dependencies
+3. **Core** - Agent runtime (`resume_agent/core/`)
+   - LLM orchestration, multi-agent system, session management
+4. **Tools** - Tool adapters (`resume_agent/tools/`)
+   - File I/O, bash execution, resume tools
+5. **Providers** - LLM provider adapters (`resume_agent/providers/`)
 
 ## Dependency Direction
 
-Intended direction:
+1. `cli` → `core` + `tools`
+2. `tools` → `domain` + `core`
+3. `core` → `domain` + `providers`
+4. `domain` → no dependencies (pure functions)
+5. `providers` → no dependencies
 
-1. `web`/`cli` adapters -> core runtime
-2. core runtime -> tools/providers/agents
-3. providers -> external SDKs only
-4. providers must not depend on app/web/tool layers
-5. `packages/*` (monorepo slices) must not depend on `apps/*`
-
-Automated boundary checks:
-
-- `tests/test_architecture_boundaries.py`
-- `tests/test_ci_guardrails.py`
-- `tests/test_shim_retirement_guardrails.py`
+Automated boundary checks: `tests/architecture/`
 
 ## Runtime Paths
 
 ### CLI Path
 
-`apps/cli/resume_agent_cli/app.py` -> `packages/core/resume_agent_core/agent_factory.py` -> `ResumeAgent`/`OrchestratorAgent` -> `LLMAgent` -> tools/providers.
+`resume_agent/cli/app.py` → `resume_agent/core/agent_factory.py` → `ResumeAgent`/`OrchestratorAgent` → `LLMAgent` → CLI tools → domain functions.
 
-### Web Path
+## Key Design Decisions
 
-`apps/api/resume_agent_api/app.py` -> API routers -> `InMemoryRuntimeStore` -> workspace/artifact providers + runtime control. Static UI assets are served from `apps/web/ui`.
+### Architecture Refactoring (2026-02-23)
+
+**Problem**: Original monolithic structure mixed domain logic with infrastructure.
+
+**Solution**: Extracted into layered architecture:
+- **Domain layer**: Pure functions (resume_parser, ats_scorer, job_matcher, etc.)
+- **Tools layer**: Tool adapters wrapping domain functions with file I/O
+- **Core layer**: Infrastructure only (agent loop, LLM integration, caching)
+
+### Monorepo Flattening (2026-02-25)
+
+**Problem**: 6 pyproject.toml files for 55 source files after removing web-next.
+
+**Solution**: Flattened into single `resume_agent/` package. Same logical boundaries enforced by architecture tests, but no workspace overhead.
 
 ## Key Constraints
 
-1. Write-like actions require approval flow unless auto-approve is enabled.
-2. Session/run lifecycle must remain deterministic (`queued/running/waiting_approval/...`).
-3. API contracts are versioned in `docs/api-reference/`.
-4. CI quality gates (`test`, `lint`, `typecheck`) are required for merge to `main`.
+1. Domain functions must remain pure (no side effects, no external dependencies)
+2. Tools are the only layer that performs I/O or calls external services
+3. Session/run lifecycle must remain deterministic
+4. CI quality gates (`test`, `lint`, `typecheck`) are required for merge to `main`
 
 ## Related Docs
 
-1. `docs/architecture/run-state-machine.md`
-2. `docs/api-reference/web-api-v1.md`
-3. `docs/ops/branch-protection.md`
-4. `docs/ops/release-gates.md`
+1. `.claude/CLAUDE.md` - Development guide for Claude Code

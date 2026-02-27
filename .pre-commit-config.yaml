@@ -19,8 +19,8 @@ repos:
         additional_dependencies:
           - types-PyYAML
           - types-requests
-        # Only run on files configured in pyproject.toml
-        files: ^(resume_agent/config_validator\.py|resume_agent/providers/.*)$
+        # Let mypy use pyproject.toml [tool.mypy] files config
+        pass_filenames: false
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

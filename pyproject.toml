@@ -6,26 +6,20 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
-    "google-genai>=1.0.0",
-    "openai>=1.0.0",
-    "httpx>=0.27.0",
-    "fastapi>=0.115.0",
-    "uvicorn>=0.30.0",
-    "pydantic>=2.0.0",
-    "python-multipart>=0.0.20",
     "pyyaml>=6.0",
     "prompt-toolkit>=3.0.0",
     "rich>=13.0.0",
-    "pymupdf>=1.24.0",
-    "python-docx>=1.1.0",
-    "markdown>=3.5.0",
     "python-dotenv>=1.2.1",
     "pyperclip>=1.11.0",
-    "aiosqlite>=0.19.0",
-    "socksio>=1.0.0",
+    "google-genai>=1.0.0",
+    "openai>=1.0.0",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
+pdf = ["pymupdf>=1.24.0"]
+docx = ["python-docx>=1.1.0"]
+html = ["markdown>=3.5.0"]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
@@ -36,14 +30,14 @@ dev = [
 ]
 
 [project.scripts]
-resume-agent = "apps.cli.resume_agent_cli.app:main"
+resume-agent = "resume_agent.cli.app:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["apps", "packages"]
+packages = ["resume_agent"]
 
 [tool.ruff]
 target-version = "py310"
@@ -59,13 +53,22 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
 [tool.mypy]
 python_version = "3.10"
 files = [
-    "apps/cli/resume_agent_cli/config_validator.py",
-    "packages/providers/resume_agent_providers",
+    "resume_agent/cli/config_validator.py",
+    "resume_agent/providers",
 ]
 ignore_missing_imports = true
+follow_imports = "silent"
 check_untyped_defs = true
 warn_return_any = true
 warn_unused_ignores = true

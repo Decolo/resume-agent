@@ -16,21 +16,21 @@ reviews:
     - "!.claude/**"
 
   path_instructions:
-    - path: "resume_agent/agent.py"
+    - path: "resume_agent/core/agent.py"
       instructions: |
         This is the single-agent mode entry point. Check that:
         - Tool parameters are converted from OpenAI format to Gemini types.Schema format
         - History maintains adjacent function call/response pairs
         - New tools are registered in _init_tools()
 
-    - path: "resume_agent/agent_factory.py"
+    - path: "resume_agent/core/agent_factory.py"
       instructions: |
         This is the multi-agent factory. Check that:
         - New tools are also registered here via _register_tools()
         - Agent tool subsets follow least privilege (ParserAgent, WriterAgent, FormatterAgent each get restricted tools)
         - IntentRouter routing logic is consistent
 
-    - path: "resume_agent/llm.py"
+    - path: "resume_agent/core/llm.py"
       instructions: |
         Contains HistoryManager with pair-aware pruning. Critical:
         - _prune_if_needed() and _fix_broken_pairs() must keep function call/response pairs adjacent
@@ -42,17 +42,17 @@ reviews:
         Write tools must never be cached.
         Check for command injection in bash tool, path traversal in file tools.
 
-    - path: "resume_agent/agents/**"
+    - path: "resume_agent/core/agents/**"
       instructions: |
         Agents must extend BaseAgent with agent_id, agent_type, capabilities.
         Each agent has isolated HistoryManager — context passed via AgentTask.context, not shared history.
 
-    - path: "resume_agent/cache.py"
+    - path: "resume_agent/core/cache.py"
       instructions: |
         TTL cache rules: file_read 60s, file_list 30s, resume_parse 300s.
         Write tools must NEVER be cached. Uses SHA256 key generation.
 
-    - path: "resume_agent/retry.py"
+    - path: "resume_agent/core/retry.py"
       instructions: |
         Retry config: 3 attempts, 1s base, 2x exponential, ±20% jitter.
         Must classify TransientError vs PermanentError correctly.
