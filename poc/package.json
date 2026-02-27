@@ -1,0 +1,26 @@
+{
+  "name": "resume-agent-linkedin-poc",
+  "version": "0.1.0",
+  "description": "LinkedIn browser control POC using Vercel Agent Browser",
+  "type": "module",
+  "scripts": {
+    "post": "node linkedin_vercel_agent.js",
+    "dry-run": "node linkedin_vercel_agent.js --dry-run",
+    "install-agent": "npm install -g agent-browser && agent-browser install"
+  },
+  "keywords": [
+    "linkedin",
+    "automation",
+    "cdp",
+    "browser-agent",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "peerDependencies": {
+    "agent-browser": ">=0.0.1"
+  }
+}

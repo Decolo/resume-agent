@@ -15,6 +15,10 @@ AI-powered browser automation for posting to LinkedIn using Vercel Agent Browser
 # Install Vercel Agent Browser globally
 npm install -g agent-browser
 agent-browser install
+
+# Or use the convenience script
+cd poc/
+npm run install-agent
 ```
 
 ## Usage
@@ -37,7 +41,11 @@ google-chrome --remote-debugging-port=9222
 ### 2. Run the POC Script
 
 ```bash
-# Basic usage
+# Using npm scripts (from poc/ directory)
+npm run post "Your post content here"
+npm run dry-run "Your post content"
+
+# Or directly with node
 node poc/linkedin_vercel_agent.js "Your post content here"
 
 # Custom CDP port
