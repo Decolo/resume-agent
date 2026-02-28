@@ -22,7 +22,7 @@ uv run ruff check --select F401 .
 
 ```bash
 # Run coverage and identify untested code
-uv run pytest --cov=apps --cov=packages --cov-report=term-missing
+uv run pytest --cov=resume_agent --cov=tests --cov-report=term-missing
 
 # Focus on new files or recently modified code
 git diff main --name-only | grep "\.py$" | xargs -r uv run pytest -q
@@ -58,7 +58,7 @@ Report violations and suggest fixes.
 Check for architectural boundary violations:
 1. Run test_architecture_boundaries.py
 2. Look for circular dependencies
-3. Check if new code follows layering (tools → agents → providers)
+3. Check if new code follows layering (cli -> core/tools, tools -> domain/core, core -> domain/providers)
 
 Report any drift from documented architecture.
 ```
@@ -85,15 +85,15 @@ When you find the same issue multiple times:
 
 ### Examples
 - "Always use `logger.info()` not `print()`" → Add to style guide
-- "Never import from `web/` outside web package" → Already enforced by test
+- "Domain modules must stay pure (no I/O, no provider imports)" → Already enforced by architecture tests
 - "All tools must have docstrings" → Could add a test
 
 ## Tracking Cleanup Work
 
-Use `docs/plans/active/` for cleanup initiatives:
-- Create a plan file: `YYYY-MM-DD-cleanup-<topic>.md`
-- Track progress as you work
-- Move to `docs/plans/completed/` when done
+Use `docs/maintenance/` for cleanup initiatives:
+- Create a note file: `YYYY-MM-DD-cleanup-<topic>.md`
+- Track command outputs and actions taken
+- Delete or merge notes into canonical docs once cleanup is complete
 
 ## Automation Opportunities
 

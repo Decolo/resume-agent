@@ -2,6 +2,8 @@
 
 > 基于 Vercel AI SDK 源码，分析其 LLM streaming 的完整数据管道。重点关注：SSE 解析、text/tool_call 分离、终端渲染策略。
 
+> 注：本文中的 `packages/*` 路径属于 Vercel AI SDK 仓库，不是本仓库的代码路径。
+
 ## 1. 原始 SSE 数据
 
 OpenAI 兼容 API（包括 Kimi、DeepSeek 等）设置 `stream: true` 后，HTTP 响应格式：

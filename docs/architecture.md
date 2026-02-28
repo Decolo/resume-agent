@@ -9,7 +9,7 @@ Single `resume_agent/` package with logical submodules:
 
 1. **CLI** - Entry point (`resume_agent/cli/`)
 2. **Domain** - Pure business logic (`resume_agent/domain/`)
-   - Resume parsing, ATS scoring, job matching, validation
+   - Resume parsing, linting, job matching, validation
    - Pure functions with no external dependencies
 3. **Core** - Agent runtime (`resume_agent/core/`)
    - LLM orchestration, multi-agent system, session management
@@ -40,7 +40,7 @@ Automated boundary checks: `tests/architecture/`
 **Problem**: Original monolithic structure mixed domain logic with infrastructure.
 
 **Solution**: Extracted into layered architecture:
-- **Domain layer**: Pure functions (resume_parser, ats_scorer, job_matcher, etc.)
+- **Domain layer**: Pure functions (resume_parser, resume_linter, job_matcher, etc.)
 - **Tools layer**: Tool adapters wrapping domain functions with file I/O
 - **Core layer**: Infrastructure only (agent loop, LLM integration, caching)
 
@@ -59,4 +59,4 @@ Automated boundary checks: `tests/architecture/`
 
 ## Related Docs
 
-1. `.claude/CLAUDE.md` - Development guide for Claude Code
+1. `CLAUDE.md` - Development guide for Claude Code
