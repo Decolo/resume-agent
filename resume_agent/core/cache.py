@@ -156,7 +156,7 @@ CACHE_CONFIGS = {
     "file_read": {"ttl": 60, "enabled": True},  # 1 minute
     "file_list": {"ttl": 30, "enabled": True},  # 30 seconds
     "resume_parse": {"ttl": 300, "enabled": True},  # 5 minutes
-    "ats_score": {"ttl": 120, "enabled": True},  # 2 minutes
+    "lint_resume": {"ttl": 120, "enabled": True},  # 2 minutes
     "job_match": {"ttl": 600, "enabled": True},  # 10 minutes
     # Write / validation tools - DO NOT cache
     "file_write": {"enabled": False},

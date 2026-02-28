@@ -255,7 +255,7 @@ class LLMAgent:
         "resume_parse",
         "web_fetch",
         "web_read",
-        "ats_score",
+        "lint_resume",
         "job_match",
         "resume_validate",
     }

@@ -16,6 +16,12 @@ workspace_dir: "./workspace"
 log_level: "INFO"
 log_file: "./logs/agent.log"
 
+# Chrome DevTools Protocol (for LinkedIn job tools)
+cdp:
+  port: 9222
+  chrome_profile: "~/.resume-agent/chrome-profile"
+  auto_launch: true   # auto-start Chrome if not running
+
 # Optional Gemini feature
 search_grounding:
   enabled: false

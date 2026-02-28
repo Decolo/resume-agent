@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Dict, Tuple
 
 from resume_agent.core.tools.base import BaseTool, ToolResult
-from resume_agent.domain.ats_scorer import format_ats_report, score_ats
 from resume_agent.domain.job_matcher import format_match_report, match_job
+from resume_agent.domain.resume_linter import format_lint_report, lint_resume
 from resume_agent.domain.resume_parser import extract_sections, json_resume_to_text
 from resume_agent.domain.resume_validator import (
     format_validation_report,
@@ -224,18 +224,18 @@ class ResumeWriterTool(BaseTool):
 
 
 # ---------------------------------------------------------------------------
-# ATSScorerTool
+# ResumeLinterTool
 # ---------------------------------------------------------------------------
 
 
-class ATSScorerTool(BaseTool):
-    """Score a resume for ATS compatibility."""
+class ResumeLinterTool(BaseTool):
+    """Lint a resume for structure, formatting, and keyword quality."""
 
-    name = "ats_score"
+    name = "lint_resume"
     description = (
-        "Score a resume for ATS compatibility. Returns a structured score (0-100) "
-        "with breakdown by formatting, completeness, keywords, and structure. "
-        "Optionally accepts a job description for keyword matching."
+        "Lint a resume for structure, formatting, and keyword quality. "
+        "Returns a score (0-100) with breakdown by formatting, completeness, "
+        "keywords, and structure. Optionally accepts a job description for keyword matching."
     )
     parameters = {
         "path": {
@@ -247,12 +247,17 @@ class ATSScorerTool(BaseTool):
             "type": "string",
             "description": "Optional job description text for keyword matching",
         },
+        "lang": {
+            "type": "string",
+            "description": "Optional language routing override: auto, en, zh",
+            "default": "auto",
+        },
     }
 
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
 
-    async def execute(self, path: str, job_description: str = "") -> ToolResult:
+    async def execute(self, path: str, job_description: str = "", lang: str = "auto") -> ToolResult:
         try:
             file_path = self._resolve_path(path)
             if not file_path.exists():
@@ -262,8 +267,8 @@ class ATSScorerTool(BaseTool):
             if not content.strip():
                 return ToolResult(success=False, output="", error=f"File is empty: {path}")
 
-            result = score_ats(content, job_description)
-            output = format_ats_report(result)
+            result = lint_resume(content, job_description, lang=lang)
+            output = format_lint_report(result)
 
             return ToolResult(
                 success=True,

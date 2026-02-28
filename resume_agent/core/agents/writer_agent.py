@@ -20,7 +20,7 @@ class WriterAgent(BaseAgent):
     - content_improve: Enhance existing resume content
     - content_generate: Generate new sections or bullet points
     - content_tailor: Customize content for specific jobs
-    - ats_optimize: Optimize content for ATS systems
+    - lint_optimize: Optimize content based on lint checks
 
     Tools:
     - file_read: Read existing content and job descriptions
@@ -49,7 +49,7 @@ class WriterAgent(BaseAgent):
         super().__init__(
             agent_id=agent_id,
             agent_type="writer",
-            capabilities=["content_improve", "content_generate", "content_tailor", "ats_optimize"],
+            capabilities=["content_improve", "content_generate", "content_tailor", "lint_optimize"],
             config=config,
             llm_agent=llm_agent,
             observer=observer,
@@ -81,7 +81,7 @@ class WriterAgent(BaseAgent):
             "tailor",
             "customize",
             "optimize",
-            "ats",
+            "lint",
             "bullet",
             "achievement",
             "action verb",

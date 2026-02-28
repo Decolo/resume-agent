@@ -29,9 +29,15 @@ Automated boundary checks: `tests/architecture/`
 
 ## Runtime Paths
 
-### CLI Path
+### CLI Path (Top-Level)
 
 `resume_agent/cli/app.py` → `resume_agent/core/agent_factory.py` → `ResumeAgent`/`OrchestratorAgent` → `LLMAgent` → CLI tools → domain functions.
+
+### Detailed Execution Flow
+
+For step-by-step runtime behavior (approval pauses, loop guard, auto-save, delegation), see:
+
+- `docs/architecture/execution-data-flow.md`
 
 ## Key Design Decisions
 
@@ -59,4 +65,7 @@ Automated boundary checks: `tests/architecture/`
 
 ## Related Docs
 
-1. `CLAUDE.md` - Development guide for Claude Code
+1. `docs/architecture/execution-data-flow.md` - End-to-end runtime flow
+2. `docs/sessions/session-persistence.md` - Session save/load internals
+3. `AGENTS.md` - Cross-agent repository operating constraints
+4. `CLAUDE.md` - Claude-specific runtime guidance
