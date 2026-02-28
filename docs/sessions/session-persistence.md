@@ -424,15 +424,15 @@ Phase 3 is **fully backward compatible** with Phase 2:
 
 ## Current Scope
 
-Session persistence currently works for both single-agent and multi-agent flows on the monorepo runtime (`apps/*` + `packages/*`).
+Session persistence currently works for both single-agent and multi-agent flows in the current single-package runtime (`resume_agent/*`).
 
 ## API Reference
 
 ### SessionSerializer
 
 ```python
-from packages.core.resume_agent_core.session import SessionSerializer
-from packages.providers.resume_agent_providers.types import Message, MessagePart
+from resume_agent.core.session import SessionSerializer
+from resume_agent.providers.types import Message, MessagePart
 
 # Serialize a message
 msg = Message(role="user", parts=[MessagePart.from_text("hello")])
@@ -451,7 +451,7 @@ obs_data = SessionSerializer.serialize_observability(observer)
 ### SessionManager
 
 ```python
-from packages.core.resume_agent_core.session import SessionManager
+from resume_agent.core.session import SessionManager
 
 # Initialize
 session_manager = SessionManager(workspace_dir="./workspace")
@@ -478,7 +478,7 @@ session_manager.delete_session(session_id)
 ### SessionIndex
 
 ```python
-from packages.core.resume_agent_core.session import SessionIndex
+from resume_agent.core.session import SessionIndex
 
 # Initialize
 index = SessionIndex(index_path=Path("sessions/.index.json"))

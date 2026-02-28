@@ -1,16 +1,16 @@
 # Quality Score
 
-This document tracks quality trends over time using stable, low-noise metrics.
+This document tracks low-noise quality signals for the current single-package
+runtime (`resume_agent/*`).
 
-## Baseline (2026-02-16)
+## Snapshot (2026-02-28)
 
 | Metric | Value | Source |
 |---|---:|---|
-| Python LOC (app + tests) | 16,616 | `wc -l` over `apps/**/*.py` + `packages/**/*.py` + `tests/**/*.py` |
-| Largest module | `apps/cli/resume_agent_cli/app.py` (1,222 LOC) | size scan |
-| Test suite status | 239 passed | `uv run --extra dev pytest -q` |
-| Required CI checks | `test`, `lint`, `typecheck` | `.github/workflows/ci.yml` |
-| Architecture boundary test | enabled | `tests/test_architecture_boundaries.py` |
+| Python LOC (`resume_agent` + `tests`) | 15,384 | `find resume_agent tests -name '*.py' -type f -print0 \| xargs -0 wc -l` |
+| Largest module | `resume_agent/cli/app.py` (1,456 LOC) | `find resume_agent -name '*.py' ... \| sort -nr` |
+| Architecture boundary tests | enabled | `tests/test_architecture_boundaries.py` |
+| Required CI checks (target) | `test`, `lint`, `typecheck` | `.github/workflows/ci.yml` |
 
 ## Scoring Model (v1)
 
@@ -25,11 +25,10 @@ Start at 100. Apply penalties:
 
 ## Current Score (v1)
 
-- Score: **95/100**
+- Score: **100/100** (snapshot-based; does not include remote issue tracker state)
 - Notes:
-  - No CI failures observed in current baseline.
-  - Largest module (`apps/cli/resume_agent_cli/app.py`) is high but below 1,500 LOC threshold.
-  - Staging cost guardrail validation is still pending.
+  - Largest module is close to threshold (1,456 / 1,500).
+  - Keep refactor pressure on `resume_agent/cli/app.py`.
 
 ## Update Cadence
 
@@ -41,6 +40,6 @@ Update this file:
 
 ## Next Improvement Targets
 
-1. Reduce `apps/cli/resume_agent_cli/app.py` below 1,000 LOC.
-2. Add load/perf metric tracking once Week 8 ops work starts.
-3. Add trend history section (weekly snapshots).
+1. Keep `resume_agent/cli/app.py` below 1,500 LOC.
+2. Add trend snapshots (weekly table) after 4+ data points.
+3. Keep boundary tests and CI checks mandatory on `main`.

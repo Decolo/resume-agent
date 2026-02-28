@@ -4,7 +4,7 @@
 
 **Date**: 2024-01 (retroactive documentation)
 
-**Path Update** (2026-02-16): implementation moved from legacy `resume_agent/*` to `apps/*` + `packages/*`.
+**Path Update** (2026-02-28): implementation now lives in single-package layout under `resume_agent/*`.
 
 ## Context
 
@@ -41,6 +41,6 @@ Breaking function call/response pairs in history causes Gemini API errors. The `
 2. **Abstraction layer**: Would add another layer of indirection without clear benefits
 
 ## References
-- `packages/core/resume_agent_core/tools/base.py` - Tool schema definition
-- `packages/core/resume_agent_core/llm.py` - HistoryManager with pair-aware pruning
-- `packages/core/resume_agent_core/agent.py` - Format conversion in `_register_tools()`
+- `resume_agent/core/tools/base.py` - Tool schema definition
+- `resume_agent/core/llm.py` - HistoryManager with pair-aware pruning
+- `resume_agent/core/agent.py` - Format conversion in `_register_tools()`

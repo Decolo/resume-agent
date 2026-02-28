@@ -4,7 +4,7 @@
 
 **Date**: 2024-02 (Phase 2 implementation)
 
-**Path Update** (2026-02-16): implementation moved from legacy `resume_agent/*` to `apps/*` + `packages/*`.
+**Path Update** (2026-02-28): implementation now lives in single-package layout under `resume_agent/*`.
 
 ## Context
 
@@ -65,7 +65,7 @@ Entry point: `agent_factory.create_agent()` returns appropriate agent type.
 3. **Manual mode selection**: Auto mode provides better UX
 
 ## References
-- `packages/core/resume_agent_core/agent_factory.py` - Agent creation and routing
-- `packages/core/resume_agent_core/agents/` - Specialized agent implementations
-- `packages/core/resume_agent_core/agents/delegation.py` - DelegationManager
-- `packages/core/resume_agent_core/agents/protocol.py` - AgentTask/AgentResult contracts
+- `resume_agent/core/agent_factory.py` - Agent creation and routing
+- `resume_agent/core/agents/` - Specialized agent implementations
+- `resume_agent/core/agents/delegation.py` - DelegationManager
+- `resume_agent/core/agents/protocol.py` - AgentTask/AgentResult contracts

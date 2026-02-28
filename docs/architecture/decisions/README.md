@@ -14,7 +14,6 @@ Each ADR follows this structure:
 
 - [ADR-001: Gemini Function Calling Format](./001-gemini-function-calling.md) - Why we convert OpenAI format to Gemini types
 - [ADR-002: Multi-Agent Architecture](./002-multi-agent-architecture.md) - Three operational modes (single, multi, auto)
-- [ADR-003: FastAPI for Web Backend](./003-fastapi-web-backend.md) - Why FastAPI over alternatives
 
 ## Creating New ADRs
 
