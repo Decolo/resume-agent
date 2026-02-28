@@ -520,7 +520,7 @@ def _create_writer_agent(
         verbose=verbose,
     )
 
-    _register_tools(llm_agent, tools, ["file_read", "file_write", "ats_score", "job_match"])
+    _register_tools(llm_agent, tools, ["file_read", "file_write", "lint_resume", "job_match"])
 
     llm_agent.history_manager = history_manager.get_agent_history("writer_agent")
 
@@ -626,8 +626,10 @@ def _create_orchestrator_agent(
             "file_rename",
             "web_read",
             "web_fetch",
-            "ats_score",
+            "lint_resume",
             "job_match",
+            "job_search",
+            "job_detail",
             "resume_validate",
         ],
     )

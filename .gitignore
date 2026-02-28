@@ -79,3 +79,6 @@ config/*.local.yml
 **/sessions/.index.json
 
 examples/my_resume
+
+# Chrome profile for LinkedIn POC (hundreds of MB)
+poc/.chrome-profile/

@@ -1,4 +1,4 @@
-"""Pure domain logic for ATS (Applicant Tracking System) resume scoring.
+"""Pure domain logic for resume linting (structure, formatting, keyword checks).
 
 All functions operate on content strings -- no file I/O.
 """
@@ -9,11 +9,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
+from .linting import RuleContext, build_default_runner, decide_language, parse_resume_ast
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-ATS_KEYWORDS: Dict[str, List[str]] = {
+LINT_KEYWORDS: Dict[str, List[str]] = {
     "action_verbs": [
         "achieved",
         "administered",
@@ -58,7 +60,7 @@ ATS_KEYWORDS: Dict[str, List[str]] = {
     "contact": ["email", "phone", "linkedin", "github", "portfolio"],
 }
 
-SCORING_WEIGHTS: Dict[str, float] = {
+LINT_WEIGHTS: Dict[str, float] = {
     "formatting": 0.20,
     "completeness": 0.25,
     "keywords": 0.30,
@@ -67,8 +69,8 @@ SCORING_WEIGHTS: Dict[str, float] = {
 
 
 @dataclass
-class ATSScoreResult:
-    """Structured result from ATS scoring."""
+class LintResult:
+    """Structured result from resume linting."""
 
     overall_score: int
     formatting: Tuple[int, List[str]]
@@ -83,29 +85,70 @@ class ATSScoreResult:
 # ---------------------------------------------------------------------------
 
 
-def score_ats(content: str, job_description: str = "") -> ATSScoreResult:
-    """Score resume *content* for ATS compatibility.
+def lint_resume(
+    content: str,
+    job_description: str = "",
+    lang: str = "auto",
+    enable_nlp: bool = True,
+    strict_scope: bool = True,
+) -> LintResult:
+    """Lint resume *content* for structure, formatting, and keyword quality.
 
-    Returns an :class:`ATSScoreResult` with per-category breakdowns.
+    Returns a :class:`LintResult` with per-category breakdowns.
     Optionally accepts *job_description* for keyword matching.
     """
+    ast = parse_resume_ast(content)
+    lang_decision = decide_language(content, requested_lang=lang, enable_nlp=enable_nlp)
+    runner = build_default_runner()
+    rule_findings = runner.run(
+        ast=ast,
+        context=RuleContext(
+            lang=lang_decision.lang,
+            nlp=lang_decision.nlp,
+            nlp_backend=lang_decision.nlp_backend,
+            strict_scope=strict_scope,
+        ),
+    )
+
     fmt_score, fmt_issues = _check_formatting(content)
-    comp_score, comp_issues = _check_completeness(content)
-    kw_score, kw_issues = _check_keywords(content, job_description)
+    comp_score, comp_issues = _check_completeness(content, lang=lang_decision.lang)
+    kw_score, kw_issues = _check_keywords(
+        content,
+        ast,
+        job_description,
+        strict_scope,
+        lang=lang_decision.lang,
+    )
     struct_score, struct_issues = _check_structure(content)
+    kw_score, kw_issues = _apply_rule_findings(
+        score=kw_score,
+        issues=kw_issues,
+        findings=rule_findings,
+        category="keywords",
+    )
+    struct_score, struct_issues = _apply_rule_findings(
+        score=struct_score,
+        issues=struct_issues,
+        findings=rule_findings,
+        category="structure",
+    )
 
     overall = round(
-        fmt_score * SCORING_WEIGHTS["formatting"]
-        + comp_score * SCORING_WEIGHTS["completeness"]
-        + kw_score * SCORING_WEIGHTS["keywords"]
-        + struct_score * SCORING_WEIGHTS["structure"]
+        fmt_score * LINT_WEIGHTS["formatting"]
+        + comp_score * LINT_WEIGHTS["completeness"]
+        + kw_score * LINT_WEIGHTS["keywords"]
+        + struct_score * LINT_WEIGHTS["structure"]
     )
 
     suggestions: List[str] = []
     for issues in [fmt_issues, comp_issues, kw_issues, struct_issues]:
         suggestions.extend(issues)
+    if lang_decision.detector != "manual":
+        suggestions.append(
+            f"Language route: {lang_decision.lang} ({lang_decision.detector}); NLP backend: {lang_decision.nlp_backend}"
+        )
 
-    return ATSScoreResult(
+    return LintResult(
         overall_score=overall,
         formatting=(fmt_score, fmt_issues),
         completeness=(comp_score, comp_issues),
@@ -120,8 +163,8 @@ def score_ats(content: str, job_description: str = "") -> ATSScoreResult:
 # ---------------------------------------------------------------------------
 
 
-def format_ats_report(result: ATSScoreResult) -> str:
-    """Render an :class:`ATSScoreResult` as a human-readable report."""
+def format_lint_report(result: LintResult) -> str:
+    """Render a :class:`LintResult` as a human-readable report."""
     grade = _score_to_grade(result.overall_score)
     bar = _score_bar(result.overall_score)
 
@@ -131,15 +174,15 @@ def format_ats_report(result: ATSScoreResult) -> str:
     struct_score = result.structure[0]
 
     lines = [
-        f"## ATS Score: {result.overall_score}/100 {grade}",
+        f"## Lint Score: {result.overall_score}/100 {grade}",
         bar,
         "",
         "| Category     | Score | Weight |",
         "|-------------|-------|--------|",
-        f"| Formatting   | {fmt_score:3d}   | {SCORING_WEIGHTS['formatting']:.0%}  |",
-        f"| Completeness | {comp_score:3d}   | {SCORING_WEIGHTS['completeness']:.0%}  |",
-        f"| Keywords     | {kw_score:3d}   | {SCORING_WEIGHTS['keywords']:.0%}  |",
-        f"| Structure    | {struct_score:3d}   | {SCORING_WEIGHTS['structure']:.0%}  |",
+        f"| Formatting   | {fmt_score:3d}   | {LINT_WEIGHTS['formatting']:.0%}  |",
+        f"| Completeness | {comp_score:3d}   | {LINT_WEIGHTS['completeness']:.0%}  |",
+        f"| Keywords     | {kw_score:3d}   | {LINT_WEIGHTS['keywords']:.0%}  |",
+        f"| Structure    | {struct_score:3d}   | {LINT_WEIGHTS['structure']:.0%}  |",
     ]
 
     if result.suggestions:
@@ -225,7 +268,7 @@ def _check_formatting(content: str) -> Tuple[int, List[str]]:
     return max(0, score), issues
 
 
-def _check_completeness(content: str) -> Tuple[int, List[str]]:
+def _check_completeness(content: str, lang: str = "en") -> Tuple[int, List[str]]:
     score = 100
     issues: List[str] = []
     content_lower = content.lower()
@@ -245,13 +288,20 @@ def _check_completeness(content: str) -> Tuple[int, List[str]]:
         issues.append("No LinkedIn URL -- consider adding your LinkedIn profile")
 
     required_sections = {
-        "experience": ["experience", "work history", "employment", "professional experience"],
-        "education": ["education", "academic"],
-        "skills": ["skills", "technical skills", "core competencies"],
+        "experience": [
+            "experience",
+            "work history",
+            "employment",
+            "professional experience",
+            "工作经历",
+            "工作经验",
+        ],
+        "education": ["education", "academic", "教育", "学历"],
+        "skills": ["skills", "technical skills", "core competencies", "技能", "专业技能", "技术栈"],
     }
     optional_sections = {
-        "summary": ["summary", "objective", "profile", "about me"],
-        "projects": ["projects", "portfolio"],
+        "summary": ["summary", "objective", "profile", "about me", "简介", "个人简介"],
+        "projects": ["projects", "portfolio", "项目", "项目经验"],
     }
 
     for section_name, keywords in required_sections.items():
@@ -265,7 +315,7 @@ def _check_completeness(content: str) -> Tuple[int, List[str]]:
             issues.append(f"No '{section_name}' section -- recommended for a complete resume")
 
     date_patterns = re.findall(
-        r"((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*[\s,]+\d{4}|\d{4}\s*[-–—]\s*(?:\d{4}|present|current))",
+        r"((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*[\s,]+\d{4}|\d{4}\s*[-–—]\s*(?:\d{4}|present|current)|\d{4}\s*年(?:\s*\d{1,2}\s*月)?)",
         content_lower,
     )
     if not date_patterns:
@@ -275,49 +325,105 @@ def _check_completeness(content: str) -> Tuple[int, List[str]]:
     return max(0, score), issues
 
 
-def _check_keywords(content: str, job_description: str = "") -> Tuple[int, List[str]]:
+def _check_keywords(
+    content: str,
+    ast,
+    job_description: str = "",
+    strict_scope: bool = True,
+    lang: str = "en",
+) -> Tuple[int, List[str]]:
     score = 100
     issues: List[str] = []
-    content_lower = content.lower()
-    words = re.findall(r"\b[a-z]+\b", content_lower)
+    resume_words = _extract_keywords(content, lang=lang)
 
-    found_verbs = [v for v in ATS_KEYWORDS["action_verbs"] if v in content_lower]
-    verb_ratio = len(found_verbs) / max(len(ATS_KEYWORDS["action_verbs"]), 1)
-    if verb_ratio < 0.2:
-        score -= 20
-        issues.append("Few action verbs found -- use strong verbs like: Led, Developed, Implemented, Achieved")
-    elif verb_ratio < 0.4:
-        score -= 10
-        issues.append("Could use more action verbs -- try: Optimized, Streamlined, Delivered, Launched")
+    if strict_scope:
+        focus_bullets = ast.get_experience_bullets() if ast.has_experience_section else []
+    else:
+        focus_bullets = ast.bullets
+    if strict_scope and not ast.has_experience_section:
+        score -= 35
+        issues.append("Cannot evaluate experience bullet quality because the experience section is missing")
+    if focus_bullets and lang == "en":
+        focus_text = "\n".join(focus_bullets).lower()
+        found_verbs = [v for v in LINT_KEYWORDS["action_verbs"] if v in focus_text]
+        verb_ratio = len(found_verbs) / max(len(LINT_KEYWORDS["action_verbs"]), 1)
+        if verb_ratio < 0.2:
+            score -= 20
+            issues.append(
+                "Few action verbs found in experience bullets -- use strong verbs like: Led, Developed, Implemented, Achieved"
+            )
+        elif verb_ratio < 0.4:
+            score -= 10
+            issues.append(
+                "Could use more action verbs in experience bullets -- try: Optimized, Streamlined, Delivered, Launched"
+            )
 
-    numbers = re.findall(r"\d+[%$kKmMbB]|\$[\d,]+|\d+\+?\s*(?:years?|months?|clients?|users?|projects?)", content)
-    if not numbers:
-        score -= 20
-        issues.append("No quantifiable achievements -- add metrics (e.g., 'Increased revenue by 25%')")
-    elif len(numbers) < 3:
-        score -= 10
-        issues.append(f"Only {len(numbers)} metric(s) found -- aim for at least 3-5 quantified achievements")
+    numbers = re.findall(
+        r"\d+[%$kKmMbB]|\$[\d,]+|\d+\+?\s*(?:years?|months?|clients?|users?|projects?)",
+        "\n".join(focus_bullets) if focus_bullets else "",
+    )
+    if focus_bullets:
+        if not numbers:
+            score -= 20
+            issues.append(
+                "No quantifiable achievements in experience bullets -- add metrics (e.g., 'Increased revenue by 25%')"
+            )
+        elif len(numbers) < 3:
+            score -= 10
+            issues.append(f"Only {len(numbers)} metric(s) found in experience bullets -- aim for at least 3-5")
 
     if job_description.strip():
-        jd_lower = job_description.lower()
-        jd_words = set(re.findall(r"\b[a-z]{3,}\b", jd_lower))
-        jd_keywords = jd_words - _STOP_WORDS
-        resume_words = set(words)
+        jd_keywords = _extract_keywords(job_description, lang=lang)
+        if not jd_keywords:
+            return max(0, score), issues
 
         matched = jd_keywords & resume_words
         missing = jd_keywords - resume_words
 
         match_rate = len(matched) / max(len(jd_keywords), 1)
         if match_rate < 0.3:
-            score -= 25
+            score -= 35
             top_missing = sorted(missing)[:10]
             issues.append(f"Low job keyword match ({match_rate:.0%}) -- consider adding: {', '.join(top_missing)}")
         elif match_rate < 0.5:
-            score -= 15
+            score -= 20
             top_missing = sorted(missing)[:7]
             issues.append(f"Moderate job keyword match ({match_rate:.0%}) -- missing: {', '.join(top_missing)}")
 
     return max(0, score), issues
+
+
+def _extract_keywords(text: str, lang: str = "en") -> set[str]:
+    text_lower = text.lower()
+    keywords = set(re.findall(r"\b[a-z]{3,}\b", text_lower))
+
+    if lang == "zh":
+        # Build CJK bigrams for robust overlap matching on Chinese text.
+        chunks = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+        for chunk in chunks:
+            if len(chunk) == 2:
+                keywords.add(chunk)
+                continue
+            for i in range(len(chunk) - 1):
+                keywords.add(chunk[i : i + 2])
+
+    return keywords - _STOP_WORDS
+
+
+def _apply_rule_findings(
+    score: int,
+    issues: List[str],
+    findings,
+    category: str,
+) -> Tuple[int, List[str]]:
+    adjusted = score
+    out = list(issues)
+    for finding in findings:
+        if finding.category != category:
+            continue
+        adjusted -= max(0, finding.penalty)
+        out.append(f"{finding.message} [rule:{finding.rule_id}]")
+    return max(0, adjusted), out
 
 
 def _check_structure(content: str) -> Tuple[int, List[str]]:

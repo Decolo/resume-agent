@@ -9,6 +9,7 @@ If you want guided onboarding and background reading, use
 
 - **[Environment Setup](./setup/environment-setup.md)** - Config priority and provider setup
 - **[Architecture Map](./architecture.md)** - Layering and dependency direction
+- **[Execution Data Flow](./architecture/execution-data-flow.md)** - Runtime path from CLI to provider/tools
 - **[Phase 1 Quick Reference](./api-reference/phase1-quick-reference.md)** - Runtime reliability APIs
 - **[Session Persistence](./sessions/session-persistence.md)** - Session storage and restore flows
 

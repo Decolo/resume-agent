@@ -1377,14 +1377,14 @@ def main():
             verbose=args.verbose,
         )
         session_manager = SessionManager(args.workspace)
-        tools = create_tools(args.workspace)
+        tools = create_tools(args.workspace, raw_config=raw_config)
         agent = ResumeAgent(
             llm_config=llm_config, agent_config=agent_config, session_manager=session_manager, tools=tools
         )
     elif args.multi_agent:
         # Force multi-agent mode
         session_manager = SessionManager(args.workspace)
-        tools = create_tools(args.workspace)
+        tools = create_tools(args.workspace, raw_config=raw_config)
         agent = create_agent(
             llm_config=llm_config,
             workspace_dir=args.workspace,
@@ -1398,7 +1398,7 @@ def main():
     else:
         # Use config to determine mode (single, multi, or auto)
         session_manager = SessionManager(args.workspace)
-        tools = create_tools(args.workspace)
+        tools = create_tools(args.workspace, raw_config=raw_config)
         agent = create_agent(
             llm_config=llm_config,
             workspace_dir=args.workspace,

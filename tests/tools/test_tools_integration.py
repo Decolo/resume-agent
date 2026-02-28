@@ -1,6 +1,6 @@
 """End-to-end integration tests for the resume agent pipeline.
 
-Tests the full flow: parse → ATS score → job match → write → validate → preview.
+Tests the full flow: parse → lint → job match → write → validate → preview.
 All tools here are heuristic-based (no LLM calls), so no mocking needed.
 """
 
@@ -9,8 +9,8 @@ import pytest
 from resume_agent.core.preview import PendingWriteManager
 from resume_agent.core.templates import AVAILABLE_TEMPLATES
 from resume_agent.tools import (
-    ATSScorerTool,
     JobMatcherTool,
+    ResumeLinterTool,
     ResumeParserTool,
     ResumeValidatorTool,
     ResumeWriterTool,
@@ -69,7 +69,7 @@ Preferred:
 
 
 class TestFullPipeline:
-    """End-to-end: parse → ATS score → job match → improve → write → validate."""
+    """End-to-end: parse → lint → job match → improve → write → validate."""
 
     @pytest.mark.asyncio
     async def test_complete_pipeline(self, tmp_path):
@@ -77,7 +77,7 @@ class TestFullPipeline:
         resume_path.write_text(SAMPLE_RESUME, encoding="utf-8")
 
         parser = ResumeParserTool(workspace_dir=str(tmp_path))
-        scorer = ATSScorerTool(workspace_dir=str(tmp_path))
+        linter = ResumeLinterTool(workspace_dir=str(tmp_path))
         matcher = JobMatcherTool(workspace_dir=str(tmp_path))
         writer = ResumeWriterTool(workspace_dir=str(tmp_path))
         validator = ResumeValidatorTool(workspace_dir=str(tmp_path))
@@ -87,10 +87,10 @@ class TestFullPipeline:
         assert parse_result.success
         parsed_content = parse_result.output
 
-        # 2. ATS Score
-        ats_result = await scorer.execute(path=str(resume_path))
-        assert ats_result.success
-        initial_score = ats_result.data["overall_score"]
+        # 2. Lint
+        lint_result = await linter.execute(path=str(resume_path))
+        assert lint_result.success
+        initial_score = lint_result.data["overall_score"]
         assert 0 <= initial_score <= 100
 
         # 3. Job Match
@@ -131,8 +131,8 @@ class TestFullPipeline:
         assert html_valid.success
         assert html_valid.data["valid"] is True
 
-        # 7. Re-score improved resume
-        rescore = await scorer.execute(path=str(output_md))
+        # 7. Re-lint improved resume
+        rescore = await linter.execute(path=str(output_md))
         assert rescore.success
         # Score should still be reasonable
         assert rescore.data["overall_score"] >= 40
@@ -165,21 +165,21 @@ class TestToolChaining:
     """Test that tool outputs can feed into subsequent tools."""
 
     @pytest.mark.asyncio
-    async def test_parse_then_ats_score(self, tmp_path):
-        """Parse a resume, then score it for ATS compatibility."""
+    async def test_parse_then_lint(self, tmp_path):
+        """Parse a resume, then lint it for quality."""
         resume_path = tmp_path / "resume.md"
         resume_path.write_text(SAMPLE_RESUME, encoding="utf-8")
 
         parser = ResumeParserTool(workspace_dir=str(tmp_path))
-        scorer = ATSScorerTool(workspace_dir=str(tmp_path))
+        linter = ResumeLinterTool(workspace_dir=str(tmp_path))
 
         # Step 1: Parse
         parse_result = await parser.execute(path=str(resume_path))
         assert parse_result.success
         assert "Jane Smith" in parse_result.output
 
-        # Step 2: ATS Score
-        score_result = await scorer.execute(path=str(resume_path))
+        # Step 2: Lint
+        score_result = await linter.execute(path=str(resume_path))
         assert score_result.success
         assert score_result.data["overall_score"] >= 50
 

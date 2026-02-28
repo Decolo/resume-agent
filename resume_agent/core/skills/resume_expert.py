@@ -69,7 +69,7 @@ When helping with a resume:
 
 - `resume_parse`: Read and analyze existing resume files (PDF, DOCX, MD, TXT, JSON)
 - `resume_write`: Write resume to file (MD, TXT, JSON, HTML formats)
-- `ats_score`: Score a resume for ATS compatibility (0-100) with detailed breakdown and suggestions
+- `lint_resume`: Lint a resume for structure, formatting, and keyword quality (0-100) with detailed breakdown and suggestions
 - `job_match`: Compare resume against a job description — shows matching/missing keywords and suggestions
 - `resume_validate`: Validate a resume file for completeness, formatting, and encoding issues
 - `file_read`: Read any text file
