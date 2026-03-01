@@ -156,7 +156,7 @@ class TestJobDetailTool:
             patch("resume_agent.tools.linkedin_tools.CDPClient", return_value=mock_client),
             patch(_PREFLIGHT_PATCH, return_value=False),
         ):
-            result = await tool.execute(job_id="1234567890")
+            result = await tool.execute(job_url="https://www.linkedin.com/jobs/view/1234567890/")
 
         assert result.success
         assert result.data["title"] == "Senior Software Engineer"
@@ -164,12 +164,20 @@ class TestJobDetailTool:
         assert "distributed systems" in result.data["description"]
 
     @pytest.mark.asyncio
-    async def test_missing_job_id_returns_error(self):
+    async def test_missing_job_url_returns_error(self):
         tool = JobDetailTool()
-        result = await tool.execute(job_id="")
+        result = await tool.execute(job_url="")
 
         assert not result.success
-        assert "job_id" in result.error.lower()
+        assert "job_url" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_invalid_job_url_returns_error(self):
+        tool = JobDetailTool()
+        result = await tool.execute(job_url="https://example.com/jobs/view/123")
+
+        assert not result.success
+        assert "invalid job_url" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_chrome_not_running(self):
@@ -179,7 +187,7 @@ class TestJobDetailTool:
         mock_client.connect.side_effect = ConnectionError("Connection refused")
 
         with patch("resume_agent.tools.linkedin_tools.CDPClient", return_value=mock_client):
-            result = await tool.execute(job_id="1234567890")
+            result = await tool.execute(job_url="https://www.linkedin.com/jobs/view/1234567890/")
 
         assert not result.success
         assert "Chrome" in result.error or "connect" in result.error.lower()
@@ -194,12 +202,29 @@ class TestJobDetailTool:
             patch("resume_agent.tools.linkedin_tools.CDPClient", return_value=mock_client),
             patch(_PREFLIGHT_PATCH, return_value=True),
         ):
-            result = await tool.execute(job_id="1234567890")
+            result = await tool.execute(job_url="https://www.linkedin.com/jobs/view/1234567890/")
 
         assert not result.success
         assert "login" in result.error.lower() or "log in" in result.error.lower()
         # Should NOT have navigated to the detail URL
         mock_client.navigate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_detail_success_not_overridden_by_close_error(self):
+        tool = JobDetailTool(cdp_port=9222)
+
+        mock_client = AsyncMock()
+        mock_client.extract_main_text.return_value = DETAIL_INNER_TEXT
+        mock_client.close.side_effect = RuntimeError("cleanup failed")
+
+        with (
+            patch("resume_agent.tools.linkedin_tools.CDPClient", return_value=mock_client),
+            patch(_PREFLIGHT_PATCH, return_value=False),
+        ):
+            result = await tool.execute(job_url="https://www.linkedin.com/jobs/view/1234567890/")
+
+        assert result.success
+        assert result.data["title"] == "Senior Software Engineer"
 
 
 class TestCDPClientAutoLaunch:

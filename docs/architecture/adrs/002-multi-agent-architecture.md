@@ -25,9 +25,9 @@ Implement **three operational modes** controlled by `multi_agent.enabled` in con
 
 2. **`true`**: Multi-agent mode
    - `OrchestratorAgent` delegates to specialized agents:
-     - `ParserAgent`: resume parsing (least privilege: parse, read, list)
-     - `WriterAgent`: content generation (read, write)
-     - `FormatterAgent`: output formatting (resume_write, read, write)
+     - `ParserAgent`: resume parsing (least privilege: `resume_parse`, `file_read`, `file_list`)
+     - `WriterAgent`: content generation and lint optimization (`file_read`, `file_write`, `lint_resume`, `job_match`)
+     - `FormatterAgent`: output formatting (`resume_write`, `resume_validate`, `file_read`, `file_write`)
    - Agents wrapped as tools via `AgentTool`
    - Isolated history per agent via `MultiAgentHistoryManager`
 

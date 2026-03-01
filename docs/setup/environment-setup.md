@@ -49,6 +49,28 @@ temperature: 0.9
 log_level: "DEBUG"
 ```
 
+### LinkedIn Tool Settings (Optional)
+
+If you use `job_search` / `job_detail`, configure a LinkedIn browser driver.
+
+```yaml
+cdp:
+  port: 9222
+  chrome_profile: "~/.resume-agent/chrome-profile"
+  auto_launch: true
+
+linkedin:
+  driver: "cdp" # cdp | patchright
+  patchright:
+    headless: false
+    channel: "chrome"
+    auto_launch: true
+```
+
+Notes:
+- The tools require a logged-in LinkedIn browser session.
+- `job_detail` requires a full LinkedIn `job_url` input (not just a numeric `job_id`).
+
 ## Configuration Priority
 
 1. **Environment variables** (`.env`) - Highest priority

@@ -264,6 +264,12 @@ class LLMAgent:
     _MAX_REPEAT_READ_ONLY = 2
     _MAX_REPEAT_DEFAULT = 1
     _WRITE_TOOLS = {"file_write", "resume_write", "file_rename"}
+    _JOB_SEARCH_TOOL = "job_search"
+    _JOB_DETAIL_TOOL = "job_detail"
+    _JOB_DETAIL_CONFLICT_REASON = (
+        "Rejected by policy: job_detail cannot run in the same step as job_search. "
+        "Use job_search for discovery, then call job_detail in a later step with an explicit LinkedIn job_url."
+    )
 
     def __init__(
         self,
@@ -431,7 +437,23 @@ class LLMAgent:
                     self.cache.print_stats()
                 return response_text
 
-            # 7. Pause before executing any write tools (approval required)
+            # 7. Apply tool policy filters before execution / approval flow.
+            function_calls, policy_responses = self._apply_tool_call_policy(function_calls)
+
+            # If all calls were rejected by policy, record rejections and continue.
+            if not function_calls and policy_responses:
+                tool_message = Message(
+                    role="tool",
+                    parts=[MessagePart.from_function_response(fr) for fr in policy_responses],
+                )
+                self.history_manager.add_message(tool_message)
+                if self.session_manager:
+                    await self._auto_save()
+                step_duration = (time.time() - start_time) * 1000
+                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                continue
+
+            # 8. Pause before executing any write tools (approval required)
             if self._requires_tool_approval(function_calls) and not self._auto_approve_tools:
                 if self._approval_handler:
                     # API mode: delegate to approval handler
@@ -461,7 +483,7 @@ class LLMAgent:
                     self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                     return "Tool call(s) require approval before execution. Use /approve or /reject."
 
-            # 7. Loop guard to prevent runaway tool-only loops
+            # 9. Loop guard to prevent runaway tool-only loops
             guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
             if guard_reason:
                 step_duration = (time.time() - start_time) * 1000
@@ -478,19 +500,20 @@ class LLMAgent:
                 self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                 return guard_reason
 
-            # 8. Execute tools in parallel
-            function_responses = await asyncio.gather(
+            # 10. Execute tools in parallel
+            executed_responses = await asyncio.gather(
                 *[self._execute_tool(fc) for fc in function_calls],
                 return_exceptions=False,
             )
+            function_responses = [*policy_responses, *executed_responses]
 
-            # 9. Capture last tool result for fallback
-            if len(function_calls) == 1 and function_responses:
-                fr = function_responses[0]
+            # 11. Capture last tool result for fallback
+            if len(function_calls) == 1 and executed_responses:
+                fr = executed_responses[0]
                 if fr and fr.response:
                     loop_state["last_result"] = fr.response.get("result")
 
-            # 10. Update history + auto-save
+            # 12. Update history + auto-save
             tool_message = Message(
                 role="tool",
                 parts=[MessagePart.from_function_response(fr) for fr in function_responses],
@@ -499,7 +522,7 @@ class LLMAgent:
             if self.session_manager:
                 await self._auto_save()
 
-            # 11. Log step end
+            # 13. Log step end
             step_duration = (time.time() - start_time) * 1000
             self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
 
@@ -617,7 +640,12 @@ class LLMAgent:
                     function_calls_map[call_key] = FunctionCall(name="", arguments={}, id=generated_id)
                     function_call_order.append(call_key)
 
-                arg_buffers[call_key] = arg_buffers.get(call_key, "") + delta.function_call_delta
+                # Normalize argument chunks because some providers emit cumulative
+                # snapshots instead of incremental deltas.
+                prior_args = arg_buffers.get(call_key, "")
+                normalized_args_delta = self._normalize_stream_text_delta(prior_args, delta.function_call_delta)
+                if normalized_args_delta:
+                    arg_buffers[call_key] = prior_args + normalized_args_delta
                 last_call_key = call_key
 
         # finalize function call arguments
@@ -788,19 +816,24 @@ class LLMAgent:
         if not calls:
             return []
 
-        responses = await asyncio.gather(
-            *[self._execute_tool(fc) for fc in calls],
-            return_exceptions=False,
-        )
+        calls, policy_responses = self._apply_tool_call_policy(calls)
+        executed_responses: List[FunctionResponse] = []
+        if calls:
+            executed_responses = await asyncio.gather(
+                *[self._execute_tool(fc) for fc in calls],
+                return_exceptions=False,
+            )
+        responses = [*policy_responses, *executed_responses]
 
         # Add function responses to history for continuity
-        tool_message = Message(
-            role="tool",
-            parts=[MessagePart.from_function_response(fr) for fr in responses],
-        )
-        self.history_manager.add_message(tool_message)
-        if self.session_manager:
-            await self._auto_save()
+        if responses:
+            tool_message = Message(
+                role="tool",
+                parts=[MessagePart.from_function_response(fr) for fr in responses],
+            )
+            self.history_manager.add_message(tool_message)
+            if self.session_manager:
+                await self._auto_save()
 
         results = []
         for fr in responses:
@@ -816,6 +849,67 @@ class LLMAgent:
         count = len(self._pending_tool_calls)
         self._pending_tool_calls = []
         return count
+
+    def _missing_required_tool_args(self, func_name: str, func_args: Dict[str, Any]) -> List[str]:
+        """Return required args that are absent/empty for the target tool."""
+        if func_name not in self._tools:
+            return []
+        _, schema = self._tools[func_name]
+        params = getattr(schema, "parameters", {}) or {}
+        required = params.get("required", [])
+        if not isinstance(required, list):
+            return []
+
+        missing: List[str] = []
+        for key in required:
+            if not isinstance(key, str):
+                continue
+            value = func_args.get(key, None)
+            if value is None:
+                missing.append(key)
+                continue
+            if isinstance(value, str) and not value.strip():
+                missing.append(key)
+        return missing
+
+    def _apply_tool_call_policy(
+        self, function_calls: List[FunctionCall]
+    ) -> tuple[List[FunctionCall], List[FunctionResponse]]:
+        """Apply execution-time policy filters to model tool calls."""
+        has_job_search = any(fc.name == self._JOB_SEARCH_TOOL for fc in function_calls)
+        has_job_detail = any(fc.name == self._JOB_DETAIL_TOOL for fc in function_calls)
+        if not (has_job_search and has_job_detail):
+            return function_calls, []
+
+        filtered_calls: List[FunctionCall] = []
+        rejected_responses: List[FunctionResponse] = []
+        for fc in function_calls:
+            if fc.name != self._JOB_DETAIL_TOOL:
+                filtered_calls.append(fc)
+                continue
+
+            rejected = FunctionResponse(
+                name=fc.name,
+                response={"result": self._JOB_DETAIL_CONFLICT_REASON},
+                call_id=fc.id,
+            )
+            rejected_responses.append(rejected)
+            self.observer.log_error(
+                error_type="tool_policy",
+                message=self._JOB_DETAIL_CONFLICT_REASON,
+                context={"tool": fc.name, "args": dict(fc.arguments) if fc.arguments else {}},
+                agent_id=self.agent_id,
+            )
+            self.observer.log_tool_call(
+                tool_name=fc.name,
+                args=dict(fc.arguments) if fc.arguments else {},
+                result=self._JOB_DETAIL_CONFLICT_REASON,
+                duration_ms=0.0,
+                success=False,
+                cached=False,
+                agent_id=self.agent_id,
+            )
+        return filtered_calls, rejected_responses
 
     async def _execute_tool(self, fc: FunctionCall) -> FunctionResponse:
         """Execute a single tool call, with caching and observability."""
@@ -844,36 +938,45 @@ class LLMAgent:
         if not cached:
             if func_name in self._tools:
                 func, _ = self._tools[func_name]
-                try:
-                    # Execute the tool (await if async)
-                    if asyncio.iscoroutinefunction(func):
-                        result = await func(**func_args)
-                    else:
-                        result = func(**func_args)
-
-                    # Convert ToolResult to string if needed
-                    if hasattr(result, "to_message"):
-                        result_str = result.to_message()
-                        success = getattr(result, "success", True)
-                        tool_error = getattr(result, "error", None)
-                    else:
-                        result_str = str(result)
-
-                    # Cache only successful tool results
-                    if success and should_cache_tool(func_name):
-                        ttl = get_tool_ttl(func_name)
-                        self.cache.set(func_name, func_args, result_str, ttl)
-
-                except Exception as e:
+                missing_required = self._missing_required_tool_args(func_name, func_args)
+                if missing_required:
                     success = False
-                    result_str = f"Error: {str(e)}"
-                    tool_error = str(e)
-                    self.observer.log_error(
-                        error_type="tool_execution",
-                        message=str(e),
-                        context={"tool": func_name, "args": func_args},
-                        agent_id=self.agent_id,
+                    result_str = (
+                        f"Error: Invalid tool call for '{func_name}': "
+                        f"missing required argument(s): {', '.join(missing_required)}"
                     )
+                    tool_error = result_str
+                else:
+                    try:
+                        # Execute the tool (await if async)
+                        if asyncio.iscoroutinefunction(func):
+                            result = await func(**func_args)
+                        else:
+                            result = func(**func_args)
+
+                        # Convert ToolResult to string if needed
+                        if hasattr(result, "to_message"):
+                            result_str = result.to_message()
+                            success = getattr(result, "success", True)
+                            tool_error = getattr(result, "error", None)
+                        else:
+                            result_str = str(result)
+
+                        # Cache only successful tool results
+                        if success and should_cache_tool(func_name):
+                            ttl = get_tool_ttl(func_name)
+                            self.cache.set(func_name, func_args, result_str, ttl)
+
+                    except Exception as e:
+                        success = False
+                        result_str = f"Error: {str(e)}"
+                        tool_error = str(e)
+                        self.observer.log_error(
+                            error_type="tool_execution",
+                            message=str(e),
+                            context={"tool": func_name, "args": func_args},
+                            agent_id=self.agent_id,
+                        )
             else:
                 success = False
                 result_str = f"Error: Unknown tool '{func_name}'"
@@ -951,25 +1054,55 @@ def load_raw_config(config_path: str = "config/config.local.yaml") -> dict:
 
     import yaml
 
-    path = Path(config_path)
-    if not path.exists():
-        path = Path(__file__).resolve().parents[3] / config_path
+    repo_root = Path(__file__).resolve().parents[2]
 
-    # If config.local.yaml doesn't exist, try config.yaml as fallback
-    if not path.exists():
-        fallback_path = path.with_name("config.yaml")
-        if fallback_path.exists():
-            path = fallback_path
-        else:
-            fallback_path = Path(__file__).resolve().parents[3] / "config" / "config.yaml"
-            if fallback_path.exists():
-                path = fallback_path
+    def _resolve(candidate: str) -> Path:
+        path = Path(candidate)
+        if path.exists():
+            return path
+        alt = repo_root / candidate
+        if alt.exists():
+            return alt
+        return path
 
-    if not path.exists():
+    def _load_yaml(path: Path) -> dict:
+        if not path.exists():
+            return {}
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+            if not isinstance(data, dict):
+                raise ValueError(f"Config file must be a mapping: {path}")
+            return data
+
+    def _deep_merge(base: dict, override: dict) -> dict:
+        merged = dict(base)
+        for key, value in override.items():
+            base_value = merged.get(key)
+            if isinstance(base_value, dict) and isinstance(value, dict):
+                merged[key] = _deep_merge(base_value, value)
+            else:
+                merged[key] = value
+        return merged
+
+    target = _resolve(config_path)
+    is_local_default = Path(config_path).name == "config.local.yaml"
+
+    # Default behavior: load config.yaml first, then overlay config.local.yaml.
+    if is_local_default:
+        base_path = _resolve("config/config.yaml")
+        local_path = target
+        base = _load_yaml(base_path)
+        local = _load_yaml(local_path)
+        merged = _deep_merge(base, local)
+        if not merged:
+            raise FileNotFoundError(f"Config file not found: {config_path} (also missing fallback config/config.yaml)")
+        return merged
+
+    # Explicit non-local config path: load as-is.
+    data = _load_yaml(target)
+    if not data:
         raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    with open(path) as f:
-        return yaml.safe_load(f)
+    return data
 
 
 def load_config(config_path: str = "config/config.local.yaml") -> LLMConfig:
