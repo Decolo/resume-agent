@@ -16,9 +16,13 @@ Two competing approaches:
 
 ## Decision
 
-We define tool parameters in **OpenAI format** (`tools/base.py:to_schema()`) and convert them to **Gemini `types.Schema` format** when registering with `GeminiAgent.register_tool()`.
+We define tool parameters in a provider-agnostic **OpenAI-style JSON schema**
+(`ToolSchema.parameters` with `properties` + `required`) and convert them to
+Gemini `types.Schema` inside the Gemini provider adapter.
 
-History is maintained as `list[types.Content]`. Function responses must be wrapped in `types.Part.from_function_response()`.
+History in core runtime is maintained as `list[providers.types.Message]`.
+When calling Gemini, messages are translated to `types.Content` and function
+responses are emitted as `types.Part.from_function_response(...)`.
 
 ## Consequences
 
@@ -28,7 +32,7 @@ History is maintained as `list[types.Content]`. Function responses must be wrapp
 - **Familiar schema**: Most developers know OpenAI's function calling format
 
 ### Negative
-- **Conversion overhead**: Runtime conversion adds complexity in `agent.py` and `agent_factory.py`
+- **Conversion overhead**: Runtime conversion adds complexity in provider adapters (`providers/gemini.py`)
 - **Two formats in codebase**: Developers must understand both OpenAI and Gemini formats
 - **History management complexity**: Gemini requires function call/response pairs to be adjacent, enforced by `HistoryManager._fix_broken_pairs()`
 
@@ -41,6 +45,6 @@ Breaking function call/response pairs in history causes Gemini API errors. The `
 2. **Abstraction layer**: Would add another layer of indirection without clear benefits
 
 ## References
-- `resume_agent/core/tools/base.py` - Tool schema definition
+- `resume_agent/providers/types.py` - Provider-agnostic message and tool schema contracts
+- `resume_agent/providers/gemini.py` - OpenAI-style schema to Gemini schema conversion
 - `resume_agent/core/llm.py` - HistoryManager with pair-aware pruning
-- `resume_agent/core/agent.py` - Format conversion in `_register_tools()`

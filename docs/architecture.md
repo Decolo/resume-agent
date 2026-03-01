@@ -2,6 +2,7 @@
 
 This document is the high-level system map for contributors and agents.
 Deep design details stay in specialized docs under `docs/architecture/`.
+Last validated against code: 2026-02-28.
 
 ## System Overview
 
@@ -66,6 +67,29 @@ For step-by-step runtime behavior (approval pauses, loop guard, auto-save, deleg
 ## Related Docs
 
 1. `docs/architecture/execution-data-flow.md` - End-to-end runtime flow
-2. `docs/sessions/session-persistence.md` - Session save/load internals
-3. `AGENTS.md` - Cross-agent repository operating constraints
-4. `CLAUDE.md` - Claude-specific runtime guidance
+2. `docs/architecture/adrs/README.md` - ADR index
+3. `docs/archive/phase1-improvements.md` - Archived phase summary
+4. `docs/sessions/session-persistence.md` - Session save/load internals
+5. `AGENTS.md` - Cross-agent repository operating constraints
+6. `CLAUDE.md` - Claude-specific runtime guidance
+
+## Architecture Doc Freshness
+
+Use this section to avoid starting from stale details when editing docs:
+
+| Document | Status | Notes |
+| --- | --- | --- |
+| `docs/architecture/execution-data-flow.md` | Current | Canonical runtime behavior for CLI, LLM loop, tools, and delegation. |
+| `docs/architecture/adrs/001-gemini-function-calling.md` | Current (updated) | Decision remains valid; references now map to provider-agnostic schema + provider adapter code. |
+| `docs/architecture/adrs/002-multi-agent-architecture.md` | Current | Operational mode model remains `single` / `multi` / `auto`. |
+| `docs/archive/phase1-improvements.md` | Archived | Historical implementation summary retained for context only. |
+
+## Resume Lint Path (Current)
+
+For lint-related doc changes, read this path in order:
+
+1. `resume_agent/cli/tool_factory.py` (`lint_resume` registration)
+2. `resume_agent/core/agent_factory.py` (single vs multi-agent tool wiring)
+3. `resume_agent/tools/resume_tools.py` (`ResumeLinterTool`)
+4. `resume_agent/domain/resume_linter.py` (score model + report formatting)
+5. `resume_agent/domain/linting/*` (rule engine, AST parser, language router)

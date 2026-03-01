@@ -4,6 +4,10 @@
 
 Phase 1 focused on core agent loop enhancements: reliability, performance, observability, and security. All 13 tasks completed with 28/28 tests passing.
 
+> Note: This file is primarily a historical implementation summary. For current
+> line-level behavior and exact data fields, use `resume_agent/core/*.py` and
+> `tests/core/*.py` as source of truth.
+
 ## Key Improvements
 
 ### 1. Retry Logic with Exponential Backoff (`retry.py`)
@@ -16,7 +20,7 @@ Phase 1 focused on core agent loop enhancements: reliability, performance, obser
 - Jitter prevents thundering herd (±20% random variation)
 - `TransientError` vs `PermanentError` classification
 
-**Applied to**: LLM API calls in `GeminiAgent.run()` (line 246)
+**Applied to**: LLM API calls in `LLMAgent` via retry wrapper (`_call_llm_with_retry()`).
 
 **Test Coverage**: 5 tests (success, failures, max attempts, exponential calculation)
 
@@ -49,7 +53,7 @@ Permanent Error → Fail immediately (no retry)
 - Token estimation: 1 token ≈ 4 characters
 - Automatic pruning on each message addition
 
-**Integration**: `GeminiAgent.__init__()` creates `HistoryManager(max_messages=50, max_tokens=100000)`
+**Integration**: `LLMAgent.__init__()` creates `HistoryManager(max_messages=50, max_tokens=100000)`
 
 **Test Coverage**: 4 tests (add/retrieve, sliding window, token-based, clear)
 
@@ -76,7 +80,7 @@ Messages: [System, M27, M28, ..., M50, M51, M52]
 - Changed from sequential for loop to `asyncio.gather()`
 - Multiple independent function calls run in parallel
 - Sequential execution via while loop for dependent calls
-- Location: `llm.py:357-360`
+- Location: tool execution block in `LLMAgent.run()`
 
 **Performance**: Expected 2-3x speedup for multi-tool operations
 
@@ -101,7 +105,7 @@ Gemini Response: [file_read("resume.pdf"), bash("ls"), file_list(".")]
 - Methods: log_tool_call(), log_llm_request(), log_error(), log_step_start(), log_step_end()
 - Session stats: total_tokens, total_cost_usd, total_duration_ms, event_count, cache_hit_rate
 
-**Integration**: `GeminiAgent.__init__()` creates `AgentObserver()`
+**Integration**: `LLMAgent.__init__()` creates `AgentObserver()`
 
 **Output**: Session summary printed at end of agent.run()
 
@@ -144,11 +148,11 @@ Cache Size:       3 entries
   - Never cached: file_write, bash, resume_write
 - Helper functions: `should_cache_tool()`, `get_tool_ttl()`
 
-**Integration**: `GeminiAgent.__init__()` creates `ToolCache()`
+**Integration**: `LLMAgent.__init__()` creates `ToolCache()`
 
-**Cache Check**: Before tool execution (llm.py:294-298)
+**Cache Check**: Before tool execution in `LLMAgent._execute_tool(...)`
 
-**Cache Store**: After successful execution (llm.py:319-321)
+**Cache Store**: After successful tool execution in `LLMAgent._execute_tool(...)`
 
 **Test Coverage**: 7 tests (set/get, miss, expiration, stats, deterministic keys, config)
 
@@ -187,21 +191,18 @@ Result      Store in Cache
 - Avoids re-parsing identical files
 - Test Coverage: Integrated into cache tests
 
-### 7. ToolResult Metadata (`tools/base.py`)
+### 7. ToolResult Metadata (`core/tools/base.py`)
 
 **New Fields**:
 - execution_time_ms: float (default 0.0)
-- tokens_used: int (default 0)
-- cached: bool (default False)
-- retry_count: int (default 0)
 
 **Purpose**: Enable observability and performance tracking
 
-**Usage**: Populated by tool execution and observability logging
+**Usage**: Populated by tool execution path and consumed by observability/event summaries
 
 ## Testing
 
-**Test Suite**: `tests/test_phase1_improvements.py` (28 tests, 100% passing)
+**Test Suite**: `tests/core/test_phase1_improvements.py` (28 tests, 100% passing)
 
 ```
 TestRetryLogic (5 tests)
@@ -247,7 +248,7 @@ TestBashToolSecurity (3 tests)
 
 **Run Tests**:
 ```bash
-uv run python -m pytest tests/test_phase1_improvements.py -v
+uv run python -m pytest tests/core/test_phase1_improvements.py -v
 ```
 
 ## Performance Impact

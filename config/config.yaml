@@ -22,6 +22,21 @@ cdp:
   chrome_profile: "~/.resume-agent/chrome-profile"
   auto_launch: true   # auto-start Chrome if not running
 
+# LinkedIn browser automation driver
+linkedin:
+  driver: "cdp"   # cdp | patchright
+  # Optional driver-specific settings. cdp.* falls back to top-level cdp.
+  # cdp:
+  #   port: 9222
+  #   chrome_profile: "~/.resume-agent/chrome-profile"
+  #   auto_launch: true
+  patchright:
+    headless: false
+    channel: "chrome"  # use local Google Chrome for better profile/login reuse
+    auto_launch: true  # auto-start Chrome when cdp_endpoint is configured but unavailable
+    # executable_path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    # cdp_endpoint: "http://127.0.0.1:9222"  # attach to an already-open Chrome
+
 # Optional Gemini feature
 search_grounding:
   enabled: false
