@@ -1,9 +1,4 @@
-"""LinkedIn job search tools — browser automation adapters for LinkedIn workflows.
-
-The default driver uses CDP against a locally running Chrome profile.
-Optionally, a Patchright driver can be enabled for more resilient page
-interaction on anti-bot-sensitive sites.
-"""
+"""LinkedIn job search tools — browser automation via CDP against a local Chrome profile."""
 
 from __future__ import annotations
 
@@ -25,14 +20,11 @@ from resume_agent.domain.linkedin_jobs import (
     parse_job_listings,
 )
 from resume_agent.tools.cdp_client import CDPClient
-from resume_agent.tools.patchright_client import PatchrightClient
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CDP_PORT = 9222
 _DEFAULT_CHROME_PROFILE = "~/.resume-agent/chrome-profile"
-_DEFAULT_DRIVER = "cdp"
-_DEFAULT_PATCHRIGHT_CHANNEL = "chrome"
 _LOGIN_CHECK_URL = "https://www.linkedin.com/feed/"
 _LOGIN_ERROR = "LinkedIn login required. Please open the Chrome window, " "log into LinkedIn, then try again."
 _PAGE_SIZE = 25  # LinkedIn results per page
@@ -79,28 +71,15 @@ class BrowserClient(Protocol):
 
 
 def _build_browser_client(
-    driver: str,
     cdp_port: int,
     chrome_profile: str,
     auto_launch: bool,
-    patchright_headless: bool,
-    patchright_channel: str | None,
-    patchright_executable_path: str | None,
-    patchright_cdp_endpoint: str | None,
 ) -> BrowserClient:
-    normalized_driver = str(driver or _DEFAULT_DRIVER).strip().lower()
-    if normalized_driver == "cdp":
-        return CDPClient(port=cdp_port, chrome_profile=chrome_profile, auto_launch=auto_launch)
-    if normalized_driver in {"patchright", "playwright"}:
-        return PatchrightClient(
-            chrome_profile=chrome_profile,
-            headless=patchright_headless,
-            channel=patchright_channel,
-            executable_path=patchright_executable_path,
-            cdp_endpoint=patchright_cdp_endpoint,
-            auto_launch=auto_launch,
-        )
-    raise ValueError(f"Unsupported linkedin driver: {driver}")
+    return CDPClient(
+        port=cdp_port,
+        chrome_profile=chrome_profile,
+        auto_launch=auto_launch,
+    )
 
 
 async def _preflight_login_check(client: BrowserClient) -> bool:
@@ -569,27 +548,17 @@ class JobSearchTool(BaseTool):
         cdp_port: int = _DEFAULT_CDP_PORT,
         chrome_profile: str = _DEFAULT_CHROME_PROFILE,
         auto_launch: bool = True,
-        driver: str = _DEFAULT_DRIVER,
-        patchright_headless: bool = False,
-        patchright_channel: str | None = _DEFAULT_PATCHRIGHT_CHANNEL,
-        patchright_executable_path: str | None = None,
-        patchright_cdp_endpoint: str | None = None,
     ):
         self.cdp_port = cdp_port
         self.chrome_profile = chrome_profile
         self.auto_launch = auto_launch
-        self.driver = driver
-        self.patchright_headless = patchright_headless
-        self.patchright_channel = patchright_channel
-        self.patchright_executable_path = patchright_executable_path
-        self.patchright_cdp_endpoint = patchright_cdp_endpoint
 
     async def execute(
         self,
         keywords: str = "",
         location: str = "",
         limit: int = 25,
-        include_jd: bool | None = None,
+        include_jd: bool = False,
         detail_workers: int = _DEFAULT_DETAIL_WORKERS,
     ) -> ToolResult:
         if not keywords or not keywords.strip():
@@ -601,19 +570,11 @@ class JobSearchTool(BaseTool):
         if not isinstance(detail_workers, int) or detail_workers < 1:
             return ToolResult(success=False, output="", error="detail_workers must be a positive integer")
 
-        try:
-            client = _build_browser_client(
-                driver=self.driver,
-                cdp_port=self.cdp_port,
-                chrome_profile=self.chrome_profile,
-                auto_launch=self.auto_launch,
-                patchright_headless=self.patchright_headless,
-                patchright_channel=self.patchright_channel,
-                patchright_executable_path=self.patchright_executable_path,
-                patchright_cdp_endpoint=self.patchright_cdp_endpoint,
-            )
-        except ValueError as e:
-            return ToolResult(success=False, output="", error=str(e))
+        client = _build_browser_client(
+            cdp_port=self.cdp_port,
+            chrome_profile=self.chrome_profile,
+            auto_launch=self.auto_launch,
+        )
 
         try:
             await client.connect()
@@ -630,10 +591,7 @@ class JobSearchTool(BaseTool):
             dom_extraction_used = False
             text_fallback_used = False
             last_click_reason = ""
-            normalized_driver = str(self.driver or "").strip().lower()
-            include_jd_effective = (
-                normalized_driver in {"patchright", "playwright"} if include_jd is None else bool(include_jd)
-            )
+            include_jd_effective = bool(include_jd)
 
             # Open search once; prefer in-page pagination clicks afterwards.
             start_url = build_search_url(keywords.strip(), location.strip(), start=0)
@@ -714,7 +672,6 @@ class JobSearchTool(BaseTool):
                         for j in all_jobs
                     ],
                     "total": len(all_jobs),
-                    "driver": self.driver,
                     "include_jd": include_jd_effective,
                     "detail_workers": max(1, min(_DETAIL_WORKERS_MAX, detail_workers)),
                     "pagination_mode": pagination_mode,
@@ -758,20 +715,10 @@ class JobDetailTool(BaseTool):
         cdp_port: int = _DEFAULT_CDP_PORT,
         chrome_profile: str = _DEFAULT_CHROME_PROFILE,
         auto_launch: bool = True,
-        driver: str = _DEFAULT_DRIVER,
-        patchright_headless: bool = False,
-        patchright_channel: str | None = _DEFAULT_PATCHRIGHT_CHANNEL,
-        patchright_executable_path: str | None = None,
-        patchright_cdp_endpoint: str | None = None,
     ):
         self.cdp_port = cdp_port
         self.chrome_profile = chrome_profile
         self.auto_launch = auto_launch
-        self.driver = driver
-        self.patchright_headless = patchright_headless
-        self.patchright_channel = patchright_channel
-        self.patchright_executable_path = patchright_executable_path
-        self.patchright_cdp_endpoint = patchright_cdp_endpoint
 
     async def execute(self, job_url: str = "") -> ToolResult:
         normalized_url = str(job_url or "").strip()
@@ -788,19 +735,11 @@ class JobDetailTool(BaseTool):
                 ),
             )
 
-        try:
-            client = _build_browser_client(
-                driver=self.driver,
-                cdp_port=self.cdp_port,
-                chrome_profile=self.chrome_profile,
-                auto_launch=self.auto_launch,
-                patchright_headless=self.patchright_headless,
-                patchright_channel=self.patchright_channel,
-                patchright_executable_path=self.patchright_executable_path,
-                patchright_cdp_endpoint=self.patchright_cdp_endpoint,
-            )
-        except ValueError as e:
-            return ToolResult(success=False, output="", error=str(e))
+        client = _build_browser_client(
+            cdp_port=self.cdp_port,
+            chrome_profile=self.chrome_profile,
+            auto_launch=self.auto_launch,
+        )
 
         try:
             await client.connect()
@@ -819,7 +758,6 @@ class JobDetailTool(BaseTool):
                 success=True,
                 output=output,
                 data={
-                    "driver": self.driver,
                     "title": detail.title,
                     "company": detail.company,
                     "location": detail.location,

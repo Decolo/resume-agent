@@ -229,42 +229,31 @@ class TestJobDetailTool:
 
 class TestCDPClientAutoLaunch:
     @pytest.mark.asyncio
-    async def test_auto_launches_chrome_on_connection_failure(self):
-        client = CDPClient(port=9222, chrome_profile="/tmp/test-profile", auto_launch=True)
+    async def test_auto_launches_chrome_on_port_zero(self):
+        """When port=0 and auto_launch=True, connect() runs _prepare_and_launch_chrome."""
+        client = CDPClient(port=0, chrome_profile="/tmp/test-profile", auto_launch=True)
 
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = [
-            {"type": "page", "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/ABC"}
+            {"type": "page", "webSocketDebuggerUrl": "ws://localhost:54321/devtools/page/ABC"}
         ]
         mock_response.raise_for_status = MagicMock()
-
-        call_count = 0
-
-        async def mock_get(url):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise ConnectionError("Connection refused")
-            return mock_response
 
         mock_http = AsyncMock()
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
         mock_http.__aexit__ = AsyncMock(return_value=False)
-        mock_http.get = mock_get
+        mock_http.get = AsyncMock(return_value=mock_response)
         mock_ws = AsyncMock()
 
         with (
             patch("resume_agent.tools.cdp_client.httpx.AsyncClient", return_value=mock_http),
             patch("resume_agent.tools.cdp_client.websockets.connect", AsyncMock(return_value=mock_ws)),
-            patch("resume_agent.tools.cdp_client.subprocess.Popen") as mock_popen,
+            patch("resume_agent.tools.cdp_client._prepare_and_launch_chrome", return_value=54321),
         ):
             await client.connect()
 
-        mock_popen.assert_called_once()
-        launch_args = mock_popen.call_args[0][0]
-        assert "--remote-debugging-port=9222" in launch_args
-        assert "--user-data-dir=/tmp/test-profile" in launch_args
+        assert client.port == 54321
 
     @pytest.mark.asyncio
     async def test_no_auto_launch_when_disabled(self):

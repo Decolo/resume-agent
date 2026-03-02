@@ -51,20 +51,13 @@ log_level: "DEBUG"
 
 ### LinkedIn Tool Settings (Optional)
 
-If you use `job_search` / `job_detail`, configure a LinkedIn browser driver.
+If you use `job_search` / `job_detail`, configure LinkedIn CDP settings.
 
 ```yaml
 cdp:
-  port: 9222
+  port: 0
   chrome_profile: "~/.resume-agent/chrome-profile"
   auto_launch: true
-
-linkedin:
-  driver: "cdp" # cdp | patchright
-  patchright:
-    headless: false
-    channel: "chrome"
-    auto_launch: true
 ```
 
 Notes:

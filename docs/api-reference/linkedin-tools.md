@@ -1,7 +1,7 @@
 # LinkedIn Tools Reference
 
 Canonical contract for LinkedIn browser tools in `resume_agent/tools/linkedin_tools.py`.
-Last updated: 2026-03-01.
+Last updated: 2026-03-02.
 
 ## Overview
 
@@ -28,7 +28,7 @@ Parameters:
 | `keywords` | string | Yes | N/A | Search keywords/title. |
 | `location` | string | No | `""` | Optional location filter. |
 | `limit` | integer | No | `25` | `1..100`. Tool auto-paginates when needed. |
-| `include_jd` | boolean | No | driver-dependent | If omitted: enabled by default on Patchright driver, disabled on CDP driver. |
+| `include_jd` | boolean | No | `false` | Fetch per-job JD snippets in the same call. |
 | `detail_workers` | integer | No | `2` | Positive integer. Used when fetching JD snippets (`include_jd=true`). |
 
 Output behavior:
@@ -82,6 +82,22 @@ Recommended flow:
 
 These delays are intentional to reduce robotic access patterns.
 
+## Reliability (CDP Runtime)
+
+Chrome lifecycle is handled inside Python CDP runtime (`resume_agent/tools/cdp_client.py`), which handles:
+
+- **Chrome quit before sync**: On macOS/Linux, if Chrome is already running, runtime attempts to quit it first and waits briefly for profile lock release.
+- **Profile sync**: Copies cookies and login data from the real Chrome installation so LinkedIn sees an authenticated session.
+- **Anti-detection flags**: `--disable-blink-features=AutomationControlled`, `--no-first-run`, `--no-default-browser-check`.
+- **Debug port polling**: Polls `/json/version` until ready (30s timeout).
+- **Dynamic free port**: Picks a free port when auto-launching.
+
+Port behavior:
+
+- `cdp.port = 0` (default): auto-launch path picks a free debug port.
+- `cdp.port > 0`: runtime first tries connecting to that fixed port.
+- If fixed-port connect fails and `cdp.auto_launch=true`, runtime may relaunch Chrome on an available port.
+
 ## Validation and Error Semantics
 
 Common validation rules:
@@ -91,25 +107,21 @@ Common validation rules:
   - `Invalid job_url. Expected LinkedIn job URL like https://www.linkedin.com/jobs/view/<job_id>/`
 - Both tools run a LinkedIn login preflight check and return login guidance when session is not authenticated.
 
-## Driver Configuration
+## Configuration
 
-LinkedIn tools support:
-
-- `cdp` (default)
-- `patchright` (or `playwright` alias in code path)
-
-Example config:
+LinkedIn tools read from the top-level `cdp` config:
 
 ```yaml
-linkedin:
-  driver: "cdp" # cdp | patchright
-  patchright:
-    headless: false
-    channel: "chrome"
-    auto_launch: true
+cdp:
+  port: 0                # 0 = auto-detect free port; nonzero = fixed
+  chrome_profile: "~/.resume-agent/chrome-profile"
+  auto_launch: true
 ```
 
-CDP defaults are inherited from top-level `cdp.*` unless overridden in `linkedin.cdp.*`.
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `cdp.port` | integer | `0` | `0` = auto-detect free port. Nonzero = try fixed port first |
+| `cdp.auto_launch` | boolean | `true` | Launch Chrome automatically if not running |
 
 ## Examples
 
