@@ -34,13 +34,14 @@ class ResumeParserTool(BaseTool):
 
     name = "resume_parse"
     description = (
-        "Parse a resume file (PDF, DOCX, MD, TXT, JSON) and extract its content. "
-        "Returns structured text that can be analyzed and modified."
+        "Parse one resume file into normalized text for analysis/editing workflows. "
+        "Supports .pdf, .docx, .md, .txt, and JSON Resume input. "
+        "Returns full extracted content plus detected section previews."
     )
     parameters = {
         "path": {
             "type": "string",
-            "description": "Path to the resume file",
+            "description": "Absolute or workspace-relative path to a resume file (.pdf/.docx/.md/.txt/.json).",
             "required": True,
         },
     }
@@ -144,24 +145,24 @@ class ResumeWriterTool(BaseTool):
 
     name = "resume_write"
     description = (
-        "Write resume content to a file in the specified format. "
-        "Supported: .md, .txt, .json, .html. "
-        "For PDF/DOCX, first write to .md or .html, then convert using bash tool."
+        "Write resume content to disk, with output format determined by file extension. "
+        "Supported outputs: .md, .txt, .json, .html. "
+        "Does not generate .pdf/.docx directly; export those via a separate conversion step."
     )
     parameters = {
         "path": {
             "type": "string",
-            "description": "Output file path (extension determines format)",
+            "description": "Target output path; extension must be one of .md/.txt/.json/.html.",
             "required": True,
         },
         "content": {
             "type": "string",
-            "description": "Resume content to write (Markdown format recommended)",
+            "description": "Resume content to write. Markdown is recommended as the source format.",
             "required": True,
         },
         "template": {
             "type": "string",
-            "description": "Template style: 'modern', 'classic', 'minimal', 'creative' (for HTML output)",
+            "description": "HTML theme name (applies only when path ends with .html). Default: modern.",
             "default": "modern",
         },
     }
@@ -233,23 +234,23 @@ class ResumeLinterTool(BaseTool):
 
     name = "lint_resume"
     description = (
-        "Lint a resume for structure, formatting, and keyword quality. "
-        "Returns a score (0-100) with breakdown by formatting, completeness, "
-        "keywords, and structure. Optionally accepts a job description for keyword matching."
+        "Score one resume (0-100) and report actionable quality issues. "
+        "Breakdown includes formatting, completeness, keywords, and structure. "
+        "Optionally accepts a job description to evaluate keyword alignment."
     )
     parameters = {
         "path": {
             "type": "string",
-            "description": "Path to the resume file to score",
+            "description": "Absolute or workspace-relative path to a text-based resume file.",
             "required": True,
         },
         "job_description": {
             "type": "string",
-            "description": "Optional job description text for keyword matching",
+            "description": "Optional JD text used to score relevance and keyword overlap.",
         },
         "lang": {
             "type": "string",
-            "description": "Optional language routing override: auto, en, zh",
+            "description": "Language routing override: auto, en, or zh. Default: auto.",
             "default": "auto",
         },
     }
@@ -302,22 +303,23 @@ class JobMatcherTool(BaseTool):
 
     name = "job_match"
     description = (
-        "Compare a resume against a job description to find matching skills, "
-        "missing keywords, and generate tailored improvement suggestions."
+        "Compare one resume against one job description to quantify fit and identify gaps. "
+        "Returns match score, matched/missing keywords, extracted requirements, and edit suggestions. "
+        "Primary input is job_text; this tool does not fetch job_url content by itself."
     )
     parameters = {
         "resume_path": {
             "type": "string",
-            "description": "Path to the resume file to analyze",
+            "description": "Absolute or workspace-relative path to the resume file to analyze.",
             "required": True,
         },
         "job_text": {
             "type": "string",
-            "description": "Job description text (paste directly)",
+            "description": "Full job description text to compare against (recommended input).",
         },
         "job_url": {
             "type": "string",
-            "description": "URL to fetch job description from (requires web_read tool)",
+            "description": "Compatibility field only. If provided without job_text, call fails; use web_read first.",
         },
     }
 
@@ -378,13 +380,13 @@ class ResumeValidatorTool(BaseTool):
 
     name = "resume_validate"
     description = (
-        "Validate a resume file for content completeness, format correctness, "
-        "encoding issues, and appropriate length. Returns a pass/fail with detailed issues."
+        "Validate a resume file for structural completeness and common quality/format issues. "
+        "Returns pass/fail plus detailed errors and warnings for follow-up fixes."
     )
     parameters = {
         "path": {
             "type": "string",
-            "description": "Path to the resume file to validate",
+            "description": "Absolute or workspace-relative path to the resume file to validate.",
             "required": True,
         },
     }
