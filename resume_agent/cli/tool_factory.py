@@ -52,6 +52,7 @@ def create_tools(workspace_dir: str, raw_config: Optional[Dict[str, Any]] = None
             cdp_port=cdp_port,
             chrome_profile=chrome_profile,
             auto_launch=auto_launch,
+            api_key=merged_config.get("api_key", ""),
         ),
         "job_detail": JobDetailTool(
             cdp_port=cdp_port,

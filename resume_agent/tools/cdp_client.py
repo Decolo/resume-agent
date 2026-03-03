@@ -24,7 +24,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 import websockets
@@ -297,6 +297,27 @@ class CDPClient:
     async def extract_main_text(self) -> str:
         """Extract innerText of <main>, falling back to <body>."""
         return await self.evaluate("document.querySelector('main')?.innerText || document.body?.innerText || ''")
+
+    async def get_ax_tree(self) -> List[dict]:
+        """Get flattened accessibility tree nodes."""
+        result = await self._send("Accessibility.getFullAXTree")
+        return result.get("nodes", [])
+
+    async def click_node_by_backend_id(self, backend_node_id: int) -> None:
+        """Resolve a backend DOM node and click it via CDP."""
+        resolve = await self._send("DOM.resolveNode", {"backendNodeId": backend_node_id})
+        object_id = resolve["object"]["objectId"]
+        await self._send(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": object_id,
+                "functionDeclaration": """function() {
+                    this.scrollIntoView({block: 'center'});
+                    this.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
+                    if (typeof this.click === 'function') this.click();
+                }""",
+            },
+        )
 
     async def close(self) -> None:
         """Close the WebSocket connection."""

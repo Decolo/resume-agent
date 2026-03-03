@@ -1,7 +1,7 @@
 # LinkedIn Tools Reference
 
 Canonical contract for LinkedIn browser tools in `resume_agent/tools/linkedin_tools.py`.
-Last updated: 2026-03-02.
+Last updated: 2026-03-03.
 
 ## Overview
 
@@ -28,11 +28,13 @@ Parameters:
 | `keywords` | string | Yes | N/A | Search keywords/title. |
 | `location` | string | No | `""` | Optional location filter. |
 | `limit` | integer | No | `25` | `1..100`. Tool auto-paginates when needed. |
-| `include_jd` | boolean | No | `false` | Fetch per-job JD snippets in the same call. |
-| `detail_workers` | integer | No | `2` | Positive integer. Used when fetching JD snippets (`include_jd=true`). |
+| `include_jd` | boolean | No | `false` | Click each card and extract JD from the right pane. |
 
 Output behavior:
 
+- Two modes based on `include_jd`:
+  - `include_jd=false` (fast path): Scrolls the left column to load all cards, collects metadata (title, company, location, posted_time, URL) from card DOM elements, then clicks "Next" to paginate.
+  - `include_jd=true` (detail path): Scrolls the left column, then clicks each card and waits for the right pane to load. Extracts title, company, location, posted_time, URL, and JD snippet from the right pane.
 - Returns formatted text output and structured `data.jobs[]`.
 - Each job item includes:
   - `title`, `company`, `location`
@@ -68,17 +70,22 @@ Output behavior:
 
 Recommended flow:
 
-1. Run `job_search` first (optionally with `include_jd=true`).
+1. Run `job_search` first (optionally with `include_jd=true` to get JD snippets inline).
 2. Select a specific job URL from search results.
 3. Run `job_detail` in a later step with `job_url`.
 
 ## Pagination and Anti-Bot Behavior
 
-`job_search` includes human-like pacing:
+`job_search` uses a scroll-then-paginate approach:
 
+- Scrolls the left-column container (not `window`) by 400px increments with 0.5–1.0s jitter to trigger lazy loading.
+- Detects scroll stall (scrollHeight unchanged after 2 iterations) and scroll bottom to stop.
+- After collecting all cards on a page, clicks "Next" using a two-tier strategy:
+  - **Tier 1 — Accessibility Tree (fast, no LLM cost):** Uses CDP `Accessibility.getFullAXTree` to find a `role=button/link` node whose `name` matches pagination keywords ("next", "next page", "下一页", etc.) and is not disabled. Clicks via `backendDOMNodeId`. This is independent of CSS class names.
+  - **Tier 2 — LLM fallback (when AX tree has no match):** Collects all interactive elements (buttons + links with text/aria-labels) via JS, sends them to `gemini-2.5-flash` asking which is the pagination Next button. Only triggered when Tier 1 misses. Requires `api_key` in config.
+- Polls for page change by comparing card URLs after clicking Next.
 - Random delay between pagination actions: `0.6s ~ 1.8s`.
-- If click-based pagination fails, tool falls back to URL-offset pagination.
-- When JD snippets are fetched, each detail request adds small jitter (`0.15s ~ 0.45s`).
+- When `include_jd=true`, each card click adds small jitter (`0.3s ~ 0.8s`).
 
 These delays are intentional to reduce robotic access patterns.
 
@@ -122,6 +129,7 @@ cdp:
 | --- | --- | --- | --- |
 | `cdp.port` | integer | `0` | `0` = auto-detect free port. Nonzero = try fixed port first |
 | `cdp.auto_launch` | boolean | `true` | Launch Chrome automatically if not running |
+| `api_key` | string | `""` | Gemini API key. Enables LLM pagination fallback (Tier 2) when set |
 
 ## Examples
 
