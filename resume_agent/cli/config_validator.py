@@ -129,7 +129,7 @@ def validate_config(raw_config: Dict[str, Any], workspace_dir: str = ".") -> Lis
         errors.append(
             ConfigError(
                 field="workspace_dir",
-                message=f"Workspace directory does not exist: {workspace_dir}",
+                message=f"Workspace directory does not exist and will be created: {workspace_dir}",
                 severity=Severity.WARNING,
             )
         )

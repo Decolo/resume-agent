@@ -11,6 +11,7 @@ from .protocol import AgentResult, AgentTask, create_result
 if TYPE_CHECKING:
     from ..llm import LLMAgent
     from ..observability import AgentObserver
+    from ..wire import Wire
     from .delegation import DelegationManager
     from .registry import AgentRegistry
 
@@ -197,6 +198,7 @@ class OrchestratorAgent(BaseAgent):
         max_steps: Optional[int] = None,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
+        wire: Optional[Wire] = None,
     ) -> str:
         """Run the orchestrator with user input.
 
@@ -221,6 +223,7 @@ class OrchestratorAgent(BaseAgent):
             max_steps=max_steps or self.config.max_steps,
             stream=stream,
             on_stream_delta=on_stream_delta,
+            wire=wire,
         )
 
     def reset(self) -> None:

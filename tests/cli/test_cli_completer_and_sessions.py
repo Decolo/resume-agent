@@ -81,3 +81,33 @@ def test_command_completer_suggests_session_refs_for_load() -> None:
     assert "latest" in completions
     assert "1" in completions
     assert "session_20260223_090000_backend_engineer_abcd1234" in completions
+
+
+def test_file_list_result_summary_is_single_line() -> None:
+    output = "file\t1522\tsample_resume.md\n" "dir\t0\tsessions\n"
+    rendered = cli_app._summarize_tool_result("file_list", output)
+
+    assert rendered == "2 entries: sample_resume.md, sessions/"
+
+
+def test_tool_call_inline_format_is_single_line() -> None:
+    line = cli_app._format_tool_call_inline("file_list", {"path": ".", "recursive": False})
+    assert line.startswith("🔧 file_list(")
+    assert "path=." in line
+    assert "recursive=False" in line
+
+
+def test_tool_result_summary_truncates_multiline_output() -> None:
+    rendered = cli_app._summarize_tool_result("bash", "line1\nline2\nline3")
+    assert rendered == "line1 (+2 lines)"
+
+
+def test_parse_approval_choice_does_not_escalate_reject_all() -> None:
+    assert cli_app._parse_approval_choice("reject all") == "reject"
+    assert cli_app._parse_approval_choice("3 reject all") == "reject"
+
+
+def test_parse_approval_choice_handles_common_inputs() -> None:
+    assert cli_app._parse_approval_choice("[1] Approve") == "approve"
+    assert cli_app._parse_approval_choice("2") == "approve_all"
+    assert cli_app._parse_approval_choice("approve all") == "approve_all"

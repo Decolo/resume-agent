@@ -1,5 +1,7 @@
 """Test suite for Phase 1 improvements: retry, history, caching, observability."""
 
+import logging
+
 import pytest
 
 from resume_agent.core.cache import ToolCache, get_tool_ttl, should_cache_tool
@@ -233,6 +235,14 @@ class TestObservability:
 
         assert observer.events == []
         assert observer.logger is not None
+        assert any(isinstance(handler, logging.NullHandler) for handler in observer.logger.handlers)
+        assert not any(isinstance(handler, logging.StreamHandler) for handler in observer.logger.handlers)
+
+    def test_observer_verbose_uses_stream_handler(self):
+        """Verbose mode should render observability logs to stderr."""
+        observer = AgentObserver(verbose=True)
+
+        assert any(isinstance(handler, logging.StreamHandler) for handler in observer.logger.handlers)
 
     def test_log_tool_call(self):
         """Test logging tool calls."""

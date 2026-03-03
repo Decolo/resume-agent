@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import uuid
@@ -36,12 +37,16 @@ class SessionSerializer:
                 if part.text:
                     msg_data["parts"].append({"type": "text", "content": part.text})
                 elif part.function_call:
+                    thought_signature_b64 = None
+                    if part.function_call.thought_signature:
+                        thought_signature_b64 = base64.b64encode(part.function_call.thought_signature).decode("ascii")
                     msg_data["parts"].append(
                         {
                             "type": "function_call",
                             "name": part.function_call.name,
                             "args": dict(part.function_call.arguments) if part.function_call.arguments else {},
                             "id": part.function_call.id,
+                            "thought_signature_b64": thought_signature_b64,
                         }
                     )
                 elif part.function_response:
@@ -71,12 +76,20 @@ class SessionSerializer:
             if part_data["type"] == "text":
                 parts.append(MessagePart.from_text(text=part_data["content"]))
             elif part_data["type"] == "function_call":
+                thought_signature = None
+                thought_signature_b64 = part_data.get("thought_signature_b64")
+                if isinstance(thought_signature_b64, str) and thought_signature_b64:
+                    try:
+                        thought_signature = base64.b64decode(thought_signature_b64)
+                    except Exception:
+                        thought_signature = None
                 parts.append(
                     MessagePart.from_function_call(
                         FunctionCall(
                             name=part_data["name"],
                             arguments=part_data.get("args", {}) or {},
                             id=part_data.get("id"),
+                            thought_signature=thought_signature,
                         )
                     )
                 )
@@ -252,7 +265,7 @@ class SessionManager:
     def __init__(self, workspace_dir: str):
         self.workspace_dir = Path(workspace_dir)
         self.sessions_dir = self.workspace_dir / "sessions"
-        self.sessions_dir.mkdir(exist_ok=True)
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.index = SessionIndex(self.sessions_dir / ".index.json")
 
     @staticmethod

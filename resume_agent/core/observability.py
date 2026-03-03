@@ -41,15 +41,23 @@ class AgentObserver:
         return f"[{use_id}] " if use_id else ""
 
     def _setup_logging(self):
-        """Configure logging format and handlers."""
-        if not self.logger.handlers:
+        """Configure logging handlers for interactive-safe output."""
+        self.logger.handlers.clear()
+        self.logger.propagate = False
+
+        if self.verbose:
             handler = logging.StreamHandler()
             formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
             )
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
-        self.logger.setLevel(logging.INFO if self.verbose else logging.WARNING)
+            self.logger.setLevel(logging.INFO)
+        else:
+            # Keep event collection active but avoid mixing logs into the TUI stream.
+            self.logger.addHandler(logging.NullHandler())
+            self.logger.setLevel(logging.INFO)
 
     def log_tool_call(
         self,
