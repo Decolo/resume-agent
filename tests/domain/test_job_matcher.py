@@ -2,6 +2,8 @@
 
 import pytest
 
+from resume_agent.domain import job_matcher as domain_job_matcher
+from resume_agent.domain.semantic_similarity import SemanticBackendInfo
 from resume_agent.tools import JobMatcherTool
 
 
@@ -136,10 +138,29 @@ class TestMatchOutput:
     async def test_data_has_required_fields(self, matcher, sample_resume):
         result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         assert "match_score" in result.data
+        assert "location_score" in result.data
+        assert "skill_score" in result.data
+        assert "yoe_score" in result.data
+        assert "company_experience_score" in result.data
+        assert "keyword_score" in result.data
+        assert "requirement_score" in result.data
+        assert "semantic_score" in result.data
+        assert "score_breakdown" in result.data
+        assert "skill_breakdown" in result.data
+        assert "semantic_evidence" in result.data
+        assert "backend_info" in result.data
+        assert "quick_insights" in result.data
+        assert "next_step" in result.data
         assert "matched_keywords" in result.data
         assert "missing_keywords" in result.data
         assert "suggestions" in result.data
         assert "requirements" in result.data
+
+    @pytest.mark.asyncio
+    async def test_layer_scores_are_bounded(self, matcher, sample_resume):
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
+        for key in ("location_score", "skill_score", "yoe_score", "company_experience_score"):
+            assert 0 <= result.data[key] <= 100
 
     @pytest.mark.asyncio
     async def test_matched_keywords_are_relevant(self, matcher, sample_resume):
@@ -159,6 +180,7 @@ class TestMatchOutput:
     async def test_output_contains_sections(self, matcher, sample_resume):
         result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
         assert "Match Score" in result.output
+        assert "Layer Scores" in result.output
         assert "Matching Keywords" in result.output or "Missing Keywords" in result.output
 
     @pytest.mark.asyncio
@@ -194,3 +216,20 @@ class TestRequirementsExtraction:
         reqs = result.data["requirements"]
         quals = reqs.get("qualifications", [])
         assert any("years" in q.lower() for q in quals)
+
+
+class TestSemanticFallback:
+    """Tests for semantic backend fallback behavior."""
+
+    @pytest.mark.asyncio
+    async def test_semantic_fallback_when_backend_unavailable(self, matcher, sample_resume, monkeypatch):
+        def fake_similarity_matrix(_left, _right):
+            return [], SemanticBackendInfo(backend="mock-local", status="unavailable", reason="forced-by-test")
+
+        monkeypatch.setattr(domain_job_matcher, "similarity_matrix", fake_similarity_matrix)
+
+        result = await matcher.execute(resume_path=str(sample_resume), job_text=MATCHING_JD)
+        assert result.success
+        assert result.data["semantic_score"] is None
+        assert result.data["backend_info"]["backend"] == "mock-local"
+        assert result.data["score_breakdown"]["skills"] == pytest.approx(0.45)

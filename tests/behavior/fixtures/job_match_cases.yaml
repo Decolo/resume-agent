@@ -1,0 +1,120 @@
+resume_base: |
+  # Alex Chen
+  alex.chen@email.com | +1-415-555-0100 | linkedin.com/in/alexchen
+
+  ## Summary
+  Remote-first Senior Software Engineer based in San Francisco Bay Area with 8+ years of experience
+  building cloud-native backend systems for B2B SaaS platforms.
+
+  ## Experience
+  ### Senior Software Engineer — CloudCRM (B2B SaaS)
+  Jan 2020 - Present
+  - Built Python microservices and REST APIs serving 2M+ requests per day.
+  - Implemented CI/CD with Docker and Kubernetes on AWS.
+  - Improved deployment reliability and reduced release rollback incidents by 40%.
+
+  ### Software Engineer — GrowthStack
+  Jun 2016 - Dec 2019
+  - Developed backend services with Python and PostgreSQL.
+  - Delivered integration pipelines for subscription billing and analytics.
+
+  ## Skills
+  - Languages: Python, JavaScript, TypeScript
+  - Cloud: AWS, Docker, Kubernetes
+  - Data: PostgreSQL, Redis
+
+cases:
+  - id: strong_fit_remote_backend
+    jd: |
+      Senior Backend Engineer (Remote - United States)
+
+      Requirements:
+      - 5+ years of software engineering experience
+      - Strong Python backend development skills
+      - Hands-on AWS, Docker, and Kubernetes experience
+      - Experience designing and building REST APIs
+
+      Preferred:
+      - Experience in B2B SaaS products
+      - Familiarity with PostgreSQL
+    expect:
+      overall_min: 72
+      skill_min: 60
+      yoe_min: 75
+      location_min: 70
+      company_min: 60
+
+  - id: location_conflict_onsite
+    jd: |
+      Senior Backend Engineer (Onsite - New York)
+
+      Requirements:
+      - 5+ years of software engineering experience
+      - Strong Python backend development skills
+      - Experience with AWS
+    expect:
+      location_max: 45
+      overall_max: 78
+
+  - id: yoe_gap_case
+    jd: |
+      Principal Engineer
+
+      Requirements:
+      - 12+ years of software engineering experience
+      - Strong Python system design experience
+      - Experience leading platform architecture initiatives
+    expect:
+      yoe_max: 70
+
+  - id: domain_mismatch_case
+    jd: |
+      Senior Engineer - Healthcare Platform
+
+      Requirements:
+      - 5+ years of software engineering experience
+      - Experience with healthcare workflows, clinical systems, and EHR integrations
+      - Strong Python backend experience
+    expect:
+      company_max: 55
+
+metamorphic:
+  paraphrase_pairs:
+    - id: paraphrase_resilience
+      jd_a: |
+        Senior Backend Engineer (Remote US)
+
+        Requirements:
+        - 5+ years software engineering experience
+        - Python backend development
+        - AWS, Docker, Kubernetes
+        - Build REST APIs
+      jd_b: |
+        Remote Staff Platform Developer (US timezone)
+
+        Requirements:
+        - At least five years building production software systems
+        - Expert in Python services for server-side architecture
+        - Operated cloud deployments on AWS with container orchestration
+        - Designed HTTP service interfaces for internal and external consumers
+      expect:
+        overall_delta_max: 18
+        skill_delta_max: 35
+
+  noise_tests:
+    - id: resume_noise_resilience
+      jd: |
+        Senior Backend Engineer (Remote - United States)
+
+        Requirements:
+        - 5+ years of software engineering experience
+        - Strong Python backend development skills
+        - Hands-on AWS, Docker, and Kubernetes experience
+        - Experience building REST APIs
+      noise_append: |
+        ## Personal Notes
+        Weekend hobbies include photography, cooking, and marathon training.
+        Favorite movies and books are listed here for personal interest only.
+      expect:
+        overall_delta_max: 15
+        skill_delta_max: 18
