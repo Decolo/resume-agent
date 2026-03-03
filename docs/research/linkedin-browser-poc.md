@@ -1,5 +1,10 @@
 # LinkedIn Browser PoC (CDP)
 
+> **Superseded.** The production Python implementation lives in
+> `resume_agent/tools/linkedin_tools.py` and `resume_agent/tools/cdp_client.py`.
+> See `docs/api-reference/linkedin-tools.md` for the current tool contracts.
+> This PoC is retained for historical context only.
+
 This PoC is intentionally standalone and not integrated into the main
 `resume-agent` CLI flow.
 

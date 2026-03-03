@@ -30,8 +30,10 @@ def create_tools(workspace_dir: str, raw_config: Optional[Dict[str, Any]] = None
     Returns:
         Dictionary mapping tool names to tool instances
     """
-    cdp = (raw_config or {}).get("cdp", {})
-    cdp_port = cdp.get("port", 9222)
+    merged_config = raw_config or {}
+    cdp = merged_config.get("cdp") or {}
+
+    cdp_port = cdp.get("port", 0)
     chrome_profile = cdp.get("chrome_profile", "~/.resume-agent/chrome-profile")
     auto_launch = cdp.get("auto_launch", True)
 
@@ -46,8 +48,17 @@ def create_tools(workspace_dir: str, raw_config: Optional[Dict[str, Any]] = None
         "lint_resume": ResumeLinterTool(workspace_dir),
         "job_match": JobMatcherTool(workspace_dir),
         "resume_validate": ResumeValidatorTool(workspace_dir),
-        "job_search": JobSearchTool(cdp_port=cdp_port, chrome_profile=chrome_profile, auto_launch=auto_launch),
-        "job_detail": JobDetailTool(cdp_port=cdp_port, chrome_profile=chrome_profile, auto_launch=auto_launch),
+        "job_search": JobSearchTool(
+            cdp_port=cdp_port,
+            chrome_profile=chrome_profile,
+            auto_launch=auto_launch,
+            api_key=merged_config.get("api_key", ""),
+        ),
+        "job_detail": JobDetailTool(
+            cdp_port=cdp_port,
+            chrome_profile=chrome_profile,
+            auto_launch=auto_launch,
+        ),
         "web_fetch": WebFetchTool(),
         "web_read": WebReadTool(),
     }

@@ -12,16 +12,20 @@ class FileReadTool(BaseTool):
     """Read contents of a file."""
 
     name = "file_read"
-    description = "Read the contents of a file. Returns the file content as text."
+    description = (
+        "Use when you need plain-text content from one local file. "
+        "Accepts absolute or workspace-relative paths, rejects directories/binary files/"
+        "files larger than 10MB, and returns raw text."
+    )
     parameters = {
         "path": {
             "type": "string",
-            "description": "Path to the file to read",
+            "description": "Absolute or workspace-relative path to an existing text file.",
             "required": True,
         },
         "encoding": {
             "type": "string",
-            "description": "File encoding (default: utf-8)",
+            "description": "Text decoding used to read the file. Default: utf-8.",
             "default": "utf-8",
         },
     }
@@ -77,21 +81,25 @@ class FileWriteTool(BaseTool):
     """Write contents to a file."""
 
     name = "file_write"
-    description = "Write content to a file. Creates parent directories if needed."
+    description = (
+        "Use when you need to create or overwrite a text file. "
+        "Creates parent directories automatically; in preview mode it stages a pending write "
+        "instead of writing to disk immediately."
+    )
     parameters = {
         "path": {
             "type": "string",
-            "description": "Path to the file to write",
+            "description": "Absolute or workspace-relative target file path.",
             "required": True,
         },
         "content": {
             "type": "string",
-            "description": "Content to write to the file",
+            "description": "Full text content to write (this replaces existing file content).",
             "required": True,
         },
         "encoding": {
             "type": "string",
-            "description": "File encoding (default: utf-8)",
+            "description": "Text encoding used when writing the file. Default: utf-8.",
             "default": "utf-8",
         },
     }
@@ -135,21 +143,25 @@ class FileListTool(BaseTool):
     """List files in a directory."""
 
     name = "file_list"
-    description = "List files and directories in a given path."
+    description = (
+        "Use when you need directory discovery before read/write actions. "
+        "Lists files/directories for a path and optional glob pattern, optionally recursive. "
+        "Output lines are tab-separated as: type, size_bytes, relative_path."
+    )
     parameters = {
         "path": {
             "type": "string",
-            "description": "Path to the directory to list (default: current directory)",
+            "description": "Directory to list. Absolute or workspace-relative. Default: current directory.",
             "default": ".",
         },
         "pattern": {
             "type": "string",
-            "description": "Glob pattern to filter files (e.g., '*.pdf')",
+            "description": "Glob filter (for example '*.md' or '**/*.json' when recursive=true).",
             "default": "*",
         },
         "recursive": {
             "type": "boolean",
-            "description": "Whether to list recursively",
+            "description": "If true, recurse into subdirectories.",
             "default": False,
         },
     }
@@ -197,21 +209,24 @@ class FileRenameTool(BaseTool):
     """Rename (move) a file within the workspace."""
 
     name = "file_rename"
-    description = "Rename or move a file to a new path within the workspace."
+    description = (
+        "Use when you need to rename or move one file path to another. "
+        "Fails if source is missing or destination exists unless overwrite=true."
+    )
     parameters = {
         "source_path": {
             "type": "string",
-            "description": "Current path of the file to rename",
+            "description": "Current file path to move/rename (absolute or workspace-relative).",
             "required": True,
         },
         "dest_path": {
             "type": "string",
-            "description": "New path for the file",
+            "description": "Destination file path (absolute or workspace-relative).",
             "required": True,
         },
         "overwrite": {
             "type": "boolean",
-            "description": "Overwrite destination if it exists (default: false)",
+            "description": "If true, replace an existing destination file. Default: false.",
             "default": False,
         },
     }

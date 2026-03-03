@@ -1,4 +1,4 @@
-# Quality Score
+# Quality Scorecard
 
 This document tracks low-noise quality signals for the current single-package
 runtime (`resume_agent/*`).
@@ -7,9 +7,9 @@ runtime (`resume_agent/*`).
 
 | Metric | Value | Source |
 |---|---:|---|
-| Python LOC (`resume_agent` + `tests`) | 15,384 | `find resume_agent tests -name '*.py' -type f -print0 \| xargs -0 wc -l` |
+| Python LOC (`resume_agent` + `tests`) | 16,284 | `find resume_agent tests -name '*.py' -type f -print0 \| xargs -0 wc -l` |
 | Largest module | `resume_agent/cli/app.py` (1,456 LOC) | `find resume_agent -name '*.py' ... \| sort -nr` |
-| Architecture boundary tests | enabled | `tests/test_architecture_boundaries.py` |
+| Architecture boundary tests | enabled | `tests/architecture/test_architecture_boundaries.py` |
 | Required CI checks (target) | `test`, `lint`, `typecheck` | `.github/workflows/ci.yml` |
 
 ## Scoring Model (v1)

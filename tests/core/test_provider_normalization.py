@@ -340,3 +340,40 @@ async def test_llm_stream_normalizes_cumulative_text_deltas_for_callback_and_res
         "\n你想怎么处理？",
     ]
     assert response.text == "谢谢你的认可！😊\n确实，那些都是小修小补的问题。\n你想怎么处理？"
+
+
+@pytest.mark.asyncio
+async def test_llm_stream_normalizes_cumulative_function_call_argument_deltas():
+    class FakeProvider:
+        async def generate(self, messages, tools, config):
+            raise AssertionError("generate should not be called in this test")
+
+        async def generate_stream(self, messages, tools, config):
+            yield StreamDelta(
+                function_call_start=FunctionCall(name="file_write", arguments={}, id="call_1"),
+                function_call_id="call_1",
+                function_call_index=0,
+            )
+            # Cumulative snapshots (not incremental tokens).
+            yield StreamDelta(function_call_delta='{"path":"out.md"', function_call_id="call_1", function_call_index=0)
+            yield StreamDelta(
+                function_call_delta='{"path":"out.md","content":"hello"}',
+                function_call_id="call_1",
+                function_call_index=0,
+            )
+
+    agent = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="kimi",
+            model="kimi-k2",
+            api_base="https://api.moonshot.cn/v1",
+        )
+    )
+    agent.provider = FakeProvider()
+
+    response = await agent._call_llm_stream()
+
+    assert len(response.function_calls) == 1
+    assert response.function_calls[0].name == "file_write"
+    assert response.function_calls[0].arguments == {"path": "out.md", "content": "hello"}

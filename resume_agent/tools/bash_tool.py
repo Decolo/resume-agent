@@ -12,16 +12,20 @@ class BashTool(BaseTool):
     """Execute shell commands."""
 
     name = "bash"
-    description = "Execute a shell command and return its output. Use for file operations, git commands, etc."
+    description = (
+        "Execute one safe shell command in the workspace and return stdout/stderr. "
+        "Use for diagnostics and developer workflows when built-in tools are insufficient. "
+        "Safety guardrails block destructive commands, network download commands, and shell chaining/redirection."
+    )
     parameters = {
         "command": {
             "type": "string",
-            "description": "The shell command to execute",
+            "description": "Single command string to run (no chaining, pipes, or redirection operators).",
             "required": True,
         },
         "timeout": {
             "type": "integer",
-            "description": "Timeout in seconds (default: 60)",
+            "description": "Maximum runtime in seconds before termination. Default: 60.",
             "default": 60,
         },
     }

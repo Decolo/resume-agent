@@ -18,9 +18,9 @@ log_file: "./logs/agent.log"
 
 # Chrome DevTools Protocol (for LinkedIn job tools)
 cdp:
-  port: 9222
+  port: 0                # 0 = auto-detect free port via TS launcher; nonzero = fixed
   chrome_profile: "~/.resume-agent/chrome-profile"
-  auto_launch: true   # auto-start Chrome if not running
+  auto_launch: true      # auto-start Chrome via TS launcher if not running
 
 # Optional Gemini feature
 search_grounding:

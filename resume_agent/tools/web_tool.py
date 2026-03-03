@@ -50,26 +50,30 @@ class WebFetchTool(BaseTool):
     """Fetch raw content from a URL (static content only)."""
 
     name = "web_fetch"
-    description = "Fetch raw content from a URL (static HTML/text/JSON only)."
+    description = (
+        "Fetch raw response text from an http/https URL. "
+        "Use for static pages/APIs where you need unprocessed content. "
+        "Does not execute JavaScript and does not handle authenticated browser sessions."
+    )
     parameters = {
         "url": {
             "type": "string",
-            "description": "URL to fetch (http/https only)",
+            "description": "Target URL. Only http/https schemes are allowed.",
             "required": True,
         },
         "timeout_seconds": {
             "type": "number",
-            "description": "Request timeout in seconds (default: 10)",
+            "description": "Network timeout in seconds. Default: 10.",
             "default": 10,
         },
         "max_bytes": {
             "type": "integer",
-            "description": "Maximum bytes to download (default: 2,000,000)",
+            "description": "Maximum response size in bytes before aborting. Default: 2,000,000.",
             "default": 2000000,
         },
         "user_agent": {
             "type": "string",
-            "description": "User-Agent header (default: resume-agent/1.0)",
+            "description": "User-Agent request header. Default: resume-agent/1.0.",
             "default": "resume-agent/1.0",
         },
     }
@@ -132,31 +136,35 @@ class WebReadTool(BaseTool):
     """Fetch a URL and return extracted readable text."""
 
     name = "web_read"
-    description = "Fetch a URL and return extracted readable text (static content only)."
+    description = (
+        "Fetch a URL and return normalized readable text. "
+        "For HTML, script/style content is removed before extraction. "
+        "Use when downstream tools need clean text rather than raw markup."
+    )
     parameters = {
         "url": {
             "type": "string",
-            "description": "URL to fetch and read (http/https only)",
+            "description": "Target URL to read. Only http/https schemes are allowed.",
             "required": True,
         },
         "timeout_seconds": {
             "type": "number",
-            "description": "Request timeout in seconds (default: 10)",
+            "description": "Network timeout in seconds. Default: 10.",
             "default": 10,
         },
         "max_bytes": {
             "type": "integer",
-            "description": "Maximum bytes to download (default: 2,000,000)",
+            "description": "Maximum bytes downloaded before aborting. Default: 2,000,000.",
             "default": 2000000,
         },
         "max_chars": {
             "type": "integer",
-            "description": "Maximum characters to return (default: 50,000)",
+            "description": "Maximum characters returned after extraction/cleanup. Default: 50,000.",
             "default": 50000,
         },
         "user_agent": {
             "type": "string",
-            "description": "User-Agent header (default: resume-agent/1.0)",
+            "description": "User-Agent request header. Default: resume-agent/1.0.",
             "default": "resume-agent/1.0",
         },
     }

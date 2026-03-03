@@ -17,8 +17,9 @@ Complete documentation is available in the `/docs` directory:
 - **[Environment Setup](./docs/setup/environment-setup.md)** - API keys and local config
 - **[Session Persistence](./docs/sessions/session-persistence.md)** - Save and restore sessions
 - **[Export History](./docs/usage/export-history.md)** - Save or copy conversation history
+- **[LinkedIn Tools Reference](./docs/api-reference/linkedin-tools.md)** - Contracts for `job_search` / `job_detail`
 - **[Architecture Overview](./CLAUDE.md)** - System design and components (Claude Code instructions)
-- **[Phase 1 Improvements](./docs/architecture/phase1-improvements.md)** - Technical improvements
+- **[Phase 1 Improvements (Archived)](./docs/archive/phase1-improvements.md)** - Historical technical improvements
 - **[API Reference](./docs/api-reference/phase1-quick-reference.md)** - Code examples and API usage
 - **Examples Folder** - Sample resumes and workspaces live in `./examples/`
 
@@ -116,6 +117,8 @@ resume-agent/
 | `bash` | Execute shell commands |
 | `resume_parse` | Parse PDF/DOCX/MD/JSON resumes |
 | `resume_write` | Generate MD/TXT/JSON/HTML output |
+| `job_search` | Search LinkedIn jobs by keywords/location (supports pagination and optional JD snippets) |
+| `job_detail` | Fetch one LinkedIn job detail from explicit `job_url` |
 
 ## Architecture
 

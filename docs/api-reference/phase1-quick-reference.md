@@ -97,3 +97,4 @@ if llm_agent.has_pending_tool_calls():
 
 - Paths and examples in this doc assume the current single-package layout (`resume_agent/*`).
 - For CLI command usage, see `docs/README.md` and `README.md`.
+- For LinkedIn tool contracts and policies, see `docs/api-reference/linkedin-tools.md`.
