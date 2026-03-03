@@ -2,7 +2,7 @@
 
 This document is the high-level system map for contributors and agents.
 Deep design details stay in specialized docs under `docs/architecture/`.
-Last validated against code: 2026-02-28.
+Last validated against code: 2026-03-03.
 
 ## System Overview
 
@@ -15,7 +15,7 @@ Single `resume_agent/` package with logical submodules:
 3. **Core** - Agent runtime (`resume_agent/core/`)
    - LLM orchestration, multi-agent system, session management
 4. **Tools** - Tool adapters (`resume_agent/tools/`)
-   - File I/O, bash execution, resume tools
+   - File I/O, bash execution, resume tools, LinkedIn browser automation (CDP), web fetch
 5. **Providers** - LLM provider adapters (`resume_agent/providers/`)
 
 ## Dependency Direction
