@@ -13,6 +13,8 @@ class FunctionCall:
     name: str
     arguments: Dict[str, Any]
     id: Optional[str] = None
+    # Gemini-specific opaque signature required for some tool-call follow-up turns.
+    thought_signature: Optional[bytes] = None
 
 
 @dataclass

@@ -101,6 +101,8 @@ class GeminiProvider:
                         function_call_start=FunctionCall(
                             name=part.function_call.name,
                             arguments=dict(part.function_call.args) if part.function_call.args else {},
+                            id=getattr(part.function_call, "id", None),
+                            thought_signature=getattr(part, "thought_signature", None),
                         )
                     )
                 )
@@ -121,6 +123,8 @@ class GeminiProvider:
                     FunctionCall(
                         name=part.function_call.name,
                         arguments=dict(part.function_call.args) if part.function_call.args else {},
+                        id=getattr(part.function_call, "id", None),
+                        thought_signature=getattr(part, "thought_signature", None),
                     )
                 )
             elif part.text:
@@ -147,9 +151,13 @@ class GeminiProvider:
                     parts.append(types.Part.from_text(text=part.text))
                 elif part.function_call:
                     parts.append(
-                        types.Part.from_function_call(
-                            name=part.function_call.name,
-                            args=part.function_call.arguments,
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=part.function_call.id,
+                                name=part.function_call.name,
+                                args=part.function_call.arguments,
+                            ),
+                            thought_signature=part.function_call.thought_signature,
                         )
                     )
                 elif part.function_response:

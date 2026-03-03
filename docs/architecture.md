@@ -36,7 +36,7 @@ Automated boundary checks: `tests/architecture/`
 
 ### Detailed Execution Flow
 
-For step-by-step runtime behavior (approval pauses, loop guard, auto-save, delegation), see:
+For step-by-step runtime behavior (inline wire approval, loop guard, auto-save, delegation), see:
 
 - `docs/architecture/execution-data-flow.md`
 

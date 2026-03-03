@@ -2,7 +2,7 @@
 
 Canonical runtime map for the CLI-first architecture.
 Prefer this doc when changing control flow, tool orchestration, or session behavior.
-Last updated: 2026-02-28.
+Last updated: 2026-03-03.
 
 ## 1) End-to-End Pipeline (Interactive CLI)
 
@@ -92,14 +92,25 @@ Key files:
 
 ## 2) LLMAgent Step Loop (Core Runtime)
 
+Two code paths exist in `LLMAgent.run()`:
+
+### Wire path (`wire` param provided — interactive CLI default)
+
 ```text
 [Start Step]
+    |
+    v
+[Wire: TurnBegin]
     |
     v
 [Add user message to HistoryManager]
     |
     v
+[Wire: StepBegin(n)]
+    |
+    v
 [Call provider: generate / generate_stream]
+  (TextDelta events emitted to Wire during streaming)
     |
     v
 [Parse response: text + function_calls]
@@ -108,46 +119,60 @@ Key files:
 [Append assistant message]
     |
     v
-[Any function calls?] -- No --> [Return final text]
+[Any function calls?] -- No --> [Wire: TurnEnd] --> [Return final text]
     |
    Yes
     v
 [Contains write tool requiring approval?]
     | Yes
     v
-[Queue pending calls + pause]
+[Inline approval via Wire]
+  Approval.request() blocks on asyncio.Future
+  _pipe_approval_to_wire sends ApprovalRequest to UI
+  UI consumer prompts user and resolves the Future
+  "approve_all" persists as LLMAgent auto-approve across subsequent turns
+    |
+    +--- rejected ---> [Inject rejection into history] --> (next step)
+    |
+    v (approved)
+[Wire: ToolCallEvent for each tool]
     |
     v
-[Wait /approve or /reject]
+[Execute calls with asyncio.gather]
     |
     v
-[Resume loop]
-    |
-    +----------------------------------------------+
-                                                   |
-    | No or approved                               |
-    v                                              |
-[Execute calls with asyncio.gather]               |
-    |                                              |
-    v                                              |
-[Append tool responses]                           |
-    |                                              |
-    v                                              |
-[SessionManager exists?] -- No -------------------+
-    |
-   Yes
-    v
-[Auto-save session]
+[Wire: ToolResultEvent for each tool]
     |
     v
-[Max steps / loop guard hit?] -- Yes --> [Return guarded fallback or last result]
+[Append tool responses]
+    |
+    v
+[Auto-save if SessionManager present]
+    |
+    v
+[Max steps / loop guard hit?] -- Yes --> [Return guarded fallback]
     |
    No
     v
 (next step)
 ```
 
-Safety and reliability mechanisms in this loop:
+### Legacy path (`wire=None` — non-interactive/API usage)
+
+```text
+[Contains write tool requiring approval?]
+    | Yes
+    v
+[Queue pending calls + pause]
+    |
+    v
+[Return "pending approval" message]
+    |
+    v
+[Wait for approve_pending_tool_calls() call]
+```
+
+Safety and reliability mechanisms in both paths:
 - retry/backoff wrapper around provider calls
 - loop guard for repeated tool-only cycles
 - per-tool cache for read-heavy tools
@@ -155,8 +180,9 @@ Safety and reliability mechanisms in this loop:
 - LinkedIn mixed-call policy: `job_detail` is rejected when requested in the same step as `job_search`
 - observability events for step/tool/llm lifecycle
 
-Key file:
+Key files:
 - `resume_agent/core/llm.py`
+- `resume_agent/core/wire/` (Wire protocol, Approval, Queue primitives)
 
 ## 3) Tool and Domain Data Path
 
@@ -242,6 +268,9 @@ Key files:
 [SessionManager present?] -- No --> [Continue without persistence]
     |
    Yes
+    v
+[Ensure workspace/sessions path exists (auto-create missing dirs)]
+    |
     v
 [SessionManager.save_session]
     |

@@ -22,6 +22,7 @@ from .skills.formatter_prompt import FORMATTER_AGENT_PROMPT
 from .skills.orchestrator_prompt import ORCHESTRATOR_AGENT_PROMPT
 from .skills.parser_prompt import PARSER_AGENT_PROMPT
 from .skills.writer_prompt import WRITER_AGENT_PROMPT
+from .wire import Wire
 
 logger = logging.getLogger(__name__)
 
@@ -280,17 +281,20 @@ class AutoAgent:
         user_input: str,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
+        wire: Optional[Wire] = None,
     ) -> str:
         if await self._should_use_multi(user_input):
             return await self.multi_agent.run(
                 user_input,
                 stream=stream,
                 on_stream_delta=on_stream_delta,
+                wire=wire,
             )
         return await self.single_agent.run(
             user_input,
             stream=stream,
             on_stream_delta=on_stream_delta,
+            wire=wire,
         )
 
     async def chat(
@@ -298,8 +302,14 @@ class AutoAgent:
         user_input: str,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
+        wire: Optional[Wire] = None,
     ) -> str:
-        return await self.run(user_input, stream=stream, on_stream_delta=on_stream_delta)
+        return await self.run(
+            user_input,
+            stream=stream,
+            on_stream_delta=on_stream_delta,
+            wire=wire,
+        )
 
     def reset(self) -> None:
         self.single_agent.reset()

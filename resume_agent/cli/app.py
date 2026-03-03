@@ -2,9 +2,7 @@
 
 import asyncio
 import os
-import select
-import sys
-import threading
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Union
 
@@ -21,11 +19,144 @@ from resume_agent.core.agent_factory import create_agent
 from resume_agent.core.agents.orchestrator_agent import OrchestratorAgent
 from resume_agent.core.llm import LLMConfig, load_config, load_raw_config
 from resume_agent.core.session import SessionManager
+from resume_agent.core.wire import QueueShutDown, Wire
+from resume_agent.core.wire.types import (
+    ApprovalRequest,
+    TextDelta,
+    ToolCallEvent,
+    ToolResultEvent,
+    TurnEnd,
+)
 
 from .config_validator import Severity, has_errors, validate_config
 from .tool_factory import create_tools
 
 console = Console()
+
+# Keys whose values are typically short and useful for preview
+_PREVIEW_KEY_PRIORITY = ("file_path", "path", "filename", "url", "query", "command")
+_MAX_INLINE_VALUE_LEN = 120
+_MAX_INLINE_ARG_PAIRS = 2
+_MAX_RESULT_SUMMARY_LEN = 160
+_INLINE_WHITESPACE_RE = re.compile(r"\s+")
+_APPROVAL_CHOICE_RE = re.compile(r"\b([123])\b")
+_REDACTED_APPROVAL_ARG_KEYS = {"content", "text", "body", "data", "patch", "code"}
+
+
+def _format_tool_call_approval_inline(name: str, args: Dict[str, Any]) -> str:
+    """Single-line approval preview with large payload redaction."""
+    safe_args: Dict[str, Any] = {}
+    for key, value in (args or {}).items():
+        if key.lower() in _REDACTED_APPROVAL_ARG_KEYS and isinstance(value, str):
+            compact = _INLINE_WHITESPACE_RE.sub(" ", value).strip()
+            safe_args[key] = f"<{len(compact)} chars>"
+        else:
+            safe_args[key] = value
+    return _format_tool_call_inline(name, safe_args)
+
+
+def _parse_approval_choice(raw_choice: str) -> str:
+    """Parse approval input from variants like '1', '[1] Approve', 'approve'."""
+    text = (raw_choice or "").strip().lower()
+    if not text:
+        return "reject"
+
+    # Match explicit intent first to avoid accidental privilege escalation.
+    if "reject" in text or text.startswith("deny"):
+        return "reject"
+    if "approve all" in text:
+        return "approve_all"
+    if text.startswith("approve"):
+        return "approve"
+
+    match = _APPROVAL_CHOICE_RE.search(text)
+    if not match:
+        return "reject"
+    return {"1": "approve", "2": "approve_all", "3": "reject"}[match.group(0)]
+
+
+def _truncate_value(val: Any, max_len: int = _MAX_INLINE_VALUE_LEN) -> str:
+    """Truncate a single arg value for display."""
+    s = _INLINE_WHITESPACE_RE.sub(" ", str(val)).strip()
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + " …"
+
+
+def _normalize_tool_output(output: str) -> str:
+    """Normalize tool output for stable terminal rendering."""
+    if not output:
+        return ""
+    normalized = output.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = "\n".join(line.rstrip() for line in normalized.splitlines())
+    return normalized.strip("\n")
+
+
+def _format_tool_call_inline(name: str, args: Dict[str, Any]) -> str:
+    """Single-line tool call display."""
+    if not args:
+        return f"🔧 {name}"
+
+    ordered_keys = [k for k in _PREVIEW_KEY_PRIORITY if k in args]
+    ordered_keys.extend(k for k in args if k not in ordered_keys)
+    pairs = []
+    for key in ordered_keys[:_MAX_INLINE_ARG_PAIRS]:
+        pairs.append(f"{key}={_truncate_value(args[key], max_len=40)}")
+    if len(ordered_keys) > _MAX_INLINE_ARG_PAIRS:
+        pairs.append("...")
+    return f"🔧 {name}({', '.join(pairs)})"
+
+
+def _summarize_file_list_result(output: str) -> Optional[str]:
+    """Summarize tab-separated file_list output in one line."""
+    normalized = output.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line for line in normalized.splitlines() if line.strip()]
+    if not lines:
+        return None
+    if lines == ["(empty directory)"]:
+        return "empty directory"
+
+    parsed_rows: list[tuple[str, str, str]] = []
+    for line in lines:
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            return None
+        file_type, size, path = parts
+        parsed_rows.append((file_type.strip(), size.strip(), path.strip()))
+
+    preview_items: list[str] = []
+    for file_type, _size, path in parsed_rows[:3]:
+        preview_items.append(f"{path}/" if file_type == "dir" else path)
+    summary = f"{len(parsed_rows)} entries"
+    if preview_items:
+        summary += ": " + ", ".join(preview_items)
+    if len(parsed_rows) > 3:
+        summary += ", ..."
+    return summary
+
+
+def _summarize_tool_result(name: str, result: str) -> str:
+    """Single-line tool result summary."""
+    if not result:
+        return "ok"
+
+    if name == "file_list":
+        file_list_summary = _summarize_file_list_result(result)
+        if file_list_summary is not None:
+            return file_list_summary
+
+    normalized = _normalize_tool_output(result).replace("\t", " ")
+    if not normalized:
+        return "ok"
+
+    lines = [line for line in normalized.splitlines() if line.strip()]
+    if not lines:
+        return "ok"
+
+    summary = _INLINE_WHITESPACE_RE.sub(" ", lines[0]).strip()
+    if len(lines) > 1:
+        summary += f" (+{len(lines) - 1} lines)"
+    return _truncate_value(summary, max_len=_MAX_RESULT_SUMMARY_LEN)
 
 
 def _fuzzy_token_match(token: str, text: str) -> bool:
@@ -78,9 +209,6 @@ class ResumeCLICompleter(Completer):
         "/files",
         "/config",
         "/export",
-        "/approve",
-        "/reject",
-        "/pending",
         "/auto-approve",
         "/stream",
         "/agents",
@@ -151,39 +279,6 @@ class ResumeCLICompleter(Completer):
                 yield from self._yield_options(["verbose", "-v", "--verbose"], current)
 
 
-def _wait_for_escape(stop_event: threading.Event) -> bool:
-    """Block until ESC is pressed or stop_event is set. Returns True if ESC."""
-    if not sys.stdin.isatty():
-        return False
-    try:
-        import termios
-        import tty
-    except Exception:
-        return False
-
-    fd = sys.stdin.fileno()
-    try:
-        old_settings = termios.tcgetattr(fd)
-    except Exception:
-        return False
-
-    try:
-        tty.setraw(fd)
-        while not stop_event.is_set():
-            rlist, _, _ = select.select([fd], [], [], 0.1)
-            if not rlist:
-                continue
-            ch = os.read(fd, 1)
-            if ch == b"\x1b":
-                return True
-    finally:
-        try:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        except Exception:
-            pass
-    return False
-
-
 def print_banner():
     """Print welcome banner."""
     banner = """
@@ -222,9 +317,6 @@ def print_help():
 | `/files` | List files in workspace |
 | `/config` | Show current configuration |
 | `/export [target] [format]` | Export conversation history |
-| `/approve` | Approve pending tool call(s) |
-| `/reject` | Reject pending tool call(s) |
-| `/pending` | List pending tool approvals |
 | `/auto-approve [on|off|status]` | Control auto-approval for write tools |
 | `/stream [on|off|status]` | Control streaming output in interactive mode |
 | `/agents` | Show agent statistics (multi-agent mode) |
@@ -706,52 +798,6 @@ async def handle_command(
         else:
             console.print("⚠️ Trace only available in multi-agent mode.", style="yellow")
 
-    elif cmd.startswith("/approve"):
-        approved_any = False
-
-        # Approve pending tool calls (pre-execution approval)
-        for llm_agent in _get_llm_agents(agent):
-            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
-                results = await llm_agent.approve_pending_tool_calls()
-                for result in results:
-                    name = result.get("name", "tool")
-                    output = result.get("result", "")
-                    console.print(f"  ✓ Approved {name}", style="green")
-                    if output:
-                        console.print(f"    {output}", style="dim")
-                approved_any = True
-
-        if not approved_any:
-            console.print("No pending approvals.", style="dim")
-
-    elif cmd.startswith("/reject"):
-        rejected_any = False
-
-        # Reject pending tool calls
-        for llm_agent in _get_llm_agents(agent):
-            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
-                count = llm_agent.reject_pending_tool_calls()
-                console.print(f"✓ Rejected {count} pending tool call(s)", style="yellow")
-                rejected_any = True
-
-        if not rejected_any:
-            console.print("No pending approvals to reject.", style="dim")
-
-    elif cmd == "/pending":
-        pending_tool_calls = _list_pending_tool_calls(agent)
-
-        if not pending_tool_calls:
-            console.print("No pending approvals.", style="dim")
-            return True
-
-        if pending_tool_calls:
-            console.print(f"\n📋 Pending tool approvals ({len(pending_tool_calls)}):", style="bold cyan")
-            for item in pending_tool_calls:
-                name = item.get("name", "tool")
-                console.print(f"  🔧 {name}", style="cyan")
-
-        console.print("\n💡 /approve to apply, /reject to discard", style="dim")
-
     elif cmd.startswith("/auto-approve"):
         parts = cmd.split(maxsplit=1)
         action = parts[1].strip().lower() if len(parts) > 1 else "status"
@@ -1081,62 +1127,55 @@ async def handle_command(
     return True
 
 
-async def _prompt_pending_tool_action(
-    agent: Union[ResumeAgent, OrchestratorAgent],
-    session: PromptSession,
+async def _consume_wire(
+    ui_side,
     console: Console,
+    session: PromptSession,
 ) -> None:
-    """Prompt user to approve/reject pending tool calls before execution."""
-    pending = _list_pending_tool_calls(agent)
-    if not pending:
-        return
+    """Consume Wire messages and render them to the CLI.
 
-    console.print(f"\n🛡️ Pending tool approvals ({len(pending)}):", style="bold cyan")
-    for item in pending:
-        name = item.get("name", "tool")
-        console.print(f"  🔧 {name}", style="cyan")
+    Handles ApprovalRequests inline by prompting the user.
+    Runs as a background asyncio task alongside agent.run().
+    """
+    try:
+        while True:
+            msg = await ui_side.receive()
 
-    console.print("\n  [1] ✅ Approve (execute tools)", style="green")
-    console.print("  [2] ✅ Approve, and don't ask again", style="green")
-    console.print("  [3] ❌ Reject (discard)", style="red")
+            if isinstance(msg, TextDelta):
+                console.print(msg.text, end="")
 
-    choice = await asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: session.prompt("\n> "),
-    )
-    choice = choice.strip()
+            elif isinstance(msg, ToolCallEvent):
+                inline = _format_tool_call_inline(msg.name, msg.arguments)
+                console.print(f"  {inline}", style="cyan", markup=False)
 
-    if choice == "1":
-        for llm_agent in _get_llm_agents(agent):
-            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
-                results = await llm_agent.approve_pending_tool_calls()
-                for result in results:
-                    name = result.get("name", "tool")
-                    output = result.get("result", "")
-                    console.print(f"  ✓ Approved {name}", style="green")
-                    if output:
-                        console.print(f"    {output}", style="dim")
-    elif choice == "2":
-        for llm_agent in _get_llm_agents(agent):
-            if hasattr(llm_agent, "set_auto_approve_tools"):
-                llm_agent.set_auto_approve_tools(True)
-        for llm_agent in _get_llm_agents(agent):
-            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
-                results = await llm_agent.approve_pending_tool_calls()
-                for result in results:
-                    name = result.get("name", "tool")
-                    output = result.get("result", "")
-                    console.print(f"  ✓ Approved {name}", style="green")
-                    if output:
-                        console.print(f"    {output}", style="dim")
-        console.print("✓ Auto-approve enabled for future write tool calls", style="green")
-    elif choice == "3":
-        rejected = 0
-        for llm_agent in _get_llm_agents(agent):
-            if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
-                rejected += llm_agent.reject_pending_tool_calls()
-        console.print(f"✓ Rejected {rejected} pending tool call(s)", style="yellow")
-    # Any other input: do nothing
+            elif isinstance(msg, ToolResultEvent):
+                style = "green" if msg.success else "red"
+                icon = "✓" if msg.success else "✗"
+                summary = _summarize_tool_result(msg.name, msg.result)
+                console.print(f"  {icon} {msg.name}: {summary}", style=style, markup=False)
+
+            elif isinstance(msg, ApprovalRequest):
+                console.print(
+                    f"\n🛡️ Approval required ({len(msg.tool_calls)} tool call(s)):",
+                    style="bold cyan",
+                )
+                for tc in msg.tool_calls:
+                    args = dict(tc.arguments) if tc.arguments else {}
+                    preview = _format_tool_call_approval_inline(tc.name, args)
+                    console.print(f"  {preview}", style="cyan", markup=False)
+
+                console.print("\n  [1] ✅ Approve", style="green")
+                console.print("  [2] ✅ Approve all (don't ask again)", style="green")
+                console.print("  [3] ❌ Reject", style="red")
+
+                choice = await session.prompt_async("\n> ")
+                msg.resolve(_parse_approval_choice(choice))
+
+            elif isinstance(msg, TurnEnd):
+                break
+
+    except QueueShutDown:
+        pass
 
 
 async def run_interactive(
@@ -1159,11 +1198,15 @@ async def run_interactive(
     print_banner()
 
     # Show mode
+    from resume_agent.core.agent_factory import AutoAgent
+
     if isinstance(agent, OrchestratorAgent):
         console.print("🤖 Running in multi-agent mode", style="dim")
+    elif isinstance(agent, AutoAgent):
+        console.print("🤖 Running in auto-routing mode (single + multi-agent)", style="dim")
     else:
         console.print("🤖 Running in single-agent mode", style="dim")
-    console.print("✅ Write approval enabled — file writes require approval", style="green")
+    console.print("✅ Inline write approval enabled — file writes prompt before execution", style="green")
     console.print(
         f"✅ Streaming {'ON' if runtime_options['stream_enabled'] else 'OFF'} — use /stream [on|off|status]",
         style="green" if runtime_options["stream_enabled"] else "yellow",
@@ -1172,8 +1215,7 @@ async def run_interactive(
     while True:
         try:
             # Get user input — show pending approvals count if any
-            pending_count = len(_list_pending_tool_calls(agent))
-            prompt_prefix = f"\n📝 [{pending_count} pending] You: " if pending_count else "\n📝 You: "
+            prompt_prefix = "\n📝 You: "
             user_input = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: session.prompt(prompt_prefix),
@@ -1196,70 +1238,53 @@ async def run_interactive(
                     break
                 continue
 
-            # Run agent
-            console.print("\n🤔 Thinking... (Press ESC to interrupt)", style="dim")
+            # Run agent with Wire protocol
+            console.print("\n🤔 Thinking... (Press Ctrl+C to interrupt)", style="dim")
+            agent_task = None
+            consumer_task = None
+            wire = None
 
             try:
                 stream_enabled = bool(runtime_options.get("stream_enabled", False))
+
+                wire = Wire()
+                ui_side = wire.ui_side()
+                consumer_task = asyncio.create_task(_consume_wire(ui_side, console, session))
 
                 agent_task = asyncio.create_task(
                     agent.run(
                         user_input,
                         stream=stream_enabled,
+                        wire=wire,
                     )
                 )
-                stop_event = threading.Event()
-                esc_future = None
-                if sys.stdin.isatty():
-                    esc_future = asyncio.get_event_loop().run_in_executor(None, _wait_for_escape, stop_event)
-
-                wait_set = {agent_task}
-                if esc_future:
-                    wait_set.add(esc_future)
-
-                done, _pending = await asyncio.wait(
-                    wait_set,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                esc_pressed = False
-                if esc_future and esc_future in done:
-                    try:
-                        esc_pressed = esc_future.result() is True
-                    except Exception:
-                        esc_pressed = False
-
-                if esc_pressed:
-                    stop_event.set()
-                    if not agent_task.done():
-                        agent_task.cancel()
-                        try:
-                            await agent_task
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception:
-                            pass
-                    console.print("\n⚠️ Interrupted by user (ESC).", style="yellow")
-                    continue
-
-                stop_event.set()
-                if esc_future and not esc_future.done():
-                    await esc_future
-
                 response = await agent_task
+
                 console.print()
                 if response.startswith("Error:"):
                     console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
                 else:
                     console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
 
-                # Auto-prompt if tool approvals are pending
-                if _list_pending_tool_calls(agent):
-                    await _prompt_pending_tool_action(agent, session, console)
             except KeyboardInterrupt:
+                if agent_task is not None and not agent_task.done():
+                    agent_task.cancel()
+                    try:
+                        await agent_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
                 console.print("\n⚠️ Interrupted.", style="yellow")
             except Exception as e:
                 console.print(f"\n❌ Error: {str(e)}", style="red")
+            finally:
+                if wire is not None:
+                    wire.shutdown()
+                if consumer_task is not None:
+                    if not consumer_task.done():
+                        consumer_task.cancel()
+                    await asyncio.gather(consumer_task, return_exceptions=True)
 
         except KeyboardInterrupt:
             console.print("\n\n👋 Goodbye!", style="yellow")
@@ -1272,7 +1297,6 @@ async def run_interactive(
 def main():
     """Main entry point."""
     import argparse
-    import os
 
     from dotenv import load_dotenv
 
@@ -1320,7 +1344,7 @@ def main():
         "--stream",
         dest="stream",
         action="store_true",
-        help="Enable streaming output (interactive default is on)",
+        help="Enable streaming output (interactive default is off)",
     )
     parser.add_argument(
         "--no-stream",
@@ -1422,27 +1446,18 @@ def main():
             else:
                 console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
 
-            if _list_pending_tool_calls(agent):
-                import sys
-
-                if sys.stdin.isatty():
-                    session = PromptSession()
-                    # Handle tool approvals first if present
-                    if _list_pending_tool_calls(agent):
-                        await _prompt_pending_tool_action(agent, session, console)
-                else:
-                    tool_pending = _list_pending_tool_calls(agent)
-                    if tool_pending:
-                        console.print(
-                            f"\n⚠️ {len(tool_pending)} pending tool call(s) require approval. "
-                            "Run in interactive mode to approve.",
-                            style="yellow",
-                        )
+            pending = _list_pending_tool_calls(agent)
+            if pending:
+                console.print(
+                    f"\n⚠️ {len(pending)} pending tool call(s) require approval. "
+                    "Run in interactive mode for inline approval.",
+                    style="yellow",
+                )
 
         asyncio.run(run_once())
     else:
         # Interactive mode
-        interactive_stream_default = True if args.stream is None else bool(args.stream)
+        interactive_stream_default = False if args.stream is None else bool(args.stream)
         asyncio.run(
             run_interactive(
                 agent,

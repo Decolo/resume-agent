@@ -225,6 +225,18 @@ class TestSessionIndex:
 class TestSessionManager:
     """Test session manager functionality."""
 
+    def test_init_creates_missing_workspace_tree(self, tmp_path):
+        """SessionManager should create workspace/sessions when workspace is missing."""
+        workspace = tmp_path / "missing" / "workspace"
+        assert not workspace.exists()
+
+        session_manager = SessionManager(str(workspace))
+
+        assert workspace.exists()
+        assert workspace.is_dir()
+        assert session_manager.sessions_dir.exists()
+        assert session_manager.sessions_dir.is_dir()
+
     def test_save_and_load_session(self, tmp_path):
         """Test saving and loading a session."""
         # Create a mock agent with history

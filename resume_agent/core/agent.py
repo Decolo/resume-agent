@@ -74,6 +74,7 @@ class ResumeAgent:
         user_input: str,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
+        wire: Optional[Any] = None,
     ) -> str:
         """Run the agent with user input and return final response."""
         if self.agent_config.verbose:
@@ -85,6 +86,7 @@ class ResumeAgent:
             max_steps=self.agent_config.max_steps,
             stream=stream,
             on_stream_delta=on_stream_delta,
+            wire=wire,
         )
 
         if self.agent_config.verbose:
