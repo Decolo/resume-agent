@@ -493,7 +493,6 @@ def _wait_for_escape(
 
     try:
         import termios
-        import tty
     except Exception:
         return False
 
@@ -504,18 +503,23 @@ def _wait_for_escape(
         return False
 
     try:
+        esc_settings = termios.tcgetattr(fd)
+        esc_settings[3] = esc_settings[3] & ~termios.ICANON & ~termios.ECHO
+        esc_settings[6][termios.VMIN] = 0
+        esc_settings[6][termios.VTIME] = 0
+
         raw_enabled = False
 
         def _set_raw_enabled(enabled: bool) -> None:
             nonlocal raw_enabled
             if enabled and not raw_enabled:
-                tty.setraw(fd)
+                termios.tcsetattr(fd, termios.TCSANOW, esc_settings)
                 raw_enabled = True
             elif not enabled and raw_enabled:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                 raw_enabled = False
 
-        tty.setraw(fd)
+        termios.tcsetattr(fd, termios.TCSANOW, esc_settings)
         raw_enabled = True
         while not stop_event.is_set():
             if pause_event is not None and pause_event.is_set():
