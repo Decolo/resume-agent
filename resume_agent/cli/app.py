@@ -3,6 +3,9 @@
 import asyncio
 import os
 import re
+import select
+import sys
+import threading
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Union
@@ -439,6 +442,106 @@ def _set_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent], enable
     for llm_agent in _get_llm_agents(agent):
         if hasattr(llm_agent, "set_auto_approve_tools"):
             llm_agent.set_auto_approve_tools(enabled)
+
+
+def _set_interrupt_checker(agent: Union[ResumeAgent, OrchestratorAgent], checker: Any) -> None:
+    """Set interrupt checker for all active LLM agents in current mode."""
+    for llm_agent in _get_llm_agents(agent):
+        if hasattr(llm_agent, "set_interrupt_checker"):
+            llm_agent.set_interrupt_checker(checker)
+
+
+def _wait_for_escape(
+    stop_event: threading.Event,
+    pause_event: Optional[threading.Event] = None,
+    paused_event: Optional[threading.Event] = None,
+) -> bool:
+    """Block until ESC is pressed or stop_event is set. Returns True if ESC."""
+    if not sys.stdin.isatty():
+        return False
+
+    if os.name == "nt":
+        try:
+            import msvcrt
+        except Exception:
+            return False
+
+        try:
+            while not stop_event.is_set():
+                if pause_event is not None and pause_event.is_set():
+                    if paused_event is not None:
+                        paused_event.set()
+                    stop_event.wait(0.05)
+                    continue
+                if paused_event is not None and paused_event.is_set():
+                    paused_event.clear()
+                if not msvcrt.kbhit():
+                    stop_event.wait(0.05)
+                    continue
+
+                ch = msvcrt.getch()
+                if ch in (b"\x00", b"\xe0"):
+                    if msvcrt.kbhit():
+                        msvcrt.getch()
+                    continue
+                if ch == b"\x1b":
+                    return True
+        finally:
+            if paused_event is not None:
+                paused_event.clear()
+        return False
+
+    try:
+        import termios
+        import tty
+    except Exception:
+        return False
+
+    fd = sys.stdin.fileno()
+    try:
+        old_settings = termios.tcgetattr(fd)
+    except Exception:
+        return False
+
+    try:
+        raw_enabled = False
+
+        def _set_raw_enabled(enabled: bool) -> None:
+            nonlocal raw_enabled
+            if enabled and not raw_enabled:
+                tty.setraw(fd)
+                raw_enabled = True
+            elif not enabled and raw_enabled:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                raw_enabled = False
+
+        tty.setraw(fd)
+        raw_enabled = True
+        while not stop_event.is_set():
+            if pause_event is not None and pause_event.is_set():
+                _set_raw_enabled(False)
+                if paused_event is not None:
+                    paused_event.set()
+                stop_event.wait(0.05)
+                continue
+
+            if paused_event is not None and paused_event.is_set():
+                paused_event.clear()
+            _set_raw_enabled(True)
+            rlist, _, _ = select.select([fd], [], [], 0.1)
+            if not rlist:
+                continue
+            ch = os.read(fd, 1)
+            if ch == b"\x1b":
+                return True
+    finally:
+        if paused_event is not None:
+            paused_event.clear()
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        except Exception:
+            pass
+    return False
 
 
 def _session_display_name(session_id: str) -> str:
@@ -1273,6 +1376,8 @@ async def _consume_wire(
     ui_side,
     console: Console,
     session: PromptSession,
+    esc_pause_event: Optional[threading.Event] = None,
+    esc_paused_event: Optional[threading.Event] = None,
 ) -> None:
     """Consume Wire messages and render them to the CLI.
 
@@ -1310,7 +1415,15 @@ async def _consume_wire(
                 console.print("  [2] ✅ Approve all (don't ask again)", style="green")
                 console.print("  [3] ❌ Reject", style="red")
 
-                choice = await session.prompt_async("\n> ")
+                if esc_pause_event is not None:
+                    esc_pause_event.set()
+                    if esc_paused_event is not None:
+                        await asyncio.to_thread(esc_paused_event.wait, 0.5)
+                try:
+                    choice = await session.prompt_async("\n> ")
+                finally:
+                    if esc_pause_event is not None:
+                        esc_pause_event.clear()
                 msg.resolve(_parse_approval_choice(choice))
 
             elif isinstance(msg, TurnEnd):
@@ -1384,17 +1497,40 @@ async def run_interactive(
                 continue
 
             # Run agent with Wire protocol
-            console.print("\n🤔 Thinking... (Press Ctrl+C to interrupt)", style="dim")
+            use_esc_interrupt = sys.stdin.isatty()
+            interrupt_hint = "ESC" if use_esc_interrupt else "Ctrl+C"
+            console.print(f"\n🤔 Thinking... (Press {interrupt_hint} to interrupt)", style="dim")
             agent_task = None
             consumer_task = None
             wire = None
+            stop_event: Optional[threading.Event] = None
+            esc_pause_event: Optional[threading.Event] = None
+            esc_paused_event: Optional[threading.Event] = None
+            esc_future = None
 
             try:
                 stream_enabled = bool(runtime_options.get("stream_enabled", False))
 
                 wire = Wire()
                 ui_side = wire.ui_side()
-                consumer_task = asyncio.create_task(_consume_wire(ui_side, console, session))
+                esc_pause_event = threading.Event()
+                esc_paused_event = threading.Event()
+                consumer_task = asyncio.create_task(
+                    _consume_wire(
+                        ui_side,
+                        console,
+                        session,
+                        esc_pause_event=esc_pause_event,
+                        esc_paused_event=esc_paused_event,
+                    )
+                )
+
+                stop_event = threading.Event()
+
+                async def _interrupt_checker() -> bool:
+                    return stop_event.is_set()
+
+                _set_interrupt_checker(agent, _interrupt_checker)
 
                 agent_task = asyncio.create_task(
                     agent.run(
@@ -1403,6 +1539,41 @@ async def run_interactive(
                         wire=wire,
                     )
                 )
+
+                if use_esc_interrupt:
+                    esc_future = asyncio.get_event_loop().run_in_executor(
+                        None,
+                        _wait_for_escape,
+                        stop_event,
+                        esc_pause_event,
+                        esc_paused_event,
+                    )
+
+                    done, _ = await asyncio.wait(
+                        {agent_task, esc_future},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+
+                    esc_pressed = False
+                    if esc_future in done:
+                        try:
+                            esc_pressed = esc_future.result() is True
+                        except Exception:
+                            esc_pressed = False
+
+                    if esc_pressed:
+                        stop_event.set()
+                        if not agent_task.done():
+                            agent_task.cancel()
+                            try:
+                                await agent_task
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception:
+                                pass
+                        console.print("\n⚠️ Interrupted by user (ESC).", style="yellow")
+                        continue
+
                 response = await agent_task
 
                 console.print()
@@ -1424,6 +1595,11 @@ async def run_interactive(
             except Exception as e:
                 console.print(f"\n❌ Error: {str(e)}", style="red")
             finally:
+                if stop_event is not None:
+                    stop_event.set()
+                _set_interrupt_checker(agent, None)
+                if esc_future is not None and not esc_future.done():
+                    await asyncio.gather(esc_future, return_exceptions=True)
                 if wire is not None:
                     wire.shutdown()
                 if consumer_task is not None:
