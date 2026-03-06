@@ -30,6 +30,21 @@ class _ScriptedProvider:
         yield  # pragma: no cover
 
 
+class _RecordingSessionManager:
+    def __init__(self):
+        self.calls = []
+
+    def save_session(self, agent, session_id=None, session_name=None):  # noqa: ANN001
+        self.calls.append(
+            {
+                "agent": agent,
+                "session_id": session_id,
+                "session_name": session_name,
+            }
+        )
+        return f"session_{len(self.calls)}"
+
+
 def _make_agent() -> LLMAgent:
     config = LLMConfig(api_key="test", provider="gemini", model="test-model")
     return LLMAgent(config=config, system_prompt="test")
@@ -98,6 +113,46 @@ async def test_wire_emits_turn_lifecycle():
     assert "TurnEnd" in types
     assert isinstance(messages[0], TurnBegin) and messages[0].user_input == "hi"
     assert isinstance(messages[-1], TurnEnd) and messages[-1].final_text == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_text_only_turn_auto_saves_without_wire():
+    """Text-only turns should auto-save even when no tools are called."""
+    agent = _make_agent()
+    session_manager = _RecordingSessionManager()
+    parent_agent = object()
+    agent.session_manager = session_manager
+    agent._parent_agent = parent_agent
+    agent.provider = _ScriptedProvider([LLMResponse(text="Hello world", function_calls=[])])
+
+    response = await agent.run("hi")
+
+    assert response == "Hello world"
+    assert len(session_manager.calls) == 1
+    assert session_manager.calls[0]["agent"] is parent_agent
+    assert session_manager.calls[0]["session_id"] is None
+    assert agent.current_session_id == "session_1"
+
+
+@pytest.mark.asyncio
+async def test_text_only_turn_auto_saves_with_wire():
+    """Wire mode should also auto-save text-only turns."""
+    agent = _make_agent()
+    session_manager = _RecordingSessionManager()
+    parent_agent = object()
+    agent.session_manager = session_manager
+    agent._parent_agent = parent_agent
+    agent.provider = _ScriptedProvider([LLMResponse(text="Hello world", function_calls=[])])
+
+    wire = Wire()
+    response = await agent.run("hi", wire=wire)
+    wire.shutdown()
+
+    assert response == "Hello world"
+    assert len(session_manager.calls) == 1
+    assert session_manager.calls[0]["agent"] is parent_agent
+    assert session_manager.calls[0]["session_id"] is None
+    assert agent.current_session_id == "session_1"
 
 
 @pytest.mark.asyncio

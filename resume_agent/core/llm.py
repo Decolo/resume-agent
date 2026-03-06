@@ -450,6 +450,8 @@ class LLMAgent:
 
             # 6. If no tool calls → done
             if not function_calls:
+                if self.session_manager:
+                    await self._auto_save()
                 step_duration = (time.time() - start_time) * 1000
                 self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                 if self.verbose:
@@ -646,6 +648,8 @@ class LLMAgent:
 
                 # 6. If no tool calls -> done
                 if not function_calls:
+                    if self.session_manager:
+                        await self._auto_save()
                     step_duration = (time.time() - start_time) * 1000
                     self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                     break
