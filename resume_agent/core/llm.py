@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
@@ -286,6 +288,12 @@ class LLMAgent:
         self.system_prompt = system_prompt
         self.agent_id = agent_id
         self.verbose = verbose
+        self._debug_tool_args = self.verbose or os.getenv("RESUME_AGENT_DEBUG_TOOL_ARGS", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
         # Initialize provider
         self.provider = create_provider(
@@ -379,6 +387,8 @@ class LLMAgent:
             "same_call_repeats": 0,
             "tool_only_steps": 0,
             "last_result": None,
+            "last_write_sig": None,
+            "same_write_repeats": 0,
         }
 
         for step in range(1, max_steps + 1):
@@ -414,9 +424,11 @@ class LLMAgent:
 
             # 2. Log LLM metrics
             self._log_llm_metrics(step, start_time, response.usage)
+            self._log_raw_response_debug(step, response)
 
             # 3. Parse response
             function_calls, text_parts = self._parse_response(response)
+            function_calls = self._repair_function_call_args_from_raw_response(function_calls, response.raw)
             response_text = " ".join(text_parts).strip()
 
             # 4. Log response summary
@@ -435,6 +447,8 @@ class LLMAgent:
                 tool_calls=tool_calls_dump,
                 agent_id=self.agent_id,
             )
+            if function_calls:
+                self._log_empty_write_args_debug(function_calls, step, response.raw)
 
             # 5. Add model response to history
             assistant_parts: List[MessagePart] = []
@@ -533,6 +547,20 @@ class LLMAgent:
                 if fr and fr.response:
                     loop_state["last_result"] = fr.response.get("result")
 
+            write_guard_reason = self._check_repeated_write_guard(function_calls, executed_responses, loop_state)
+            if write_guard_reason:
+                step_duration = (time.time() - start_time) * 1000
+                self.observer.log_error(
+                    error_type="loop_guard",
+                    message=write_guard_reason,
+                    context={
+                        "same_write_repeats": loop_state.get("same_write_repeats"),
+                    },
+                    agent_id=self.agent_id,
+                )
+                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                return write_guard_reason
+
             # 12. Update history + auto-save
             tool_message = Message(
                 role="tool",
@@ -541,6 +569,12 @@ class LLMAgent:
             self.history_manager.add_message(tool_message)
             if self.session_manager:
                 await self._auto_save()
+
+            fatal_tool_error = self._fatal_tool_error_message(function_calls, executed_responses)
+            if fatal_tool_error:
+                step_duration = (time.time() - start_time) * 1000
+                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                return fatal_tool_error
 
             # 13. Log step end
             step_duration = (time.time() - start_time) * 1000
@@ -582,6 +616,8 @@ class LLMAgent:
             "same_call_repeats": 0,
             "tool_only_steps": 0,
             "last_result": None,
+            "last_write_sig": None,
+            "same_write_repeats": 0,
         }
 
         response_text = ""
@@ -615,9 +651,11 @@ class LLMAgent:
 
                 # 2. Log LLM metrics
                 self._log_llm_metrics(step, start_time, response.usage)
+                self._log_raw_response_debug(step, response)
 
                 # 3. Parse response
                 function_calls, text_parts = self._parse_response(response)
+                function_calls = self._repair_function_call_args_from_raw_response(function_calls, response.raw)
                 response_text = " ".join(text_parts).strip()
 
                 # 4. Log response summary
@@ -631,6 +669,8 @@ class LLMAgent:
                     tool_calls=tool_calls_dump,
                     agent_id=self.agent_id,
                 )
+                if function_calls:
+                    self._log_empty_write_args_debug(function_calls, step, response.raw)
 
                 # 5. Add model response to history
                 assistant_parts: List[MessagePart] = []
@@ -748,6 +788,19 @@ class LLMAgent:
                     if fr and fr.response:
                         loop_state["last_result"] = fr.response.get("result")
 
+                write_guard_reason = self._check_repeated_write_guard(function_calls, executed_responses, loop_state)
+                if write_guard_reason:
+                    response_text = write_guard_reason
+                    step_duration = (time.time() - start_time) * 1000
+                    self.observer.log_error(
+                        error_type="loop_guard",
+                        message=write_guard_reason,
+                        context={"same_write_repeats": loop_state.get("same_write_repeats")},
+                        agent_id=self.agent_id,
+                    )
+                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                    break
+
                 # 13. Update history + auto-save
                 tool_message = Message(
                     role="tool",
@@ -756,6 +809,13 @@ class LLMAgent:
                 self.history_manager.add_message(tool_message)
                 if self.session_manager:
                     await self._auto_save()
+
+                fatal_tool_error = self._fatal_tool_error_message(function_calls, executed_responses)
+                if fatal_tool_error:
+                    response_text = fatal_tool_error
+                    step_duration = (time.time() - start_time) * 1000
+                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                    break
 
                 step_duration = (time.time() - start_time) * 1000
                 self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
@@ -923,7 +983,7 @@ class LLMAgent:
                 if call_key not in function_calls_map:
                     function_calls_map[call_key] = FunctionCall(
                         name=call.name,
-                        arguments={},
+                        arguments=dict(call.arguments) if call.arguments else {},
                         id=call_id,
                         thought_signature=call.thought_signature,
                     )
@@ -934,11 +994,25 @@ class LLMAgent:
                         existing_call.name = call.name
                     if not existing_call.id:
                         existing_call.id = call_id
+                    if not existing_call.arguments and call.arguments:
+                        existing_call.arguments = dict(call.arguments)
                     if existing_call.thought_signature is None and call.thought_signature is not None:
                         existing_call.thought_signature = call.thought_signature
 
                 arg_buffers.setdefault(call_key, "")
                 last_call_key = call_key
+                self._log_tool_arg_debug(
+                    "stream_function_call_start",
+                    "Observed function_call_start in stream.",
+                    {
+                        "call_key": call_key,
+                        "call_id": call_id,
+                        "function_name": call.name,
+                        "start_args_summary": self._summarize_argument_shapes(
+                            dict(call.arguments) if call.arguments else {}
+                        ),
+                    },
+                )
 
             if delta.function_call_delta:
                 if delta.function_call_id:
@@ -960,12 +1034,23 @@ class LLMAgent:
                     function_calls_map[call_key] = FunctionCall(name="", arguments={}, id=generated_id)
                     function_call_order.append(call_key)
 
-                # Normalize argument chunks because some providers emit cumulative
-                # snapshots instead of incremental deltas.
+                # Merge argument chunks conservatively: support cumulative
+                # snapshots, partial dict snapshots, and plain incremental text.
                 prior_args = arg_buffers.get(call_key, "")
-                normalized_args_delta = self._normalize_stream_text_delta(prior_args, delta.function_call_delta)
-                if normalized_args_delta:
-                    arg_buffers[call_key] = prior_args + normalized_args_delta
+                merged_args = self._merge_stream_argument_buffer(prior_args, delta.function_call_delta)
+                arg_buffers[call_key] = merged_args
+                self._log_tool_arg_debug(
+                    "stream_function_call_delta",
+                    "Merged function_call_delta into argument buffer.",
+                    {
+                        "call_key": call_key,
+                        "delta_len": len(delta.function_call_delta),
+                        "delta_sha": self._fingerprint_text(delta.function_call_delta),
+                        "buffer_len_before": len(prior_args),
+                        "buffer_len_after": len(merged_args),
+                        "buffer_sha_after": self._fingerprint_text(merged_args),
+                    },
+                )
                 last_call_key = call_key
 
         # finalize function call arguments
@@ -974,12 +1059,32 @@ class LLMAgent:
             call = function_calls_map[call_key]
             buf = arg_buffers.get(call_key, "")
             if buf:
-                try:
-                    import json
-
-                    call.arguments = json.loads(buf)
-                except Exception:
-                    call.arguments = {}
+                parsed_args = self._parse_tool_argument_buffer(buf)
+                if parsed_args is not None:
+                    call.arguments = parsed_args
+                    self._log_tool_arg_debug(
+                        "stream_function_call_args_parsed",
+                        "Parsed argument buffer into structured tool args.",
+                        {
+                            "call_key": call_key,
+                            "function_name": call.name,
+                            "buffer_len": len(buf),
+                            "buffer_sha": self._fingerprint_text(buf),
+                            "args_summary": self._summarize_argument_shapes(parsed_args),
+                        },
+                    )
+                else:
+                    self._log_tool_arg_debug(
+                        "stream_function_call_args_parse_failed",
+                        "Failed to parse argument buffer; keeping existing call.arguments.",
+                        {
+                            "call_key": call_key,
+                            "function_name": call.name,
+                            "buffer_len": len(buf),
+                            "buffer_sha": self._fingerprint_text(buf),
+                            "existing_args_summary": self._summarize_argument_shapes(call.arguments or {}),
+                        },
+                    )
             function_calls.append(call)
 
         return LLMResponse(
@@ -1009,6 +1114,272 @@ class LLMAgent:
             if accumulated_text.endswith(incoming_text[:size]):
                 return incoming_text[size:]
         return incoming_text
+
+    @staticmethod
+    def _merge_stream_argument_buffer(accumulated_text: str, incoming_text: str) -> str:
+        """Merge streamed argument chunks while preserving parseability."""
+        if not incoming_text:
+            return accumulated_text
+        if not accumulated_text:
+            return incoming_text
+
+        # Cumulative snapshots from some providers.
+        if incoming_text.startswith(accumulated_text):
+            return incoming_text
+        # Repeated stale snapshots.
+        if accumulated_text.startswith(incoming_text):
+            return accumulated_text
+
+        # If both sides parse as dict and incoming has at least the same keys,
+        # treat incoming as a fresh snapshot replacement.
+        prior_dict = LLMAgent._parse_tool_argument_buffer(accumulated_text)
+        incoming_dict = LLMAgent._parse_tool_argument_buffer(incoming_text)
+        if isinstance(prior_dict, dict) and isinstance(incoming_dict, dict):
+            if set(incoming_dict.keys()) >= set(prior_dict.keys()):
+                return incoming_text
+
+        # Best-effort overlap merge for true incremental chunks.
+        overlap_max = min(len(accumulated_text), len(incoming_text))
+        for size in range(overlap_max, 0, -1):
+            if accumulated_text.endswith(incoming_text[:size]):
+                return accumulated_text + incoming_text[size:]
+        return accumulated_text + incoming_text
+
+    @staticmethod
+    def _parse_tool_argument_buffer(raw: str) -> Optional[Dict[str, Any]]:
+        """Parse streamed tool arguments into a dictionary when possible."""
+        if not raw:
+            return {}
+
+        try:
+            import json
+
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        # Recover from duplicated/concatenated JSON snapshots by scanning for
+        # the "best" parseable dict object inside the buffer.
+        try:
+            import json
+
+            decoder = json.JSONDecoder()
+            best: Optional[Dict[str, Any]] = None
+            best_score = -1
+            for idx, ch in enumerate(raw):
+                if ch != "{":
+                    continue
+                try:
+                    candidate, _end = decoder.raw_decode(raw[idx:])
+                except Exception:
+                    continue
+                if not isinstance(candidate, dict):
+                    continue
+                score = len(candidate)
+                if "path" in candidate:
+                    score += 100
+                if "content" in candidate:
+                    score += 200
+                if score > best_score:
+                    best = candidate
+                    best_score = score
+            if best is not None:
+                return best
+        except Exception:
+            pass
+
+        # Some OpenAI-compatible providers may emit Python-style dict strings
+        # (`{'path': 'x'}`) in stream deltas.
+        try:
+            import ast
+
+            parsed = ast.literal_eval(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _summarize_argument_shapes(args: Dict[str, Any]) -> Dict[str, str]:
+        """Return a non-sensitive summary of argument value shapes."""
+        summary: Dict[str, str] = {}
+        for key, value in args.items():
+            if isinstance(value, str):
+                summary[key] = f"str(len={len(value)})"
+            elif isinstance(value, dict):
+                summary[key] = f"dict(len={len(value)})"
+            elif isinstance(value, list):
+                summary[key] = f"list(len={len(value)})"
+            elif value is None:
+                summary[key] = "none"
+            else:
+                summary[key] = type(value).__name__
+        return summary
+
+    @staticmethod
+    def _fingerprint_text(text: str) -> str:
+        """Stable short fingerprint for debug correlation without full payload."""
+        if not text:
+            return "0"
+        return hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:12]
+
+    def _log_tool_arg_debug(self, debug_type: str, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Emit debug events for tool-argument stream reconstruction."""
+        if not self._debug_tool_args:
+            return
+        self.observer.log_debug(
+            debug_type=debug_type,
+            message=message,
+            context=context or {},
+            agent_id=self.agent_id,
+        )
+
+    def _log_raw_response_debug(self, step: int, response: LLMResponse) -> None:
+        """Emit a structured raw-response snapshot before response parsing."""
+        if not self._debug_tool_args:
+            return
+
+        raw = response.raw
+        normalized_text = response.text or ""
+        normalized_calls = response.function_calls or []
+
+        if raw is None:
+            self._log_tool_arg_debug(
+                "llm_raw_response_missing",
+                "Provider response.raw is empty before parse.",
+                {
+                    "step": step,
+                    "provider": self.config.provider,
+                    "model": self.config.model,
+                    "normalized_text_len": len(normalized_text),
+                    "normalized_tool_calls": len(normalized_calls),
+                },
+            )
+            return
+
+        raw_summary = self._summarize_raw_response(raw)
+        preview, preview_total_len, preview_truncated = self._build_raw_response_preview(raw)
+        self._log_tool_arg_debug(
+            "llm_raw_response_summary",
+            "Captured provider raw response summary before parse.",
+            {
+                "step": step,
+                "provider": self.config.provider,
+                "model": self.config.model,
+                "raw_type": type(raw).__name__,
+                "normalized_text_len": len(normalized_text),
+                "normalized_tool_calls": len(normalized_calls),
+                "raw_summary": raw_summary,
+                "raw_preview_len": preview_total_len,
+                "raw_preview_truncated": preview_truncated,
+                "raw_preview": preview,
+            },
+        )
+
+    @staticmethod
+    def _summarize_raw_response(raw_response: Any) -> Dict[str, Any]:
+        """Summarize provider raw response shape in a provider-agnostic way."""
+        summary: Dict[str, Any] = {"raw_type": type(raw_response).__name__}
+
+        # Gemini-like shape
+        if hasattr(raw_response, "candidates"):
+            candidates = getattr(raw_response, "candidates", None) or []
+            summary["shape"] = "gemini_like"
+            summary["candidates_count"] = len(candidates)
+            if candidates:
+                candidate0 = candidates[0]
+                summary["candidate0_finish_reason"] = str(getattr(candidate0, "finish_reason", None))
+                content = getattr(candidate0, "content", None)
+                parts = getattr(content, "parts", None) or []
+                summary["candidate0_parts_count"] = len(parts)
+                parts_summary: List[Dict[str, Any]] = []
+                for idx, part in enumerate(parts[:6]):
+                    entry: Dict[str, Any] = {"index": idx}
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str):
+                        entry["text_len"] = len(text)
+                    thought = getattr(part, "thought", None)
+                    if thought is not None:
+                        entry["thought"] = bool(thought)
+                    function_call = getattr(part, "function_call", None)
+                    if function_call is not None:
+                        entry["function_name"] = getattr(function_call, "name", None)
+                        args = getattr(function_call, "args", None)
+                        entry["function_args_type"] = type(args).__name__ if args is not None else "none"
+                        try:
+                            if isinstance(args, dict):
+                                entry["function_arg_keys"] = sorted(args.keys())
+                            elif args is not None:
+                                entry["function_args_len"] = len(str(args))
+                        except Exception:
+                            pass
+                    parts_summary.append(entry)
+                if parts_summary:
+                    summary["candidate0_parts"] = parts_summary
+            return summary
+
+        # OpenAI-compatible shape
+        if hasattr(raw_response, "choices"):
+            choices = getattr(raw_response, "choices", None) or []
+            summary["shape"] = "openai_like"
+            summary["choices_count"] = len(choices)
+            if choices:
+                choice0 = choices[0]
+                summary["choice0_finish_reason"] = str(getattr(choice0, "finish_reason", None))
+                message = getattr(choice0, "message", None)
+                if message is not None:
+                    content = getattr(message, "content", None)
+                    summary["choice0_content_type"] = type(content).__name__ if content is not None else "none"
+                    if isinstance(content, str):
+                        summary["choice0_content_len"] = len(content)
+                    elif isinstance(content, list):
+                        summary["choice0_content_items"] = len(content)
+                    tool_calls = getattr(message, "tool_calls", None) or []
+                    summary["choice0_tool_calls_count"] = len(tool_calls)
+                    if tool_calls:
+                        names: List[str] = []
+                        for call in tool_calls[:6]:
+                            fn = getattr(call, "function", None)
+                            names.append(str(getattr(fn, "name", "")))
+                        summary["choice0_tool_call_names"] = names
+            return summary
+
+        return summary
+
+    @staticmethod
+    def _build_raw_response_preview(raw_response: Any) -> tuple[str, int, bool]:
+        """Serialize raw response into a truncated preview for observability."""
+        preview_limit = 3000
+        try:
+            raw_limit = os.getenv("RESUME_AGENT_DEBUG_RAW_PREVIEW_CHARS", "").strip()
+            if raw_limit:
+                preview_limit = int(raw_limit)
+        except Exception:
+            preview_limit = 3000
+        preview_limit = max(256, min(preview_limit, 20000))
+
+        raw_text = ""
+        try:
+            if hasattr(raw_response, "model_dump_json"):
+                raw_text = str(raw_response.model_dump_json(exclude_none=True))
+            elif hasattr(raw_response, "model_dump"):
+                import json
+
+                raw_text = json.dumps(raw_response.model_dump(exclude_none=True), ensure_ascii=True)
+            else:
+                raw_text = repr(raw_response)
+        except Exception:
+            raw_text = repr(raw_response)
+
+        raw_len = len(raw_text)
+        truncated = raw_len > preview_limit
+        if truncated:
+            return raw_text[:preview_limit], raw_len, True
+        return raw_text, raw_len, False
 
     def _build_generation_config(self) -> GenerationConfig:
         return GenerationConfig(
@@ -1045,6 +1416,165 @@ class LLMAgent:
             raise TransientError("Empty LLM response: no text or tool calls")
 
         return function_calls, text_parts
+
+    def _repair_function_call_args_from_raw_response(
+        self,
+        function_calls: List[FunctionCall],
+        raw_response: Optional[Any],
+    ) -> List[FunctionCall]:
+        """Best-effort repair for parsed args using provider raw response."""
+        if not function_calls or raw_response is None:
+            return function_calls
+
+        raw_calls = self._extract_raw_tool_calls(raw_response)
+        if not raw_calls:
+            return function_calls
+
+        repaired: List[FunctionCall] = []
+        for fc in function_calls:
+            args = dict(fc.arguments) if fc.arguments else {}
+
+            raw_entry = self._match_raw_tool_call(fc, raw_calls)
+            if not raw_entry:
+                repaired.append(fc)
+                continue
+
+            raw_args = raw_entry.get("arguments")
+            parsed = self._best_effort_parse_raw_tool_args(raw_args)
+            required_keys = self._required_tool_keys(fc.name)
+            if parsed and self._should_prefer_parsed_tool_args(fc.name, args, parsed, required_keys):
+                fc.arguments = parsed
+                self._log_tool_arg_debug(
+                    "llm_repaired_tool_args_from_raw",
+                    "Recovered/expanded tool args from raw provider response.",
+                    {
+                        "tool": fc.name,
+                        "call_id": fc.id,
+                        "old_keys": sorted(args.keys()),
+                        "new_keys": sorted(parsed.keys()),
+                        "old_content_len": len(args.get("content", ""))
+                        if isinstance(args.get("content"), str)
+                        else None,
+                        "new_content_len": (
+                            len(parsed.get("content", "")) if isinstance(parsed.get("content"), str) else None
+                        ),
+                        "raw_type": type(raw_args).__name__,
+                        "raw_len": len(raw_args) if isinstance(raw_args, str) else None,
+                    },
+                )
+            repaired.append(fc)
+        return repaired
+
+    def _required_tool_keys(self, tool_name: str) -> set[str]:
+        if tool_name not in self._tools:
+            return set()
+        _func, schema = self._tools[tool_name]
+        params = getattr(schema, "parameters", {}) or {}
+        required = params.get("required", [])
+        if not isinstance(required, list):
+            return set()
+        return {k for k in required if isinstance(k, str)}
+
+    @staticmethod
+    def _should_prefer_parsed_tool_args(
+        tool_name: str,
+        current_args: Dict[str, Any],
+        parsed_args: Dict[str, Any],
+        required_keys: set[str],
+    ) -> bool:
+        if not parsed_args:
+            return False
+        if not current_args:
+            return True
+
+        current_keys = set(current_args.keys())
+        parsed_keys = set(parsed_args.keys())
+
+        # Prefer candidate when it fills required keys missing from current args.
+        if required_keys and not required_keys.issubset(current_keys) and required_keys.issubset(parsed_keys):
+            return True
+
+        # Prefer candidate when it contains strictly more keys.
+        if parsed_keys > current_keys:
+            return True
+
+        # Prefer longer payload for common heavy fields.
+        for heavy_key in ("content", "command", "text", "body", "code", "data"):
+            cur_val = current_args.get(heavy_key)
+            new_val = parsed_args.get(heavy_key)
+            if isinstance(cur_val, str) and isinstance(new_val, str):
+                if len(new_val) > len(cur_val) + 32:
+                    return True
+
+        # Prefer non-truncated-looking content for write tools.
+        if tool_name in {"file_write", "resume_write"}:
+            cur_content = current_args.get("content")
+            new_content = parsed_args.get("content")
+            if isinstance(cur_content, str) and isinstance(new_content, str):
+                if cur_content.endswith("\\") and len(new_content) >= len(cur_content):
+                    return True
+
+        return False
+
+    @staticmethod
+    def _extract_raw_tool_calls(raw_response: Any) -> List[Dict[str, Any]]:
+        """Extract raw provider tool calls in OpenAI-compatible shape."""
+        choices = getattr(raw_response, "choices", None) or []
+        if not choices:
+            return []
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return []
+        tool_calls = getattr(message, "tool_calls", None) or []
+        extracted: List[Dict[str, Any]] = []
+        for idx, call in enumerate(tool_calls):
+            function = getattr(call, "function", None)
+            extracted.append(
+                {
+                    "index": idx,
+                    "id": getattr(call, "id", None),
+                    "name": getattr(function, "name", "") if function else "",
+                    "arguments": getattr(function, "arguments", None) if function else None,
+                }
+            )
+        return extracted
+
+    @staticmethod
+    def _match_raw_tool_call(fc: FunctionCall, raw_calls: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if fc.id:
+            for rc in raw_calls:
+                if rc.get("id") == fc.id:
+                    return rc
+        name_matches = [rc for rc in raw_calls if rc.get("name") == fc.name]
+        if len(name_matches) == 1:
+            return name_matches[0]
+        return name_matches[0] if name_matches else None
+
+    def _best_effort_parse_raw_tool_args(self, raw_args: Any) -> Dict[str, Any]:
+        if raw_args is None:
+            return {}
+        if isinstance(raw_args, dict):
+            return raw_args
+        if not isinstance(raw_args, str):
+            return {}
+
+        # Reuse stream parser first.
+        parsed = self._parse_tool_argument_buffer(raw_args)
+        if parsed:
+            return parsed
+
+        # Reuse provider parser when available (OpenAI-compatible provider has
+        # richer malformed-JSON recovery tailored to real-world tool-call args).
+        parser = getattr(self.provider, "_safe_parse_args", None)
+        if callable(parser):
+            try:
+                parsed2 = parser(raw_args)
+                if isinstance(parsed2, dict) and parsed2:
+                    return parsed2
+            except Exception:
+                pass
+
+        return {}
 
     def _check_loop_guard(
         self,
@@ -1092,11 +1622,164 @@ class LLMAgent:
 
         return None
 
+    def _check_repeated_write_guard(
+        self,
+        function_calls: List[FunctionCall],
+        responses: List[FunctionResponse],
+        state: Dict[str, Any],
+    ) -> Optional[str]:
+        """Stop loops that repeatedly write identical content to the same path."""
+        if len(function_calls) != 1 or len(responses) != 1:
+            state["same_write_repeats"] = 0
+            state["last_write_sig"] = None
+            return None
+
+        fc = function_calls[0]
+        if fc.name not in {"file_write", "resume_write"}:
+            state["same_write_repeats"] = 0
+            state["last_write_sig"] = None
+            return None
+
+        args = dict(fc.arguments) if fc.arguments else {}
+        path = args.get("path")
+        content = args.get("content")
+        result = responses[0].response.get("result", "") if responses[0] and responses[0].response else ""
+        if not isinstance(path, str) or not isinstance(content, str):
+            state["same_write_repeats"] = 0
+            state["last_write_sig"] = None
+            return None
+        if result.startswith("Error:"):
+            state["same_write_repeats"] = 0
+            state["last_write_sig"] = None
+            return None
+
+        write_sig = (fc.name, path, self._fingerprint_text(content))
+        if state.get("last_write_sig") == write_sig:
+            state["same_write_repeats"] = int(state.get("same_write_repeats", 0)) + 1
+        else:
+            state["last_write_sig"] = write_sig
+            state["same_write_repeats"] = 0
+
+        if state["same_write_repeats"] >= 2:
+            return (
+                "Loop guard triggered: repeated identical write operations detected. "
+                "Aborting to prevent infinite rewrite attempts."
+            )
+        return None
+
     def _requires_tool_approval(self, function_calls: list) -> bool:
         for fc in function_calls:
             if fc.name in self._WRITE_TOOLS:
                 return True
         return False
+
+    def _log_empty_write_args_debug(
+        self,
+        function_calls: List[FunctionCall],
+        step: int,
+        raw_response: Optional[Any] = None,
+    ) -> None:
+        """Emit targeted debug signal when write tools arrive with empty args."""
+        raw_summaries = self._extract_raw_tool_call_argument_summaries(raw_response)
+        for fc in function_calls:
+            if fc.name not in self._WRITE_TOOLS:
+                continue
+            args = dict(fc.arguments) if fc.arguments else {}
+            if args:
+                continue
+            raw_summary = self._select_raw_summary_for_function_call(fc, raw_summaries)
+            self._log_tool_arg_debug(
+                "llm_response_empty_write_args",
+                "LLM returned write tool call with empty args.",
+                {"step": step, "tool": fc.name, "call_id": fc.id, "raw_args_summary": raw_summary},
+            )
+
+    @staticmethod
+    def _extract_raw_tool_call_argument_summaries(raw_response: Optional[Any]) -> List[Dict[str, Any]]:
+        """Extract non-sensitive summaries of raw provider tool_call arguments."""
+        if raw_response is None:
+            return []
+        choices = getattr(raw_response, "choices", None) or []
+        if not choices:
+            return []
+        choice0 = choices[0]
+        message = getattr(choice0, "message", None)
+        if message is None:
+            return []
+        tool_calls = getattr(message, "tool_calls", None) or []
+
+        summaries: List[Dict[str, Any]] = []
+        for idx, call in enumerate(tool_calls):
+            fn = getattr(call, "function", None)
+            name = getattr(fn, "name", "") if fn else ""
+            raw_args = getattr(fn, "arguments", None) if fn else None
+            raw_type = type(raw_args).__name__ if raw_args is not None else "none"
+            raw_text = ""
+            if raw_args is not None:
+                try:
+                    if isinstance(raw_args, str):
+                        raw_text = raw_args
+                    else:
+                        import json
+
+                        raw_text = json.dumps(raw_args, ensure_ascii=False)
+                except Exception:
+                    raw_text = str(raw_args)
+            summaries.append(
+                {
+                    "index": idx,
+                    "id": getattr(call, "id", None),
+                    "name": name,
+                    "raw_type": raw_type,
+                    "raw_len": len(raw_text),
+                    "raw_sha": LLMAgent._fingerprint_text(raw_text),
+                    "raw_present": bool(raw_text.strip()) if isinstance(raw_text, str) else bool(raw_text),
+                }
+            )
+        return summaries
+
+    @staticmethod
+    def _select_raw_summary_for_function_call(
+        fc: FunctionCall,
+        raw_summaries: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Pick the most relevant raw-summary entry for a function call."""
+        if not raw_summaries:
+            return {}
+        if fc.id:
+            for s in raw_summaries:
+                if s.get("id") == fc.id:
+                    return s
+        matches = [s for s in raw_summaries if s.get("name") == fc.name]
+        if len(matches) == 1:
+            return matches[0]
+        return matches[0] if matches else raw_summaries[0]
+
+    @staticmethod
+    def _is_invalid_tool_call_missing_args_error(result: str) -> bool:
+        if not isinstance(result, str):
+            return False
+        return result.startswith("Error: Invalid tool call for ") and "missing required argument(s):" in result
+
+    def _fatal_tool_error_message(
+        self,
+        function_calls: List[FunctionCall],
+        responses: List[FunctionResponse],
+    ) -> Optional[str]:
+        """Return a user-facing fatal message for unrecoverable tool-call errors."""
+        for fc, fr in zip(function_calls, responses):
+            result = fr.response.get("result", "") if fr and fr.response else ""
+            if self._is_invalid_tool_call_missing_args_error(result):
+                self.observer.log_error(
+                    error_type="invalid_tool_call",
+                    message=result,
+                    context={"tool": fc.name, "call_id": fc.id},
+                    agent_id=self.agent_id,
+                )
+                return (
+                    f"{result}\n" "Turn aborted to prevent repeated approval/tool loops. " "Please retry the command."
+                )
+        return None
 
     def has_pending_tool_calls(self) -> bool:
         return len(self._pending_tool_calls) > 0
@@ -1338,6 +2021,16 @@ class LLMAgent:
                 func, _ = self._tools[func_name]
                 missing_required = self._missing_required_tool_args(func_name, func_args)
                 if missing_required:
+                    self._log_tool_arg_debug(
+                        "tool_call_missing_required_args",
+                        "Tool execution blocked due to missing required args.",
+                        {
+                            "tool": func_name,
+                            "missing_required": missing_required,
+                            "provided_args_summary": self._summarize_argument_shapes(func_args),
+                            "call_id": fc.id,
+                        },
+                    )
                     success = False
                     result_str = (
                         f"Error: Invalid tool call for '{func_name}': "
