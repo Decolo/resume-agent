@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -188,6 +190,51 @@ class AgentObserver:
 
         prefix = self._format_agent_prefix(agent_id)
         self.logger.error(f"{prefix}❌ Error ({error_type}): {message}")
+
+    def log_debug(
+        self,
+        debug_type: str,
+        message: str,
+        context: Optional[Dict[str, Any]] = None,
+        agent_id: Optional[str] = None,
+    ):
+        """Log a structured debug event without marking it as an error."""
+        event = AgentEvent(
+            timestamp=datetime.now(),
+            event_type="debug",
+            data={"debug_type": debug_type, "message": message, "context": context or {}},
+        )
+        self.events.append(event)
+
+        prefix = self._format_agent_prefix(agent_id)
+        self.logger.info(f"{prefix}🐞 Debug ({debug_type}): {message}")
+        if context:
+            context_chars_limit = self._debug_context_char_limit()
+            context_dump = self._format_debug_context(context, context_chars_limit)
+            self.logger.info(f"{prefix}↳ context={context_dump}")
+
+    @staticmethod
+    def _debug_context_char_limit() -> int:
+        """Read context print limit from env with a safe default."""
+        raw = os.getenv("RESUME_AGENT_DEBUG_LOG_CONTEXT_CHARS", "").strip()
+        if not raw:
+            return 4000
+        try:
+            limit = int(raw)
+        except ValueError:
+            return 4000
+        return max(256, min(limit, 50000))
+
+    @staticmethod
+    def _format_debug_context(context: Dict[str, Any], limit: int) -> str:
+        """Serialize debug context as JSON and truncate for readable logs."""
+        try:
+            rendered = json.dumps(context, ensure_ascii=True, default=str)
+        except Exception:
+            rendered = repr(context)
+        if len(rendered) <= limit:
+            return rendered
+        return f"{rendered[:limit]}... [truncated {len(rendered) - limit} chars]"
 
     def log_step_start(self, step: int, user_input: Optional[str] = None, agent_id: Optional[str] = None):
         """

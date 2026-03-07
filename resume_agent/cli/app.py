@@ -882,6 +882,20 @@ async def handle_command(
             else:
                 console.print("⚠️ No observability data available.", style="yellow")
 
+        def _format_debug_context(context: Any, limit: int = 4000) -> str:
+            """Render debug context for human-readable verbose exports."""
+            if context is None:
+                return ""
+            try:
+                import json
+
+                rendered = json.dumps(context, ensure_ascii=True, default=str)
+            except Exception:
+                rendered = repr(context)
+            if len(rendered) <= limit:
+                return rendered
+            return f"{rendered[:limit]}... [truncated {len(rendered) - limit} chars]"
+
         # Format the history
         if format_type == "json":
             import json
@@ -981,6 +995,14 @@ async def handle_command(
                     elif event.event_type == "error":
                         lines.append(f"  ❌ {event.data.get('error_type')}: {event.data.get('message')}")
 
+                    elif event.event_type == "debug":
+                        debug_type = event.data.get("debug_type", "debug")
+                        message = event.data.get("message", "")
+                        lines.append(f"  🐞 {debug_type}: {message}")
+                        context_dump = _format_debug_context(event.data.get("context"))
+                        if context_dump:
+                            lines.append(f"  Context: {context_dump}")
+
                     elif event.event_type in ["step_start", "step_end"]:
                         lines.append(f"  Step: {event.data.get('step')}")
                         if event.duration_ms:
@@ -1064,6 +1086,14 @@ async def handle_command(
                         error_type = event.data.get("error_type")
                         message = event.data.get("message")
                         lines.append(f"- **[{timestamp}]** ❌ Error: `{error_type}` - {message}")
+
+                    elif event.event_type == "debug":
+                        debug_type = event.data.get("debug_type", "debug")
+                        message = event.data.get("message", "")
+                        lines.append(f"- **[{timestamp}]** 🐞 Debug: `{debug_type}` - {message}")
+                        context_dump = _format_debug_context(event.data.get("context"))
+                        if context_dump:
+                            lines.append(f"  - Context: `{context_dump}`")
 
                     elif event.event_type == "step_start":
                         step = event.data.get("step")
