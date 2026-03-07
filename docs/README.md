@@ -12,7 +12,7 @@ If you want guided onboarding and background reading, use
 - **[Architecture Map](./architecture.md)** - Layering and dependency direction
 - **[Execution Data Flow](./architecture/execution-data-flow.md)** - Runtime path from CLI to provider/tools
 - **[Phase 1 Quick Reference](./api-reference/phase1-quick-reference.md)** - Runtime reliability APIs
-- **[LinkedIn Tools Reference](./api-reference/linkedin-tools.md)** - `job_search` and `job_detail` contracts and policy
+- **[LinkedIn Tools Reference](./api-reference/linkedin-tools.md)** - `job_search` contract and behavior
 - **[Session Persistence](./sessions/session-persistence.md)** - Session storage and restore flows
 
 ## Architecture

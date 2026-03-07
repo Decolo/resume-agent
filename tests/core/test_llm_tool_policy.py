@@ -1,4 +1,4 @@
-"""Tests for tool-call policy enforcement in LLMAgent."""
+"""Tests for tool-call validation and loop guard behavior in LLMAgent."""
 
 from __future__ import annotations
 
@@ -31,105 +31,6 @@ def _new_agent() -> LLMAgent:
         ),
         system_prompt="test",
     )
-
-
-@pytest.mark.asyncio
-async def test_run_blocks_job_detail_when_mixed_with_job_search_in_same_step():
-    agent = _new_agent()
-    search_calls: list[dict] = []
-    detail_calls: list[dict] = []
-
-    async def fake_search(**kwargs):
-        search_calls.append(kwargs)
-        return "search ok"
-
-    async def fake_detail(**kwargs):
-        detail_calls.append(kwargs)
-        return "detail ok"
-
-    agent.register_tool(
-        name="job_search",
-        description="search",
-        parameters={"properties": {}, "required": []},
-        func=fake_search,
-    )
-    agent.register_tool(
-        name="job_detail",
-        description="detail",
-        parameters={"properties": {}, "required": []},
-        func=fake_detail,
-    )
-    agent.provider = _FakeProvider(
-        responses=[
-            LLMResponse(
-                function_calls=[
-                    FunctionCall(name="job_search", arguments={"keywords": "front end"}, id="call_s"),
-                    FunctionCall(
-                        name="job_detail",
-                        arguments={"job_url": "https://www.linkedin.com/jobs/view/4353119521/"},
-                        id="call_d",
-                    ),
-                ]
-            ),
-            LLMResponse(text="final"),
-        ]
-    )
-
-    result = await agent.run("search jobs", max_steps=4)
-
-    assert result == "final"
-    assert len(search_calls) == 1
-    assert len(detail_calls) == 0
-
-    tool_messages = [m for m in agent.history_manager.get_history() if m.role == "tool"]
-    assert tool_messages
-    responses = [part.function_response for part in tool_messages[0].parts if part.function_response]
-    assert any(r and r.name == "job_search" for r in responses)
-    assert any(r and r.name == "job_detail" and "Rejected by policy" in r.response.get("result", "") for r in responses)
-
-
-@pytest.mark.asyncio
-async def test_approve_pending_tool_calls_applies_same_job_policy():
-    agent = _new_agent()
-    search_calls: list[dict] = []
-    detail_calls: list[dict] = []
-
-    async def fake_search(**kwargs):
-        search_calls.append(kwargs)
-        return "search ok"
-
-    async def fake_detail(**kwargs):
-        detail_calls.append(kwargs)
-        return "detail ok"
-
-    agent.register_tool(
-        name="job_search",
-        description="search",
-        parameters={"properties": {}, "required": []},
-        func=fake_search,
-    )
-    agent.register_tool(
-        name="job_detail",
-        description="detail",
-        parameters={"properties": {}, "required": []},
-        func=fake_detail,
-    )
-
-    agent._pending_tool_calls = [
-        FunctionCall(name="job_search", arguments={"keywords": "frontend"}, id="call_s"),
-        FunctionCall(
-            name="job_detail",
-            arguments={"job_url": "https://www.linkedin.com/jobs/view/4353119521/"},
-            id="call_d",
-        ),
-    ]
-
-    results = await agent.approve_pending_tool_calls()
-
-    assert len(search_calls) == 1
-    assert len(detail_calls) == 0
-    assert any(item["name"] == "job_search" for item in results)
-    assert any(item["name"] == "job_detail" and "Rejected by policy" in item["result"] for item in results)
 
 
 @pytest.mark.asyncio
@@ -225,3 +126,18 @@ async def test_execute_tool_infers_path_from_recent_file_list_when_missing():
 
     assert received and received[0]["path"] == "sample_resume.md"
     assert "parsed sample_resume.md" in response.response.get("result", "")
+
+
+def test_repeated_write_guard_triggers_on_identical_rewrites():
+    agent = _new_agent()
+    state = {"last_write_sig": None, "same_write_repeats": 0}
+    fc = FunctionCall(name="file_write", arguments={"path": "a.html", "content": "<html>ok</html>"}, id="c1")
+    fr = FunctionResponse(
+        name="file_write", response={"result": "Successfully wrote 15 characters to a.html"}, call_id="c1"
+    )
+
+    assert agent._check_repeated_write_guard([fc], [fr], state) is None
+    assert agent._check_repeated_write_guard([fc], [fr], state) is None
+    reason = agent._check_repeated_write_guard([fc], [fr], state)
+    assert reason is not None
+    assert "repeated identical write operations" in reason

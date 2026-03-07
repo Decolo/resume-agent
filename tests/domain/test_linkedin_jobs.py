@@ -1,14 +1,10 @@
 """Tests for LinkedIn job search domain logic (pure functions, no I/O)."""
 
 from resume_agent.domain.linkedin_jobs import (
-    JobDetail,
     JobListing,
-    build_detail_url,
     build_search_url,
     check_login_required,
-    format_job_detail,
     format_job_listings,
-    parse_job_detail,
     parse_job_listings,
 )
 
@@ -64,48 +60,6 @@ class TestParseJobListings:
         assert parse_job_listings("Jobs\nSearch results") == []
 
 
-DETAIL_PAGE_TEXT = """\
-Senior Software Engineer
-Google
-Mountain View, CA
-
-About the job
-We are looking for a Senior Software Engineer to join our Cloud team.
-You will design and build scalable distributed systems.
-
-Qualifications:
-- 5+ years of experience in software engineering
-- Proficiency in Python, Java, or Go
-- Experience with distributed systems
-
-Seniority level
-Mid-Senior level
-
-Employment type
-Full-time
-
-Job function
-Engineering and Information Technology
-
-Industries
-Technology, Information and Internet
-
-Posted 2 days ago · 150 applicants
-"""
-
-
-class TestParseJobDetail:
-    def test_extracts_description_from_detail_text(self):
-        detail = parse_job_detail(DETAIL_PAGE_TEXT)
-
-        assert isinstance(detail, JobDetail)
-        assert detail.title == "Senior Software Engineer"
-        assert detail.company == "Google"
-        assert detail.location == "Mountain View, CA"
-        assert "scalable distributed systems" in detail.description
-        assert "5+ years" in detail.description
-
-
 class TestFormatJobListings:
     def test_readable_output(self):
         jobs = [
@@ -133,24 +87,6 @@ class TestFormatJobListings:
         assert "no" in output.lower() or output.strip() == ""
 
 
-class TestFormatJobDetail:
-    def test_readable_output(self):
-        detail = JobDetail(
-            title="Engineer",
-            company="Acme",
-            location="NYC",
-            description="Build cool stuff.\nRequires Python.",
-            seniority_level="Mid-Senior",
-            employment_type="Full-time",
-        )
-        output = format_job_detail(detail)
-
-        assert "Engineer" in output
-        assert "Acme" in output
-        assert "Build cool stuff" in output
-        assert "Mid-Senior" in output
-
-
 class TestUrlBuilders:
     def test_build_search_url(self):
         url = build_search_url("Software Engineer", "San Francisco")
@@ -166,10 +102,6 @@ class TestUrlBuilders:
     def test_build_search_url_with_start_offset(self):
         url = build_search_url("Engineer", "Seattle", start=25)
         assert "start=25" in url
-
-    def test_build_detail_url(self):
-        url = build_detail_url("1234567890")
-        assert "linkedin.com/jobs/view/1234567890" in url
 
 
 class TestCheckLoginRequired:
@@ -200,4 +132,4 @@ New to LinkedIn? Join now
 
     def test_normal_page_not_flagged(self):
         assert check_login_required(SEARCH_PAGE_TEXT) is False
-        assert check_login_required(DETAIL_PAGE_TEXT) is False
+        assert check_login_required("Senior Software Engineer\nGoogle\nMountain View, CA") is False

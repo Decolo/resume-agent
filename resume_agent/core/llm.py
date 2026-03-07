@@ -269,12 +269,6 @@ class LLMAgent:
     _MAX_REPEAT_READ_ONLY = 2
     _MAX_REPEAT_DEFAULT = 1
     _WRITE_TOOLS = {"file_write", "resume_write", "file_rename"}
-    _JOB_SEARCH_TOOL = "job_search"
-    _JOB_DETAIL_TOOL = "job_detail"
-    _JOB_DETAIL_CONFLICT_REASON = (
-        "Rejected by policy: job_detail cannot run in the same step as job_search. "
-        "Use job_search for discovery, then call job_detail in a later step with an explicit LinkedIn job_url."
-    )
 
     def __init__(
         self,
@@ -322,8 +316,6 @@ class LLMAgent:
 
         # Retry configuration for LLM calls (defaults match RetryConfig dataclass)
         self._retry_config = RetryConfig()
-        # Pending tool calls that require user approval
-        self._pending_tool_calls: List[FunctionCall] = []
         # Auto-approve tool calls that require approval
         self._auto_approve_tools = False
 
@@ -356,233 +348,28 @@ class LLMAgent:
         on_stream_delta: Optional[Callable[[StreamDelta], None]] = None,
         wire: Optional[Wire] = None,
     ) -> str:
-        """Run the agent with user input, handling tool calls automatically.
+        """Run the agent with user input using the wire-mode event loop.
 
-        When ``wire`` is provided, events are emitted to the Wire and approval
-        happens inline (the loop never exits mid-turn).  When ``wire is None``,
-        behavior is unchanged from the legacy path.
+        If ``wire`` is omitted, an ephemeral Wire is created so callers can
+        still use the same API without manually wiring UI events.
         """
-        if wire is not None:
+        # Local import to avoid runtime import cycles while preserving type-only
+        # import usage under TYPE_CHECKING.
+        from .wire import Wire as RuntimeWire
+
+        owns_wire = wire is None
+        active_wire = wire or RuntimeWire()
+        try:
             return await self._run_wire(
                 user_input,
                 max_steps=max_steps,
                 stream=stream,
                 on_stream_delta=on_stream_delta,
-                wire=wire,
+                wire=active_wire,
             )
-
-        # ── Legacy path (wire=None) ──────────────────────────────────
-        # If we already have pending tool calls, ask for approval first
-        if self._pending_tool_calls:
-            return "Pending tool call(s) require approval. Use /approve or /reject."
-
-        # Add user message to history
-        self.history_manager.add_message(Message.user(user_input))
-
-        # Ensure history ordering is valid before calling the model
-        self.history_manager._ensure_valid_sequence()
-
-        loop_state: Dict[str, Any] = {
-            "last_call": None,
-            "same_call_repeats": 0,
-            "tool_only_steps": 0,
-            "last_result": None,
-            "last_write_sig": None,
-            "same_write_repeats": 0,
-        }
-
-        for step in range(1, max_steps + 1):
-            # Check for interrupt before each step
-            if self._interrupt_checker and await self._interrupt_checker():
-                raise asyncio.CancelledError("Run interrupted")
-
-            self.observer.log_step_start(
-                step,
-                user_input if step == 1 else None,
-                agent_id=self.agent_id,
-            )
-            start_time = time.time()
-
-            # 1. Call LLM
-            try:
-                response = await self._call_llm_with_resilience(
-                    stream=stream,
-                    on_stream_delta=on_stream_delta,
-                    wire=None,
-                )
-            except asyncio.CancelledError:
-                # Allow user-initiated interruption to bubble up
-                raise
-            except Exception as e:
-                self.observer.log_error(
-                    error_type="llm_request",
-                    message=str(e),
-                    context={"model": self.config.model, "step": step},
-                    agent_id=self.agent_id,
-                )
-                return f"Error: LLM request failed: {e}"
-
-            # 2. Log LLM metrics
-            self._log_llm_metrics(step, start_time, response.usage)
-            self._log_raw_response_debug(step, response)
-
-            # 3. Parse response
-            function_calls, text_parts = self._parse_response(response)
-            function_calls = self._repair_function_call_args_from_raw_response(function_calls, response.raw)
-            response_text = " ".join(text_parts).strip()
-
-            # 4. Log response summary
-            tool_calls_dump = []
-            if function_calls:
-                for fc in function_calls:
-                    tool_calls_dump.append(
-                        {
-                            "name": fc.name,
-                            "args": dict(fc.arguments) if fc.arguments else {},
-                        }
-                    )
-            self.observer.log_llm_response(
-                step=step,
-                text=response_text or "(no text)",
-                tool_calls=tool_calls_dump,
-                agent_id=self.agent_id,
-            )
-            if function_calls:
-                self._log_empty_write_args_debug(function_calls, step, response.raw)
-
-            # 5. Add model response to history
-            assistant_parts: List[MessagePart] = []
-            if response_text:
-                assistant_parts.append(MessagePart.from_text(response_text))
-            for fc in function_calls:
-                assistant_parts.append(MessagePart.from_function_call(fc))
-            if assistant_parts:
-                self.history_manager.add_message(
-                    Message(role="assistant", parts=assistant_parts),
-                    allow_incomplete=bool(function_calls),
-                )
-
-            # 6. If no tool calls → done
-            if not function_calls:
-                if self.session_manager:
-                    await self._auto_save()
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                if self.verbose:
-                    self.observer.print_session_summary()
-                    self.cache.print_stats()
-                return response_text
-
-            # 7. Apply tool policy filters before execution / approval flow.
-            function_calls, policy_responses = self._apply_tool_call_policy(function_calls)
-
-            # If all calls were rejected by policy, record rejections and continue.
-            if not function_calls and policy_responses:
-                tool_message = Message(
-                    role="tool",
-                    parts=[MessagePart.from_function_response(fr) for fr in policy_responses],
-                )
-                self.history_manager.add_message(tool_message)
-                if self.session_manager:
-                    await self._auto_save()
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                continue
-
-            # 8. Pause before executing any write tools (approval required)
-            if self._requires_tool_approval(function_calls) and not self._auto_approve_tools:
-                if self._approval_handler:
-                    # API mode: delegate to approval handler
-                    approved, rejection = await self._approval_handler(function_calls)
-                    if not approved:
-                        # Write rejection result into history so LLM knows it was rejected
-                        tool_message = Message(
-                            role="tool",
-                            parts=[
-                                MessagePart.from_function_response(
-                                    FunctionResponse(
-                                        name=fc.name,
-                                        response={"result": f"Rejected: {rejection}"},
-                                        call_id=fc.id,
-                                    )
-                                )
-                                for fc in function_calls
-                            ],
-                        )
-                        self.history_manager.add_message(tool_message)
-                        continue
-                    function_calls = approved
-                else:
-                    # CLI mode: pause and wait for /approve
-                    self._pending_tool_calls = list(function_calls)
-                    step_duration = (time.time() - start_time) * 1000
-                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                    return "Tool call(s) require approval before execution. Use /approve or /reject."
-
-            # 9. Loop guard to prevent runaway tool-only loops
-            guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
-            if guard_reason:
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_error(
-                    error_type="loop_guard",
-                    message=guard_reason,
-                    context={
-                        "last_call": loop_state.get("last_call"),
-                        "tool_only_steps": loop_state.get("tool_only_steps"),
-                        "same_call_repeats": loop_state.get("same_call_repeats"),
-                    },
-                    agent_id=self.agent_id,
-                )
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                return guard_reason
-
-            # 10. Execute tools in parallel
-            executed_responses = await asyncio.gather(
-                *[self._execute_tool(fc) for fc in function_calls],
-                return_exceptions=False,
-            )
-            function_responses = [*policy_responses, *executed_responses]
-
-            # 11. Capture last tool result for fallback
-            if len(function_calls) == 1 and executed_responses:
-                fr = executed_responses[0]
-                if fr and fr.response:
-                    loop_state["last_result"] = fr.response.get("result")
-
-            write_guard_reason = self._check_repeated_write_guard(function_calls, executed_responses, loop_state)
-            if write_guard_reason:
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_error(
-                    error_type="loop_guard",
-                    message=write_guard_reason,
-                    context={
-                        "same_write_repeats": loop_state.get("same_write_repeats"),
-                    },
-                    agent_id=self.agent_id,
-                )
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                return write_guard_reason
-
-            # 12. Update history + auto-save
-            tool_message = Message(
-                role="tool",
-                parts=[MessagePart.from_function_response(fr) for fr in function_responses],
-            )
-            self.history_manager.add_message(tool_message)
-            if self.session_manager:
-                await self._auto_save()
-
-            fatal_tool_error = self._fatal_tool_error_message(function_calls, executed_responses)
-            if fatal_tool_error:
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                return fatal_tool_error
-
-            # 13. Log step end
-            step_duration = (time.time() - start_time) * 1000
-            self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-
-        return f"Max steps ({max_steps}) reached."
+        finally:
+            if owns_wire:
+                active_wire.shutdown()
 
     # --- Wire-mode agent loop ---
 
@@ -694,51 +481,72 @@ class LLMAgent:
                     self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                     break
 
-                # 7. Apply tool policy filters
-                function_calls, policy_responses = self._apply_tool_call_policy(function_calls)
-
-                if not function_calls and policy_responses:
-                    tool_message = Message(
-                        role="tool",
-                        parts=[MessagePart.from_function_response(fr) for fr in policy_responses],
-                    )
-                    self.history_manager.add_message(tool_message)
-                    if self.session_manager:
-                        await self._auto_save()
-                    step_duration = (time.time() - start_time) * 1000
-                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                    continue
-
                 # 8. Inline approval (replaces pause-and-return)
                 if self._requires_tool_approval(function_calls) and not approval.is_yolo():
-                    # Start pipe task if not already running
-                    if pipe_task is None or pipe_task.done():
-                        pipe_task = asyncio.create_task(self._pipe_approval_to_wire(approval, wire))
-
-                    description = ", ".join(
-                        f"{fc.name}({', '.join(f'{k}={v!r}' for k, v in (fc.arguments or {}).items())})"
-                        for fc in function_calls
-                    )
-                    approved = await approval.request("write_tool", function_calls, description)
-                    if not approved:
-                        # Inject rejection into history (same as legacy path)
-                        tool_message = Message(
-                            role="tool",
-                            parts=[
-                                MessagePart.from_function_response(
-                                    FunctionResponse(
-                                        name=fc.name,
-                                        response={"result": "Rejected: user declined approval"},
-                                        call_id=fc.id,
+                    if self._approval_handler is not None:
+                        approved_calls, rejection = await self._approval_handler(function_calls)
+                        if not approved_calls:
+                            tool_message = Message(
+                                role="tool",
+                                parts=[
+                                    MessagePart.from_function_response(
+                                        FunctionResponse(
+                                            name=fc.name,
+                                            response={"result": f"Rejected: {rejection}"},
+                                            call_id=fc.id,
+                                        )
                                     )
-                                )
-                                for fc in function_calls
-                            ],
+                                    for fc in function_calls
+                                ],
+                            )
+                            self.history_manager.add_message(tool_message)
+                            step_duration = (time.time() - start_time) * 1000
+                            self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                            continue
+                        function_calls = approved_calls
+                    elif not self._wire_has_ui_subscribers(wire):
+                        response_text = (
+                            "Error: Tool call(s) require approval, but no Wire UI consumer or "
+                            "approval handler is available."
                         )
-                        self.history_manager.add_message(tool_message)
+                        self.observer.log_error(
+                            error_type="approval_unavailable",
+                            message=response_text,
+                            context={"step": step},
+                            agent_id=self.agent_id,
+                        )
                         step_duration = (time.time() - start_time) * 1000
                         self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                        continue
+                        break
+                    else:
+                        # Start pipe task if not already running
+                        if pipe_task is None or pipe_task.done():
+                            pipe_task = asyncio.create_task(self._pipe_approval_to_wire(approval, wire))
+
+                        description = ", ".join(
+                            f"{fc.name}({', '.join(f'{k}={v!r}' for k, v in (fc.arguments or {}).items())})"
+                            for fc in function_calls
+                        )
+                        approved = await approval.request("write_tool", function_calls, description)
+                        if not approved:
+                            # Inject rejection into history (same as legacy path)
+                            tool_message = Message(
+                                role="tool",
+                                parts=[
+                                    MessagePart.from_function_response(
+                                        FunctionResponse(
+                                            name=fc.name,
+                                            response={"result": "Rejected: user declined approval"},
+                                            call_id=fc.id,
+                                        )
+                                    )
+                                    for fc in function_calls
+                                ],
+                            )
+                            self.history_manager.add_message(tool_message)
+                            step_duration = (time.time() - start_time) * 1000
+                            self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                            continue
 
                 # 9. Loop guard
                 guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
@@ -772,7 +580,7 @@ class LLMAgent:
                     *[self._execute_tool(fc) for fc in function_calls],
                     return_exceptions=False,
                 )
-                function_responses = [*policy_responses, *executed_responses]
+                function_responses = list(executed_responses)
 
                 # 11. Emit ToolResultEvents
                 for fc, fr in zip(function_calls, executed_responses):
@@ -1828,8 +1636,12 @@ class LLMAgent:
                 )
         return None
 
-    def has_pending_tool_calls(self) -> bool:
-        return len(self._pending_tool_calls) > 0
+    @staticmethod
+    def _wire_has_ui_subscribers(wire: Wire) -> bool:
+        """Best-effort check: a Wire has at least one UI subscriber."""
+        queue = getattr(wire, "_queue", None)
+        subscribers = getattr(queue, "_queues", None)
+        return bool(subscribers)
 
     def set_auto_approve_tools(self, enabled: bool) -> None:
         self._auto_approve_tools = bool(enabled)
@@ -1848,57 +1660,6 @@ class LLMAgent:
     def set_interrupt_checker(self, checker: Optional[Callable]) -> None:
         """Set async interrupt checker: () → bool."""
         self._interrupt_checker = checker
-
-    def list_pending_tool_calls(self) -> List[Dict[str, Any]]:
-        pending = []
-        for fc in self._pending_tool_calls:
-            pending.append(
-                {
-                    "name": fc.name,
-                    "args": dict(fc.arguments) if getattr(fc, "arguments", None) else {},
-                }
-            )
-        return pending
-
-    async def approve_pending_tool_calls(self) -> List[Dict[str, Any]]:
-        calls = list(self._pending_tool_calls)
-        self._pending_tool_calls = []
-        if not calls:
-            return []
-
-        calls, policy_responses = self._apply_tool_call_policy(calls)
-        executed_responses: List[FunctionResponse] = []
-        if calls:
-            executed_responses = await asyncio.gather(
-                *[self._execute_tool(fc) for fc in calls],
-                return_exceptions=False,
-            )
-        responses = [*policy_responses, *executed_responses]
-
-        # Add function responses to history for continuity
-        if responses:
-            tool_message = Message(
-                role="tool",
-                parts=[MessagePart.from_function_response(fr) for fr in responses],
-            )
-            self.history_manager.add_message(tool_message)
-            if self.session_manager:
-                await self._auto_save()
-
-        results = []
-        for fr in responses:
-            results.append(
-                {
-                    "name": fr.name,
-                    "result": fr.response.get("result") if getattr(fr, "response", None) else "",
-                }
-            )
-        return results
-
-    def reject_pending_tool_calls(self) -> int:
-        count = len(self._pending_tool_calls)
-        self._pending_tool_calls = []
-        return count
 
     def _missing_required_tool_args(self, func_name: str, func_args: Dict[str, Any]) -> List[str]:
         """Return required args that are absent/empty for the target tool."""
@@ -1999,45 +1760,6 @@ class LLMAgent:
                 normalized["path"] = inferred
 
         return normalized
-
-    def _apply_tool_call_policy(
-        self, function_calls: List[FunctionCall]
-    ) -> tuple[List[FunctionCall], List[FunctionResponse]]:
-        """Apply execution-time policy filters to model tool calls."""
-        has_job_search = any(fc.name == self._JOB_SEARCH_TOOL for fc in function_calls)
-        has_job_detail = any(fc.name == self._JOB_DETAIL_TOOL for fc in function_calls)
-        if not (has_job_search and has_job_detail):
-            return function_calls, []
-
-        filtered_calls: List[FunctionCall] = []
-        rejected_responses: List[FunctionResponse] = []
-        for fc in function_calls:
-            if fc.name != self._JOB_DETAIL_TOOL:
-                filtered_calls.append(fc)
-                continue
-
-            rejected = FunctionResponse(
-                name=fc.name,
-                response={"result": self._JOB_DETAIL_CONFLICT_REASON},
-                call_id=fc.id,
-            )
-            rejected_responses.append(rejected)
-            self.observer.log_error(
-                error_type="tool_policy",
-                message=self._JOB_DETAIL_CONFLICT_REASON,
-                context={"tool": fc.name, "args": dict(fc.arguments) if fc.arguments else {}},
-                agent_id=self.agent_id,
-            )
-            self.observer.log_tool_call(
-                tool_name=fc.name,
-                args=dict(fc.arguments) if fc.arguments else {},
-                result=self._JOB_DETAIL_CONFLICT_REASON,
-                duration_ms=0.0,
-                success=False,
-                cached=False,
-                agent_id=self.agent_id,
-            )
-        return filtered_calls, rejected_responses
 
     async def _execute_tool(self, fc: FunctionCall) -> FunctionResponse:
         """Execute a single tool call, with caching and observability."""

@@ -6,13 +6,9 @@ All I/O is handled by the tools layer; this package operates on strings and dict
 
 from .job_matcher import JobMatchResult, extract_keywords, extract_requirements, format_match_report, match_job
 from .linkedin_jobs import (
-    JobDetail,
     JobListing,
-    build_detail_url,
     build_search_url,
-    format_job_detail,
     format_job_listings,
-    parse_job_detail,
     parse_job_listings,
 )
 from .resume_linter import LINT_KEYWORDS, LINT_WEIGHTS, LintResult, format_lint_report, lint_resume
@@ -42,13 +38,9 @@ __all__ = [
     "format_match_report",
     # LinkedIn Jobs
     "JobListing",
-    "JobDetail",
     "parse_job_listings",
-    "parse_job_detail",
     "format_job_listings",
-    "format_job_detail",
     "build_search_url",
-    "build_detail_url",
     # Validator
     "validate_resume",
     "ValidationResult",

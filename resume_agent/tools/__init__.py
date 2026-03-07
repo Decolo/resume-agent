@@ -2,7 +2,7 @@
 
 from .bash_tool import BashTool
 from .file_tool import FileListTool, FileReadTool, FileRenameTool, FileWriteTool
-from .linkedin_tools import JobDetailTool, JobSearchTool
+from .linkedin_tools import JobSearchTool
 from .resume_tools import (
     JobMatcherTool,
     ResumeLinterTool,
@@ -24,7 +24,6 @@ __all__ = [
     "JobMatcherTool",
     "ResumeValidatorTool",
     "JobSearchTool",
-    "JobDetailTool",
     "WebFetchTool",
     "WebReadTool",
 ]

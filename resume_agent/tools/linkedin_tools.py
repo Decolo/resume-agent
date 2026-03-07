@@ -5,18 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import re
 from typing import Any, Dict, List, Optional, Protocol
 
 from resume_agent.core.tools.base import BaseTool, ToolResult
 from resume_agent.domain.linkedin_jobs import (
     JobListing,
-    build_detail_url,
     build_search_url,
     check_login_required,
-    format_job_detail,
     format_job_listings,
-    parse_job_detail,
 )
 from resume_agent.tools.cdp_client import CDPClient
 
@@ -31,10 +27,6 @@ _MAX_LIMIT = 100
 _JD_SNIPPET_MAX_CHARS = 480
 _NEXT_KEYWORDS = {"next", "next page", "下一页", "下一", "show more", "more jobs", "更多职位"}
 _LLM_PAGINATION_MODEL = "gemini-2.5-flash"
-_LINKEDIN_JOB_URL_RE = re.compile(
-    r"^https?://(?:[\w-]+\.)?linkedin\.com/jobs/view/([0-9]+)(?:[/?].*)?$",
-    flags=re.IGNORECASE,
-)
 _PAGE_JITTER_MIN_SECONDS = 0.6
 _PAGE_JITTER_MAX_SECONDS = 1.8
 # --- New constants ---
@@ -115,17 +107,6 @@ def _normalize_jd_snippet(text: str) -> str:
     if len(compact) <= _JD_SNIPPET_MAX_CHARS:
         return compact
     return compact[:_JD_SNIPPET_MAX_CHARS].rstrip() + "..."
-
-
-def _extract_job_id_from_url(job_url: str) -> str:
-    """Extract LinkedIn numeric job ID from a full /jobs/view URL."""
-    value = str(job_url or "").strip()
-    if not value:
-        return ""
-    match = _LINKEDIN_JOB_URL_RE.match(value)
-    if not match:
-        return ""
-    return str(match.group(1))
 
 
 async def _human_pagination_delay() -> None:
@@ -831,92 +812,5 @@ class JobSearchTool(BaseTool):
             )
         except Exception as e:
             return ToolResult(success=False, output="", error=f"Job search failed: {e}")
-        finally:
-            await _safe_close_client(client)
-
-
-class JobDetailTool(BaseTool):
-    """Get full details of a LinkedIn job posting."""
-
-    name = "job_detail"
-    description = (
-        "Get full details of one LinkedIn job posting from an explicit LinkedIn job URL. "
-        "Use only when the input already provides a concrete https://www.linkedin.com/jobs/view/<id>/ URL. "
-        "Not for broad title/location search."
-    )
-    parameters: Dict[str, Any] = {
-        "job_url": {
-            "type": "string",
-            "description": "Full LinkedIn job URL, e.g. https://www.linkedin.com/jobs/view/4353119521/",
-            "required": True,
-        },
-    }
-
-    def __init__(
-        self,
-        cdp_port: int = _DEFAULT_CDP_PORT,
-        chrome_profile: str = _DEFAULT_CHROME_PROFILE,
-        auto_launch: bool = True,
-    ):
-        self.cdp_port = cdp_port
-        self.chrome_profile = chrome_profile
-        self.auto_launch = auto_launch
-
-    async def execute(self, job_url: str = "", **kwargs: Any) -> ToolResult:
-        normalized_url = str(job_url or "").strip()
-        if not normalized_url:
-            return ToolResult(success=False, output="", error="Missing required parameter: job_url")
-
-        job_id = _extract_job_id_from_url(normalized_url)
-        if not job_id:
-            return ToolResult(
-                success=False,
-                output="",
-                error=(
-                    "Invalid job_url. Expected LinkedIn job URL like " "https://www.linkedin.com/jobs/view/<job_id>/"
-                ),
-            )
-
-        client = _build_browser_client(
-            cdp_port=self.cdp_port,
-            chrome_profile=self.chrome_profile,
-            auto_launch=self.auto_launch,
-        )
-
-        try:
-            await client.connect()
-
-            if await _preflight_login_check(client):
-                return ToolResult(success=False, output="", error=_LOGIN_ERROR)
-
-            url = build_detail_url(job_id)
-            await client.navigate(url)
-            text = await client.extract_main_text()
-            detail = parse_job_detail(text)
-            detail.url = url
-
-            output = format_job_detail(detail)
-            return ToolResult(
-                success=True,
-                output=output,
-                data={
-                    "title": detail.title,
-                    "company": detail.company,
-                    "location": detail.location,
-                    "description": detail.description,
-                    "url": detail.url,
-                    "posted_time": detail.posted_time,
-                    "seniority_level": detail.seniority_level,
-                    "employment_type": detail.employment_type,
-                },
-            )
-        except ConnectionError as e:
-            return ToolResult(
-                success=False,
-                output="",
-                error=f"Cannot connect to Chrome: {e}",
-            )
-        except Exception as e:
-            return ToolResult(success=False, output="", error=f"Job detail fetch failed: {e}")
         finally:
             await _safe_close_client(client)

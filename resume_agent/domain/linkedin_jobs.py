@@ -24,20 +24,6 @@ class JobListing:
     posted_time: str = ""
 
 
-@dataclass
-class JobDetail:
-    """Full details of a single LinkedIn job posting."""
-
-    title: str
-    company: str
-    location: str
-    description: str
-    url: str = ""
-    posted_time: str = ""
-    seniority_level: str = ""
-    employment_type: str = ""
-
-
 def parse_job_listings(text: str) -> List[JobListing]:
     """Parse LinkedIn search page innerText into structured job listings.
 
@@ -119,95 +105,6 @@ def check_login_required(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Job detail parsing
-# ---------------------------------------------------------------------------
-
-_METADATA_LABELS = {
-    "seniority level",
-    "employment type",
-    "job function",
-    "industries",
-}
-
-
-def parse_job_detail(text: str) -> JobDetail:
-    """Parse LinkedIn job detail page innerText into a JobDetail.
-
-    The detail page typically has:
-      Title
-      Company
-      Location
-      (blank)
-      About the job
-      ... description paragraphs ...
-      (blank)
-      Seniority level / Employment type / etc.
-    """
-    lines = text.strip().splitlines()
-    if len(lines) < 3:
-        return JobDetail(title="", company="", location="", description=text.strip())
-
-    title = lines[0].strip()
-    company = lines[1].strip()
-    location = lines[2].strip()
-
-    # Collect description: everything between header and metadata sections
-    desc_lines: List[str] = []
-    seniority_level = ""
-    employment_type = ""
-    posted_time = ""
-    in_description = False
-    skip_next = False
-
-    for i, line in enumerate(lines[3:], start=3):
-        stripped = line.strip()
-        lower = stripped.lower()
-
-        if skip_next:
-            # This line is the value for a metadata label
-            if lower == "seniority level":
-                pass  # handled below
-            skip_next = False
-            continue
-
-        if lower in _METADATA_LABELS:
-            # Next line is the value
-            if i + 1 < len(lines):
-                value = lines[i + 1].strip()
-                if lower == "seniority level":
-                    seniority_level = value
-                elif lower == "employment type":
-                    employment_type = value
-            skip_next = True
-            in_description = False
-            continue
-
-        if lower.startswith("posted") and ("ago" in lower or "applicant" in lower):
-            posted_time = stripped
-            continue
-
-        if lower == "about the job":
-            in_description = True
-            continue
-
-        if in_description or (not seniority_level and i > 3 and stripped):
-            desc_lines.append(stripped)
-            in_description = True
-
-    description = "\n".join(desc_lines).strip()
-
-    return JobDetail(
-        title=title,
-        company=company,
-        location=location,
-        description=description,
-        seniority_level=seniority_level,
-        employment_type=employment_type,
-        posted_time=posted_time,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
 
@@ -227,26 +124,8 @@ def format_job_listings(jobs: List[JobListing]) -> str:
     return "\n\n".join(parts)
 
 
-def format_job_detail(job: JobDetail) -> str:
-    """Format a job detail into a human-readable report."""
-    parts = [
-        f"{job.title}",
-        f"{job.company} — {job.location}",
-    ]
-    if job.seniority_level:
-        parts.append(f"Level: {job.seniority_level}")
-    if job.employment_type:
-        parts.append(f"Type: {job.employment_type}")
-    if job.posted_time:
-        parts.append(f"Posted: {job.posted_time}")
-    parts.append("")
-    parts.append(job.description)
-
-    return "\n".join(parts)
-
-
 # ---------------------------------------------------------------------------
-# URL builders
+# URL builder
 # ---------------------------------------------------------------------------
 
 
@@ -258,8 +137,3 @@ def build_search_url(keywords: str, location: str = "", start: int = 0) -> str:
     if start > 0:
         params += f"&start={start}"
     return f"https://www.linkedin.com/jobs/search/?{params}"
-
-
-def build_detail_url(job_id: str) -> str:
-    """Build a LinkedIn job detail URL."""
-    return f"https://www.linkedin.com/jobs/view/{job_id}/"

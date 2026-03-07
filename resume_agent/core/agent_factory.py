@@ -639,7 +639,6 @@ def _create_orchestrator_agent(
             "lint_resume",
             "job_match",
             "job_search",
-            "job_detail",
             "resume_validate",
         ],
     )

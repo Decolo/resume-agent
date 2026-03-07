@@ -177,8 +177,65 @@ Safety and reliability mechanisms in both paths:
 - loop guard for repeated tool-only cycles
 - per-tool cache for read-heavy tools
 - required-argument pre-validation before tool execution (missing required args fail fast with structured error)
-- LinkedIn mixed-call policy: `job_detail` is rejected when requested in the same step as `job_search`
 - observability events for step/tool/llm lifecycle
+
+### 2.1) Failure Path: Repeated Truncated `file_write` (Observed 2026-03-07)
+
+This is the current control-flow behavior when the model repeatedly emits a
+`file_write` call with syntactically valid but semantically truncated content.
+
+```text
+[Step N provider response]
+  function_calls=[file_write(path, content="<...initial-scale=1.0\\")]
+        |
+        v
+[LLMAgent._repair_function_call_args_from_raw_response]
+  - may log: llm_repaired_tool_args_from_raw
+  - does NOT guarantee content completeness
+        |
+        v
+[Approval path]
+  - file_write is a write tool => approval required
+  - user approves
+        |
+        v
+[LLMAgent._execute_tool]
+  - required args check passes (path/content exist)
+  - FileWriteTool overwrites target file directly
+        |
+        v
+[Tool result added to history]
+  "Successfully wrote 140 characters ..."
+        |
+        v
+[Step N+1 provider response]
+  - model can emit the same truncated file_write again
+        |
+        +--> [_check_loop_guard] triggers only on tool-only repeated call thresholds
+        |
+        +--> [_check_repeated_write_guard] triggers after repeated identical successful writes
+               (current threshold allows at least one repeated identical write before abort)
+```
+
+Important implication:
+- "has required args" is treated as executable, even when content is obviously
+  short/incomplete for the target format (for example, HTML with no closing
+  tags). This allows destructive overwrite before guards stop the loop.
+
+Current guard layering:
+1. `_check_loop_guard`: generic repeated-tool/tool-only protection.
+2. `_check_repeated_write_guard`: repeated identical write protection.
+
+Observed production effect:
+- File can be overwritten by short/truncated payload multiple times before the
+  run aborts.
+
+Related runtime points:
+- `resume_agent/core/llm.py`:
+  `_repair_function_call_args_from_raw_response`,
+  `_check_loop_guard`, `_check_repeated_write_guard`, `_execute_tool`
+- `resume_agent/tools/file_tool.py`: `FileWriteTool.execute`
+- `resume_agent/providers/openai_compat.py`: `_safe_parse_args`
 
 Key files:
 - `resume_agent/core/llm.py`
