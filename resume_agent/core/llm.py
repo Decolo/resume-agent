@@ -872,11 +872,13 @@ class LLMAgent:
 
         async def make_request():
             messages = list(self.history_manager.get_history())
-            return await self.provider.generate(
+            response = await self.provider.generate(
                 messages=messages,
                 tools=self._get_tools(),
                 config=self._build_generation_config(),
             )
+            self._raise_if_retryable_malformed_function_call(response)
+            return response
 
         return await retry_with_backoff(make_request, self._retry_config)
 
@@ -1391,6 +1393,47 @@ class LLMAgent:
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
         )
+
+    def _raise_if_retryable_malformed_function_call(self, response: LLMResponse) -> None:
+        """Raise transient error for provider-level malformed tool-call replies."""
+        if not self._is_retryable_malformed_function_call_response(response):
+            return
+
+        raw_summary = self._summarize_raw_response(response.raw)
+        self.observer.log_error(
+            error_type="llm_malformed_function_call",
+            message="Provider returned MALFORMED_FUNCTION_CALL without callable payload. Retrying.",
+            context={
+                "provider": self.config.provider,
+                "model": self.config.model,
+                "raw_summary": raw_summary,
+            },
+            agent_id=self.agent_id,
+        )
+        raise TransientError("Provider returned MALFORMED_FUNCTION_CALL without callable payload")
+
+    @staticmethod
+    def _is_retryable_malformed_function_call_response(response: LLMResponse) -> bool:
+        """Detect malformed function-call responses that should be retried."""
+        if response.text or response.function_calls:
+            return False
+
+        raw = response.raw
+        if raw is None or not hasattr(raw, "candidates"):
+            return False
+
+        candidates = getattr(raw, "candidates", None) or []
+        if not candidates:
+            return False
+
+        candidate0 = candidates[0]
+        finish_reason = str(getattr(candidate0, "finish_reason", "") or "").upper()
+        if "MALFORMED_FUNCTION_CALL" not in finish_reason:
+            return False
+
+        content = getattr(candidate0, "content", None)
+        parts = getattr(content, "parts", None) or []
+        return len(parts) == 0
 
     def _log_llm_metrics(self, step: int, start_time: float, usage: Optional[Dict[str, int]] = None) -> None:
         """Log LLM request metrics (tokens, cost, duration)."""
