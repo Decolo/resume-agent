@@ -3,12 +3,19 @@
 import asyncio
 import os
 import re
+import select
+import sys
+import threading
+import traceback
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Union
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.shortcuts import CompleteStyle
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -202,11 +209,8 @@ class ResumeCLICompleter(Completer):
     COMMANDS = [
         "/help",
         "/reset",
-        "/save",
-        "/load",
         "/sessions",
         "/delete-session",
-        "/files",
         "/config",
         "/export",
         "/auto-approve",
@@ -221,7 +225,7 @@ class ResumeCLICompleter(Completer):
     def __init__(self, session_manager: Optional[SessionManager] = None):
         self.session_manager = session_manager
 
-    def _session_refs(self) -> list[str]:
+    def _session_refs(self, include_latest: bool = True) -> list[str]:
         if not self.session_manager:
             return []
         try:
@@ -229,7 +233,7 @@ class ResumeCLICompleter(Completer):
         except Exception:
             return []
 
-        refs = ["latest"]
+        refs: list[str] = ["latest"] if include_latest else []
         for idx, session in enumerate(sessions, start=1):
             refs.append(str(idx))
             session_id = session.get("id")
@@ -267,8 +271,8 @@ class ResumeCLICompleter(Completer):
         if command in {"/stream", "/auto-approve"} and len(parts) == 2:
             yield from self._yield_options(["on", "off", "status"], current)
             return
-        if command in {"/load", "/delete-session"} and len(parts) == 2:
-            yield from self._yield_options(self._session_refs(), current)
+        if command == "/delete-session" and len(parts) == 2:
+            yield from self._yield_options(self._session_refs(include_latest=False), current)
             return
         if command == "/export":
             if len(parts) == 2:
@@ -289,9 +293,7 @@ def print_banner():
 ║  Quick Commands:                                          ║
 ║    /help     - Show all commands                          ║
 ║    /stream   - Toggle streaming output                    ║
-║    /save     - Save current session                       ║
-║    /load     - Load a previous session (shows picker)     ║
-║    /sessions - List all saved sessions                    ║
+║    /sessions - Browse and load saved sessions             ║
 ║    /quit     - Exit the agent                             ║
 ║                                                           ║
 ║  💡 Auto-save is enabled - your work is protected!        ║
@@ -309,12 +311,9 @@ def print_help():
 |---------|-------------|
 | `/help` | Show this help message |
 | `/reset` | Reset conversation history |
-| `/save [name]` | Save current session (optional custom name) |
-| `/load [number]` | Load a saved session (shows picker if no number) |
-| `/sessions [query]` | List sessions (optionally filtered with fuzzy query) |
+| `/sessions [query]` | Browse sessions and load one via inline dropdown picker (optional fuzzy filter) |
 | `/delete-session <number>` | Delete a saved session by number |
 | `/quit` or `/exit` | Exit the agent |
-| `/files` | List files in workspace |
 | `/config` | Show current configuration |
 | `/export [target] [format]` | Export conversation history |
 | `/auto-approve [on|off|status]` | Control auto-approval for write tools |
@@ -325,25 +324,19 @@ def print_help():
 
 ### Session Management
 
-Save and restore conversation sessions:
+Sessions are auto-saved; use these commands to inspect and restore:
 
 ```bash
-/save                    # Save with auto-generated timestamp
-/save my_resume_v1       # Save with custom name
-/sessions                # List all saved sessions (numbered)
-/sessions backend        # Fuzzy filter by name/id/mode
-/load                    # Show session picker
-/load 1                  # Load session #1 (most recent)
-/load 2                  # Load session #2
+/sessions                # Open interactive session picker
+/sessions backend        # Filter sessions before picker
 /delete-session 1        # Delete session #1
 ```
 
 **Session features:**
-- 🎯 **Quick load by number**: `/load 1` loads the most recent session
-- 📋 **Interactive picker**: `/load` without arguments shows all sessions
+- 🖱️ **Inline dropdown**: `/sessions` uses arrow-key and mouse selection (non-fullscreen)
 - 🔎 **Fuzzy search**: `/sessions data eng` filters sessions by token match
-- 🏷️ **Custom names**: `/save my_project_v1` for easy identification
-- 🔄 **Auto-save always enabled**: Sessions automatically saved after each tool execution
+- ✅ **Explicit selection**: interactive mode always confirms the target session before loading
+- 🔄 **Auto-save always enabled**: Sessions automatically saved after each assistant turn
 - 📊 **Full state preservation**: History, observability, multi-agent state
 
 ### Export Command
@@ -451,11 +444,424 @@ def _set_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent], enable
             llm_agent.set_auto_approve_tools(enabled)
 
 
+def _set_interrupt_checker(agent: Union[ResumeAgent, OrchestratorAgent], checker: Any) -> None:
+    """Set interrupt checker for all active LLM agents in current mode."""
+    for llm_agent in _get_llm_agents(agent):
+        if hasattr(llm_agent, "set_interrupt_checker"):
+            llm_agent.set_interrupt_checker(checker)
+
+
+def _wait_for_escape(
+    stop_event: threading.Event,
+    pause_event: Optional[threading.Event] = None,
+    paused_event: Optional[threading.Event] = None,
+) -> bool:
+    """Block until ESC is pressed or stop_event is set. Returns True if ESC."""
+    if not sys.stdin.isatty():
+        return False
+
+    if os.name == "nt":
+        try:
+            import msvcrt
+        except Exception:
+            return False
+
+        try:
+            while not stop_event.is_set():
+                if pause_event is not None and pause_event.is_set():
+                    if paused_event is not None:
+                        paused_event.set()
+                    stop_event.wait(0.05)
+                    continue
+                if paused_event is not None and paused_event.is_set():
+                    paused_event.clear()
+                if not msvcrt.kbhit():
+                    stop_event.wait(0.05)
+                    continue
+
+                ch = msvcrt.getch()
+                if ch in (b"\x00", b"\xe0"):
+                    if msvcrt.kbhit():
+                        msvcrt.getch()
+                    continue
+                if ch == b"\x1b":
+                    return True
+        finally:
+            if paused_event is not None:
+                paused_event.clear()
+        return False
+
+    try:
+        import termios
+    except Exception:
+        return False
+
+    fd = sys.stdin.fileno()
+    try:
+        old_settings = termios.tcgetattr(fd)
+    except Exception:
+        return False
+
+    try:
+        esc_settings = termios.tcgetattr(fd)
+        esc_settings[3] = esc_settings[3] & ~termios.ICANON & ~termios.ECHO
+        esc_settings[6][termios.VMIN] = 0
+        esc_settings[6][termios.VTIME] = 0
+
+        raw_enabled = False
+
+        def _set_raw_enabled(enabled: bool) -> None:
+            nonlocal raw_enabled
+            if enabled and not raw_enabled:
+                termios.tcsetattr(fd, termios.TCSANOW, esc_settings)
+                raw_enabled = True
+            elif not enabled and raw_enabled:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                raw_enabled = False
+
+        termios.tcsetattr(fd, termios.TCSANOW, esc_settings)
+        raw_enabled = True
+        while not stop_event.is_set():
+            if pause_event is not None and pause_event.is_set():
+                _set_raw_enabled(False)
+                if paused_event is not None:
+                    paused_event.set()
+                stop_event.wait(0.05)
+                continue
+
+            if paused_event is not None and paused_event.is_set():
+                paused_event.clear()
+            _set_raw_enabled(True)
+            rlist, _, _ = select.select([fd], [], [], 0.1)
+            if not rlist:
+                continue
+            ch = os.read(fd, 1)
+            if ch == b"\x1b":
+                return True
+    finally:
+        if paused_event is not None:
+            paused_event.clear()
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        except Exception:
+            pass
+    return False
+
+
+def _session_display_name(session_id: str) -> str:
+    parts = session_id.split("_")
+    if len(parts) >= 5:
+        return "_".join(parts[3:-1])
+    if len(parts) >= 3:
+        return f"session_{parts[1]}_{parts[2]}"
+    return session_id
+
+
+def _format_session_picker_values(sessions: list[Dict[str, Any]]) -> list[tuple[str, str]]:
+    from datetime import datetime
+
+    values: list[tuple[str, str]] = []
+    for index, session in enumerate(sessions, start=1):
+        session_id = str(session.get("id", ""))
+        if not session_id:
+            continue
+
+        updated_raw = str(session.get("updated_at", ""))
+        try:
+            updated = datetime.fromisoformat(updated_raw).strftime("%m-%d %H:%M")
+        except Exception:
+            updated = "-"
+
+        mode = str(session.get("mode", "-"))
+        messages = int(session.get("message_count", 0))
+        tokens = int(session.get("total_tokens", 0))
+        name = _session_display_name(session_id)
+        label = f"{index:>2}. {name:<26} {updated:<11} {mode:<12} {messages:>4} msgs {tokens:>8,} tok"
+        values.append((session_id, label))
+    return values
+
+
+class _SessionDropdownCompleter(Completer):
+    """Inline dropdown completer for session selection."""
+
+    def __init__(self, sessions: list[Dict[str, Any]], values: list[tuple[str, str]]):
+        self._rows: list[dict[str, str]] = []
+        label_lookup = {session_id: label for session_id, label in values}
+        for idx, session in enumerate(sessions, start=1):
+            session_id = str(session.get("id", "")).strip()
+            if not session_id:
+                continue
+            label = label_lookup.get(session_id, session_id)
+            search_text = (
+                f"{idx} {session_id} {_session_display_name(session_id)} {_session_search_text(session)}".lower()
+            )
+            meta = str(session.get("mode", "-"))
+            self._rows.append(
+                {
+                    "session_id": session_id,
+                    "label": label,
+                    "search_text": search_text,
+                    "meta": meta,
+                }
+            )
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        raw_query = text.strip()
+        tokens = [token for token in raw_query.lower().split() if token]
+        start_position = -len(text)
+
+        for row in self._rows:
+            if tokens and not all(_fuzzy_token_match(token, row["search_text"]) for token in tokens):
+                continue
+            yield Completion(
+                text=row["session_id"],
+                start_position=start_position,
+                display=row["label"],
+                display_meta=row["meta"],
+                selected_style="fg:#0f172a bg:#22d3ee bold",
+            )
+
+
+def _session_dropdown_toolbar(session_query: str) -> str:
+    base = "↑/↓ move  Enter load  Mouse click to select  Empty input cancels"
+    if session_query:
+        return f"filter: {session_query}  |  {base}"
+    return base
+
+
+def _session_dropdown_keybindings() -> KeyBindings:
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    def _accept_or_submit(event) -> None:
+        buf = event.current_buffer
+        if buf.complete_state and buf.complete_state.current_completion is not None:
+            buf.apply_completion(buf.complete_state.current_completion)
+        event.app.exit(result=buf.text)
+
+    return bindings
+
+
+async def _prompt_session_dropdown_input(
+    prompt_session: PromptSession,
+    completer: Completer,
+    session_query: str,
+    option_count: int,
+) -> str:
+    # Use an isolated prompt session for the picker to avoid leaking key bindings
+    # or completion state into the main interactive input loop. Reuse the same
+    # terminal input/output streams for compatibility across terminals.
+    picker_session = PromptSession(
+        input=prompt_session.app.input,
+        output=prompt_session.app.output,
+    )
+
+    def _open_menu() -> None:
+        # Show dropdown without preselecting an item to avoid accidental loads.
+        get_app().current_buffer.start_completion(select_first=False)
+
+    return await picker_session.prompt_async(
+        "\n📁 Session: ",
+        completer=completer,
+        complete_while_typing=True,
+        complete_style=CompleteStyle.COLUMN,
+        reserve_space_for_menu=max(4, min(option_count, 10)),
+        key_bindings=_session_dropdown_keybindings(),
+        bottom_toolbar=_session_dropdown_toolbar(session_query),
+        mouse_support=True,
+        pre_run=_open_menu,
+    )
+
+
+async def _fallback_pick_session_id(
+    values: list[tuple[str, str]],
+    prompt_session: Optional[PromptSession] = None,
+) -> Optional[str]:
+    console.print("⚠️ Interactive picker unavailable. Falling back to numeric selection.", style="yellow")
+    table = Table(title="📁 Saved Sessions", show_header=True, header_style="bold cyan")
+    table.add_column("#", style="yellow", width=3)
+    table.add_column("Session", style="cyan")
+    for idx, (_, label) in enumerate(values, start=1):
+        table.add_row(str(idx), label)
+    console.print(table)
+
+    prompt_text = "Select session number to load (Enter to cancel): "
+    if prompt_session is not None:
+        selected = await prompt_session.prompt_async(prompt_text)
+    else:
+        loop = asyncio.get_running_loop()
+        selected = await loop.run_in_executor(None, lambda: input(prompt_text))
+
+    selected = selected.strip()
+    if not selected:
+        return None
+    if not selected.isdigit():
+        console.print("Invalid selection.", style="yellow")
+        return None
+
+    picked_index = int(selected) - 1
+    if picked_index < 0 or picked_index >= len(values):
+        console.print("Invalid selection.", style="yellow")
+        return None
+    return values[picked_index][0]
+
+
+async def _select_session_id(
+    sessions: list[Dict[str, Any]],
+    session_query: str,
+    prompt_session: Optional[PromptSession] = None,
+    verbose: bool = False,
+) -> Optional[str]:
+    values = _format_session_picker_values(sessions)
+    if not values:
+        return None
+
+    # Non-interactive callers use numeric fallback.
+    if prompt_session is None:
+        return await _fallback_pick_session_id(values, prompt_session=prompt_session)
+
+    by_index = {str(i): session_id for i, (session_id, _) in enumerate(values, start=1)}
+    by_id = {session_id.lower(): session_id for session_id, _ in values}
+    completer: Completer = _SessionDropdownCompleter(sessions, values)
+
+    while True:
+        try:
+            selected = await _prompt_session_dropdown_input(
+                prompt_session=prompt_session,
+                completer=completer,
+                session_query=session_query,
+                option_count=len(values),
+            )
+        except (KeyboardInterrupt, EOFError):
+            return None
+        except Exception as e:
+            console.print(
+                "⚠️ Inline session picker failed; falling back to numeric selection. "
+                "Please report this issue if it keeps happening.",
+                style="yellow",
+            )
+            if verbose:
+                console.print(f"Picker error: {type(e).__name__}: {e}", style="dim")
+                tb = "".join(traceback.format_exception(type(e), e, e.__traceback__)).strip()
+                if tb:
+                    console.print(tb, style="dim")
+            return await _fallback_pick_session_id(values, prompt_session=prompt_session)
+
+        selected = selected.strip()
+        if not selected:
+            return None
+
+        selected_lower = selected.lower()
+        if selected_lower in {"q", "quit", "cancel"}:
+            return None
+        if selected in by_index:
+            return by_index[selected]
+        if selected_lower in by_id:
+            return by_id[selected_lower]
+
+        matched = [session for session in sessions if _session_matches_query(session, selected)]
+        if len(matched) == 1:
+            return str(matched[0].get("id", ""))
+        if len(matched) > 1:
+            sessions = matched
+            values = _format_session_picker_values(sessions)
+            by_index = {str(i): session_id for i, (session_id, _) in enumerate(values, start=1)}
+            by_id = {session_id.lower(): session_id for session_id, _ in values}
+            completer = _SessionDropdownCompleter(sessions, values)
+            console.print(f"Narrowed to {len(values)} sessions. Use dropdown to choose one.", style="dim")
+            continue
+
+        console.print("No matching session. Select from dropdown or refine your query.", style="yellow")
+
+
+def _message_preview(message: Any, max_len: int = 120) -> str:
+    parts = getattr(message, "parts", None) or []
+    if not parts:
+        return "(no content)"
+
+    chunks: list[str] = []
+    for part in parts:
+        if getattr(part, "text", None):
+            text = _INLINE_WHITESPACE_RE.sub(" ", str(part.text)).strip()
+            if text:
+                chunks.append(text)
+        elif getattr(part, "function_call", None):
+            fc = part.function_call
+            chunks.append(f"[tool call] {getattr(fc, 'name', '')}")
+        elif getattr(part, "function_response", None):
+            fr = part.function_response
+            response = getattr(fr, "response", {})
+            if isinstance(response, dict):
+                result = response.get("result", "")
+            else:
+                result = str(response)
+            compact_result = _INLINE_WHITESPACE_RE.sub(" ", str(result)).strip()
+            chunks.append(f"[tool result] {getattr(fr, 'name', '')}: {compact_result}")
+
+        if chunks and len(" | ".join(chunks)) >= max_len:
+            break
+
+    if not chunks:
+        return "(no content)"
+    preview = " | ".join(chunks)
+    if len(preview) > max_len:
+        return preview[: max_len - 1] + "…"
+    return preview
+
+
+def _render_loaded_history(agent: Union[ResumeAgent, OrchestratorAgent], max_rows: int = 8) -> None:
+    llm_agents = _get_llm_agents(agent)
+    if not llm_agents:
+        return
+    llm_agent = llm_agents[0]
+    if not hasattr(llm_agent, "history_manager"):
+        return
+
+    history = list(llm_agent.history_manager.get_history())
+    if not history:
+        return
+
+    start_index = max(0, len(history) - max_rows)
+    visible = history[start_index:]
+
+    table = Table(title="📜 Loaded Session History", show_header=True, header_style="bold cyan")
+    table.add_column("#", style="dim", width=4, justify="right")
+    table.add_column("Role", style="green", width=10)
+    table.add_column("Preview", style="cyan")
+    for offset, message in enumerate(visible, start=start_index + 1):
+        table.add_row(str(offset), str(getattr(message, "role", "?")), _message_preview(message))
+    console.print(table)
+
+    if start_index > 0:
+        console.print(f"Showing last {len(visible)} of {len(history)} messages.", style="dim")
+
+
+def _restore_loaded_session(
+    session_id: str,
+    sessions: list[Dict[str, Any]],
+    session_manager: SessionManager,
+    agent: Union[ResumeAgent, OrchestratorAgent],
+) -> None:
+    session_data = session_manager.load_session(session_id)
+    session_manager.restore_agent_state(agent, session_data)
+    session_info = next((session for session in sessions if session.get("id") == session_id), None)
+    if session_info:
+        console.print(
+            f"✓ Session loaded: {session_info['message_count']} messages, {session_info['total_tokens']:,} tokens",
+            style="green",
+        )
+    else:
+        console.print(f"✓ Session loaded: {session_id}", style="green")
+    _render_loaded_history(agent)
+
+
 async def handle_command(
     command: str,
     agent: Union[ResumeAgent, OrchestratorAgent],
     session_manager: Optional[SessionManager] = None,
     runtime_options: Optional[Dict[str, Any]] = None,
+    prompt_session: Optional[PromptSession] = None,
 ) -> bool:
     """Handle special commands. Returns True if should continue, False to exit."""
     command_text = command.strip()
@@ -472,135 +878,12 @@ async def handle_command(
         agent.reset()
         console.print("🔄 Conversation reset.", style="green")
 
-    elif cmd.startswith("/save"):
-        if not session_manager:
-            console.print("⚠️ Session management not available.", style="yellow")
-            return True
-
-        # Parse: /save [session_name]
-        session_name_input = command_text[len("/save") :].strip()
-        session_name = session_name_input if session_name_input else None
-
-        try:
-            session_id = session_manager.save_session(agent, session_name=session_name)
-
-            # Show friendly confirmation
-            if session_name:
-                console.print(f"✓ Session saved as: {session_name}", style="green")
-            else:
-                # Extract timestamp from session ID for display
-                parts_id = session_id.split("_")
-                if len(parts_id) >= 3:
-                    timestamp = f"{parts_id[1]}_{parts_id[2]}"
-                    console.print(f"✓ Session saved: {timestamp}", style="green")
-                else:
-                    console.print("✓ Session saved", style="green")
-
-            console.print("   Use /load to restore this session later", style="dim")
-        except Exception as e:
-            console.print(f"❌ Failed to save session: {e}", style="red")
-
-    elif cmd.startswith("/load"):
-        if not session_manager:
-            console.print("⚠️ Session management not available.", style="yellow")
-            return True
-
-        # Parse: /load [session_id or number]
-        parts = command_text.split()
-
-        # Get available sessions
-        sessions = session_manager.list_sessions()
-        if not sessions:
-            console.print("No saved sessions found.", style="yellow")
-            return True
-
-        # If no argument provided, show interactive picker
-        if len(parts) < 2:
-            console.print("\n📁 Available Sessions:", style="bold cyan")
-            console.print("─" * 80)
-
-            table = Table(show_header=True, header_style="bold cyan", box=None)
-            table.add_column("#", style="yellow", width=3)
-            table.add_column("Name", style="cyan", no_wrap=False)
-            table.add_column("Updated", style="dim", width=16)
-            table.add_column("Mode", style="green", width=12)
-            table.add_column("Msgs", justify="right", width=5)
-            table.add_column("Tokens", justify="right", width=8)
-
-            for i, session in enumerate(sessions, 1):
-                # Extract custom name from session ID
-                session_id = session["id"]
-                # Format: session_YYYYMMDD_HHMMSS_[name]_[uuid]
-                parts_id = session_id.split("_")
-                if len(parts_id) >= 5:
-                    # Has custom name
-                    custom_name = "_".join(parts_id[3:-1])
-                    display_name = f"{custom_name} ({parts_id[1]}_{parts_id[2]})"
-                else:
-                    # No custom name, show timestamp
-                    display_name = f"{parts_id[1]}_{parts_id[2]}"
-
-                from datetime import datetime
-
-                updated = datetime.fromisoformat(session["updated_at"]).strftime("%m-%d %H:%M")
-
-                table.add_row(
-                    str(i),
-                    display_name,
-                    updated,
-                    session["mode"],
-                    str(session["message_count"]),
-                    f"{session['total_tokens']:,}",
-                )
-
-            console.print(table)
-            console.print("\n💡 Usage: /load <number> or /load <full_session_id>", style="dim")
-            console.print("   Example: /load 1  (loads the most recent session)", style="dim")
-            return True
-        if len(parts) > 2:
-            console.print("Usage: /load <number> or /load <full_session_id>", style="yellow")
-            return True
-
-        # Load by number or full session ID
-        session_arg = parts[1]
-
-        # Check if it's a number (index)
-        if session_arg.isdigit():
-            index = int(session_arg) - 1
-            if 0 <= index < len(sessions):
-                session_id = sessions[index]["id"]
-            else:
-                console.print(f"❌ Invalid session number. Use 1-{len(sessions)}", style="red")
-                return True
-        else:
-            # Assume it's a full session ID
-            session_id = session_arg
-
-        # Load the session
-        try:
-            session_data = session_manager.load_session(session_id)
-            session_manager.restore_agent_state(agent, session_data)
-
-            # Show success with session info
-            session_info = next((s for s in sessions if s["id"] == session_id), None)
-            if session_info:
-                console.print(
-                    f"✓ Session loaded: {session_info['message_count']} messages, {session_info['total_tokens']:,} tokens",
-                    style="green",
-                )
-            else:
-                console.print(f"✓ Session loaded: {session_id}", style="green")
-        except FileNotFoundError:
-            console.print(f"❌ Session not found: {session_id}", style="red")
-            console.print("Tip: Use /load without arguments to see available sessions", style="dim")
-        except Exception as e:
-            console.print(f"❌ Failed to load session: {e}", style="red")
-
     elif cmd.startswith("/sessions"):
         if not session_manager:
             console.print("⚠️ Session management not available.", style="yellow")
             return True
 
+        verbose_picker = bool((runtime_options or {}).get("verbose", False))
         session_query = command_text[len("/sessions") :].strip()
         sessions = session_manager.list_sessions()
         if session_query:
@@ -611,52 +894,26 @@ async def handle_command(
         elif not sessions:
             console.print("No saved sessions found.", style="dim")
         else:
-            title = "📁 Saved Sessions" if not session_query else f"📁 Saved Sessions (filter: {session_query})"
-            table = Table(title=title, show_header=True, header_style="bold cyan")
-            table.add_column("#", style="yellow", width=3)
-            table.add_column("Name", style="cyan", no_wrap=False)
-            table.add_column("Created", style="dim", width=16)
-            table.add_column("Updated", style="dim", width=16)
-            table.add_column("Mode", style="green", width=12)
-            table.add_column("Messages", justify="right", width=8)
-            table.add_column("Tokens", justify="right", width=10)
-
-            for i, session in enumerate(sessions, 1):
-                # Extract custom name from session ID
-                session_id = session["id"]
-                # Format: session_YYYYMMDD_HHMMSS_[name]_[uuid]
-                parts = session_id.split("_")
-                if len(parts) >= 5:
-                    # Has custom name
-                    custom_name = "_".join(parts[3:-1])
-                    display_name = f"{custom_name}"
-                    timestamp = f"{parts[1]}_{parts[2]}"
-                else:
-                    # No custom name, show timestamp
-                    display_name = f"session_{parts[1]}_{parts[2]}"
-                    timestamp = ""
-
-                # Format timestamps
-                from datetime import datetime
-
-                created = datetime.fromisoformat(session["created_at"]).strftime("%m-%d %H:%M")
-                updated = datetime.fromisoformat(session["updated_at"]).strftime("%m-%d %H:%M")
-
-                table.add_row(
-                    str(i),
-                    display_name,
-                    created,
-                    updated,
-                    session["mode"],
-                    str(session["message_count"]),
-                    f"{session['total_tokens']:,}",
+            # Interactive mode always uses picker confirmation, even for one match.
+            if prompt_session is None and len(sessions) == 1:
+                selected_session_id = str(sessions[0].get("id", ""))
+            else:
+                selected_session_id = await _select_session_id(
+                    sessions,
+                    session_query=session_query,
+                    prompt_session=prompt_session,
+                    verbose=verbose_picker,
                 )
+                if selected_session_id is None:
+                    console.print("Session selection cancelled.", style="dim")
+                    return True
 
-            console.print(table)
-            if session_query:
-                console.print("\n💡 Clear filter with /sessions", style="dim")
-            console.print("💡 Quick load: /load <number>  (e.g., /load 1 for most recent)", style="dim")
-            console.print("   Full ID load: /load <full_session_id>", style="dim")
+            try:
+                _restore_loaded_session(selected_session_id, sessions, session_manager, agent)
+            except FileNotFoundError:
+                console.print(f"❌ Session not found: {selected_session_id}", style="red")
+            except Exception as e:
+                console.print(f"❌ Failed to load session: {e}", style="red")
 
     elif cmd.startswith("/delete-session"):
         if not session_manager:
@@ -693,14 +950,6 @@ async def handle_command(
                 console.print("✓ Session deleted", style="green")
             else:
                 console.print("❌ Session not found", style="red")
-
-    elif cmd == "/files":
-        if isinstance(agent, ResumeAgent):
-            result = await agent.tools["file_list"].execute()
-            console.print(Panel(result.output, title="📁 Workspace Files"))
-        else:
-            # Multi-agent mode - use orchestrator's LLM agent
-            console.print("📁 Use 'list files in workspace' to see files.", style="dim")
 
     elif cmd == "/config":
         if isinstance(agent, ResumeAgent):
@@ -1161,6 +1410,8 @@ async def _consume_wire(
     ui_side,
     console: Console,
     session: PromptSession,
+    esc_pause_event: Optional[threading.Event] = None,
+    esc_paused_event: Optional[threading.Event] = None,
 ) -> None:
     """Consume Wire messages and render them to the CLI.
 
@@ -1198,7 +1449,15 @@ async def _consume_wire(
                 console.print("  [2] ✅ Approve all (don't ask again)", style="green")
                 console.print("  [3] ❌ Reject", style="red")
 
-                choice = await session.prompt_async("\n> ")
+                if esc_pause_event is not None:
+                    esc_pause_event.set()
+                    if esc_paused_event is not None:
+                        await asyncio.to_thread(esc_paused_event.wait, 0.5)
+                try:
+                    choice = await session.prompt_async("\n> ")
+                finally:
+                    if esc_pause_event is not None:
+                        esc_pause_event.clear()
                 msg.resolve(_parse_approval_choice(choice))
 
             elif isinstance(msg, TurnEnd):
@@ -1212,6 +1471,7 @@ async def run_interactive(
     agent: Union[ResumeAgent, OrchestratorAgent],
     session_manager: Optional[SessionManager] = None,
     stream_enabled_default: bool = True,
+    verbose: bool = False,
 ):
     """Run interactive chat loop."""
     # Setup prompt with history
@@ -1223,6 +1483,7 @@ async def run_interactive(
     )
     runtime_options: Dict[str, Any] = {
         "stream_enabled": bool(stream_enabled_default),
+        "verbose": bool(verbose),
     }
 
     print_banner()
@@ -1263,23 +1524,47 @@ async def run_interactive(
                     agent,
                     session_manager,
                     runtime_options=runtime_options,
+                    prompt_session=session,
                 )
                 if not should_continue:
                     break
                 continue
 
             # Run agent with Wire protocol
-            console.print("\n🤔 Thinking... (Press Ctrl+C to interrupt)", style="dim")
+            use_esc_interrupt = sys.stdin.isatty()
+            interrupt_hint = "ESC" if use_esc_interrupt else "Ctrl+C"
+            console.print(f"\n🤔 Thinking... (Press {interrupt_hint} to interrupt)", style="dim")
             agent_task = None
             consumer_task = None
             wire = None
+            stop_event: Optional[threading.Event] = None
+            esc_pause_event: Optional[threading.Event] = None
+            esc_paused_event: Optional[threading.Event] = None
+            esc_future = None
 
             try:
                 stream_enabled = bool(runtime_options.get("stream_enabled", False))
 
                 wire = Wire()
                 ui_side = wire.ui_side()
-                consumer_task = asyncio.create_task(_consume_wire(ui_side, console, session))
+                esc_pause_event = threading.Event()
+                esc_paused_event = threading.Event()
+                consumer_task = asyncio.create_task(
+                    _consume_wire(
+                        ui_side,
+                        console,
+                        session,
+                        esc_pause_event=esc_pause_event,
+                        esc_paused_event=esc_paused_event,
+                    )
+                )
+
+                stop_event = threading.Event()
+
+                async def _interrupt_checker() -> bool:
+                    return stop_event.is_set()
+
+                _set_interrupt_checker(agent, _interrupt_checker)
 
                 agent_task = asyncio.create_task(
                     agent.run(
@@ -1288,6 +1573,41 @@ async def run_interactive(
                         wire=wire,
                     )
                 )
+
+                if use_esc_interrupt:
+                    esc_future = asyncio.get_event_loop().run_in_executor(
+                        None,
+                        _wait_for_escape,
+                        stop_event,
+                        esc_pause_event,
+                        esc_paused_event,
+                    )
+
+                    done, _ = await asyncio.wait(
+                        {agent_task, esc_future},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+
+                    esc_pressed = False
+                    if esc_future in done:
+                        try:
+                            esc_pressed = esc_future.result() is True
+                        except Exception:
+                            esc_pressed = False
+
+                    if esc_pressed:
+                        stop_event.set()
+                        if not agent_task.done():
+                            agent_task.cancel()
+                            try:
+                                await agent_task
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception:
+                                pass
+                        console.print("\n⚠️ Interrupted by user (ESC).", style="yellow")
+                        continue
+
                 response = await agent_task
 
                 console.print()
@@ -1309,6 +1629,11 @@ async def run_interactive(
             except Exception as e:
                 console.print(f"\n❌ Error: {str(e)}", style="red")
             finally:
+                if stop_event is not None:
+                    stop_event.set()
+                _set_interrupt_checker(agent, None)
+                if esc_future is not None and not esc_future.done():
+                    await asyncio.gather(esc_future, return_exceptions=True)
                 if wire is not None:
                     wire.shutdown()
                 if consumer_task is not None:
@@ -1493,6 +1818,7 @@ def main():
                 agent,
                 session_manager,
                 stream_enabled_default=interactive_stream_default,
+                verbose=args.verbose,
             )
         )
 

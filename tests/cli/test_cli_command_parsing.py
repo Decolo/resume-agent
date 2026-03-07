@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
+from rich.console import Console
 
 from resume_agent.cli.app import handle_command
 
@@ -10,13 +13,8 @@ from resume_agent.cli.app import handle_command
 class _FakeSessionManager:
     def __init__(self, session_id: str = "session_20260223_120000_deadbeef") -> None:
         self.session_id = session_id
-        self.saved_name: str | None = None
         self.loaded_session_id: str | None = None
         self.restored = False
-
-    def save_session(self, agent: object, session_name: str | None = None) -> str:
-        self.saved_name = session_name
-        return self.session_id
 
     def list_sessions(self) -> list[dict]:
         return [
@@ -44,21 +42,18 @@ class _FakeSessionManager:
 
 
 @pytest.mark.asyncio
-async def test_save_command_preserves_custom_name_case_and_spacing() -> None:
-    manager = _FakeSessionManager()
+async def test_load_command_is_unknown(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr("resume_agent.cli.app.console", test_console)
 
-    assert await handle_command("/save My Session V1", object(), session_manager=manager)
-    assert manager.saved_name == "My Session V1"
-
-
-@pytest.mark.asyncio
-async def test_load_command_preserves_session_id_case() -> None:
     session_id = "session_20260223_MyCase_deadbeef"
     manager = _FakeSessionManager(session_id=session_id)
 
     assert await handle_command(f"/load {session_id}", object(), session_manager=manager)
-    assert manager.loaded_session_id == session_id
-    assert manager.restored is True
+    assert manager.loaded_session_id is None
+    assert manager.restored is False
+    assert "Unknown command: /load" in output.getvalue()
 
 
 @pytest.mark.asyncio

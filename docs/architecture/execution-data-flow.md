@@ -283,8 +283,7 @@ Key files:
     v
 [Continue runtime]
 
-[/save command] --------------------> [SessionManager.save_session]
-[/load command] --> [SessionManager.load_session]
+[/sessions picker selection] --> [SessionManager.load_session]
                       |
                       v
          [Restore history / observability / state]
