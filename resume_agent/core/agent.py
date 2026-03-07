@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 
 from .llm import LLMAgent, LLMConfig, load_config
 from .skills import RESUME_EXPERT_PROMPT
+from .wire import Wire
 
 
 @dataclass
@@ -74,7 +75,8 @@ class ResumeAgent:
         user_input: str,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
-        wire: Optional[Any] = None,
+        *,
+        wire: Wire,
     ) -> str:
         """Run the agent with user input and return final response."""
         if self.agent_config.verbose:
@@ -94,9 +96,13 @@ class ResumeAgent:
 
         return response
 
-    async def chat(self, user_input: str) -> str:
+    async def chat(
+        self,
+        user_input: str,
+        wire: Wire,
+    ) -> str:
         """Alias for run() - for interactive use."""
-        return await self.run(user_input)
+        return await self.run(user_input, wire=wire)
 
     def reset(self):
         """Reset conversation history."""
@@ -106,11 +112,14 @@ class ResumeAgent:
 async def main():
     """Test the agent."""
     agent = ResumeAgent()
-
-    response = await agent.run("List all files in the current directory and tell me what you see.")
-    print("\n" + "=" * 50)
-    print("Final Response:")
-    print(response)
+    wire = Wire()
+    try:
+        response = await agent.run("List all files in the current directory and tell me what you see.", wire=wire)
+        print("\n" + "=" * 50)
+        print("Final Response:")
+        print(response)
+    finally:
+        wire.shutdown()
 
 
 if __name__ == "__main__":

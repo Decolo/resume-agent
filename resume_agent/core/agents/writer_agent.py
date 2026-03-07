@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from ..skills.writer_prompt import WRITER_AGENT_PROMPT
+from ..wire import Wire
 from .base import AgentConfig, BaseAgent
 from .protocol import AgentResult, AgentTask, create_result
 
@@ -113,10 +114,15 @@ class WriterAgent(BaseAgent):
             prompt = self._build_prompt(task)
 
             # Run the LLM agent
-            response = await self.llm_agent.run(
-                user_input=prompt,
-                max_steps=self.config.max_steps,
-            )
+            wire = Wire()
+            try:
+                response = await self.llm_agent.run(
+                    user_input=prompt,
+                    max_steps=self.config.max_steps,
+                    wire=wire,
+                )
+            finally:
+                wire.shutdown()
 
             return create_result(
                 task_id=task.task_id,

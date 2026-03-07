@@ -19,8 +19,10 @@ from resume_agent.providers.types import FunctionCall, LLMResponse
 class _ScriptedProvider:
     def __init__(self, responses: list[LLMResponse]):
         self._responses = list(responses)
+        self.generate_calls = 0
 
     async def generate(self, messages, tools, config):  # noqa: ANN001
+        self.generate_calls += 1
         if self._responses:
             return self._responses.pop(0)
         return LLMResponse(text="done", function_calls=[])
@@ -80,6 +82,36 @@ def _register_write_tool(agent: LLMAgent) -> None:
     )
 
 
+def _register_read_tool(agent: LLMAgent) -> None:
+    def file_read(path: str = "") -> str:
+        return f"read {path}"
+
+    agent.register_tool(
+        name="file_read",
+        description="Read file",
+        parameters={"properties": {"path": {"type": "string"}}, "required": ["path"]},
+        func=file_read,
+    )
+
+
+def _register_write_tool_path(agent: LLMAgent) -> None:
+    def file_write(path: str = "", content: str = "") -> str:
+        return f"Successfully wrote {len(content)} characters to {path}"
+
+    agent.register_tool(
+        name="file_write",
+        description="Write file",
+        parameters={
+            "properties": {
+                "path": {"type": "string", "required": True},
+                "content": {"type": "string", "required": True},
+            },
+            "required": ["path", "content"],
+        },
+        func=file_write,
+    )
+
+
 async def _collect_from_ui(ui, timeout: float = 5.0) -> list:
     """Collect all wire messages from a pre-subscribed UI side until shutdown."""
     messages = []
@@ -116,8 +148,8 @@ async def test_wire_emits_turn_lifecycle():
 
 
 @pytest.mark.asyncio
-async def test_text_only_turn_auto_saves_without_wire():
-    """Text-only turns should auto-save even when no tools are called."""
+async def test_text_only_turn_auto_saves_with_wire_no_ui_subscriber():
+    """Text-only turns should auto-save even when no UI subscriber is attached."""
     agent = _make_agent()
     session_manager = _RecordingSessionManager()
     parent_agent = object()
@@ -125,7 +157,9 @@ async def test_text_only_turn_auto_saves_without_wire():
     agent._parent_agent = parent_agent
     agent.provider = _ScriptedProvider([LLMResponse(text="Hello world", function_calls=[])])
 
-    response = await agent.run("hi")
+    wire = Wire()
+    response = await agent.run("hi", wire=wire)
+    wire.shutdown()
 
     assert response == "Hello world"
     assert len(session_manager.calls) == 1
@@ -320,8 +354,8 @@ async def test_wire_approve_all_persists_across_turns():
 
 
 @pytest.mark.asyncio
-async def test_wire_none_unchanged_behavior():
-    """When wire=None, agent behaves exactly as before (old approval path)."""
+async def test_wire_write_call_fails_fast_without_ui_subscriber():
+    """When no UI subscriber exists and no handler is configured, write call should fail fast."""
     agent = _make_agent()
     _register_write_tool(agent)
 
@@ -331,7 +365,191 @@ async def test_wire_none_unchanged_behavior():
     )
 
     agent.provider = _ScriptedProvider([tool_response])
-    response = await agent.run("write a file")
+    wire = Wire()
+    response = await agent.run("write a file", wire=wire)
+    wire.shutdown()
 
-    assert "approval" in response.lower() or "pending" in response.lower()
-    assert agent.has_pending_tool_calls()
+    assert "require approval" in response.lower()
+    assert "no wire ui consumer" in response.lower()
+
+
+@pytest.mark.asyncio
+async def test_wire_write_call_uses_approval_handler_when_configured():
+    """Approval handler can authorize writes even when no UI subscriber is attached."""
+    agent = _make_agent()
+    _register_write_tool(agent)
+
+    async def approve_handler(function_calls):  # noqa: ANN001
+        return function_calls, ""
+
+    agent.set_approval_handler(approve_handler)
+    agent.provider = _ScriptedProvider(
+        [
+            LLMResponse(
+                text="",
+                function_calls=[
+                    FunctionCall(name="file_write", arguments={"file_path": "a.txt", "content": "hi"}, id="c1")
+                ],
+            ),
+            LLMResponse(text="File written", function_calls=[]),
+        ]
+    )
+
+    wire = Wire()
+    response = await agent.run("write a file", wire=wire)
+    wire.shutdown()
+    assert response == "File written"
+
+
+@pytest.mark.asyncio
+async def test_wire_invalid_tool_call_missing_args_aborts_turn(monkeypatch):
+    """Invalid tool-call args should abort the turn to avoid approval loops."""
+    agent = _make_agent()
+    _register_write_tool(agent)
+
+    # Provider keeps returning the same invalid write call; agent should stop
+    # after first failed execution and return control to CLI.
+    tool_response = LLMResponse(
+        text="",
+        function_calls=[FunctionCall(name="file_write", arguments={}, id="c1")],
+    )
+    agent.provider = _ScriptedProvider([tool_response, tool_response, LLMResponse(text="unused", function_calls=[])])
+
+    wire = Wire()
+    approver_ui = wire.ui_side()
+    collector_ui = wire.ui_side()
+
+    async def auto_approve():
+        try:
+            while True:
+                msg = await approver_ui.receive()
+                if isinstance(msg, ApprovalRequest):
+                    msg.resolve("approve")
+        except QueueShutDown:
+            pass
+
+    approve_task = asyncio.create_task(auto_approve())
+    collector = asyncio.create_task(_collect_from_ui(collector_ui))
+    response = await agent.run("write with missing args", wire=wire)
+    wire.shutdown()
+    messages = await collector
+    await approve_task
+
+    assert "Invalid tool call for 'file_write'" in response
+    assert "Turn aborted to prevent repeated approval/tool loops" in response
+    approval_reqs = [m for m in messages if isinstance(m, ApprovalRequest)]
+    assert len(approval_reqs) == 1
+
+
+@pytest.mark.asyncio
+async def test_wire_replay_verbose_repeated_writes_stops_before_invalid_bash():
+    """Replay 2026-03-07 verbose pattern and ensure guard exits before invalid bash call."""
+    agent = _make_agent()
+    _register_read_tool(agent)
+    _register_write_tool_path(agent)
+
+    truncated_html = (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '    <meta charset="UTF-8">\n'
+        '    <meta name="viewport" content="width=device-width, initial-scale=1.0\\'
+    )
+
+    replay_responses = [
+        LLMResponse(
+            text="Read both HTML files first.",
+            function_calls=[
+                FunctionCall(
+                    name="file_read",
+                    arguments={"path": "frontend-resume-optimized-2026-03-06.html"},
+                    id="file_read:0",
+                ),
+                FunctionCall(
+                    name="file_read",
+                    arguments={"path": "frontend-resume-improved-2026-02-03.html"},
+                    id="file_read:1",
+                ),
+            ],
+        ),
+        LLMResponse(
+            text="I'll align the file now.",
+            function_calls=[
+                FunctionCall(
+                    name="file_write",
+                    arguments={
+                        "path": "frontend-resume-optimized-2026-03-06.html",
+                        "content": truncated_html,
+                    },
+                    id="file_write:2",
+                )
+            ],
+        ),
+        LLMResponse(
+            text="I need to write the complete file with proper content.",
+            function_calls=[
+                FunctionCall(
+                    name="file_write",
+                    arguments={
+                        "path": "frontend-resume-optimized-2026-03-06.html",
+                        "content": truncated_html,
+                    },
+                    id="file_write:3",
+                )
+            ],
+        ),
+        LLMResponse(
+            text="The file seems to be getting truncated. Let me write it in one go.",
+            function_calls=[
+                FunctionCall(
+                    name="file_write",
+                    arguments={
+                        "path": "frontend-resume-optimized-2026-03-06.html",
+                        "content": truncated_html,
+                    },
+                    id="file_write:4",
+                )
+            ],
+        ),
+        LLMResponse(
+            text="I notice truncation. I will use bash.",
+            function_calls=[FunctionCall(name="bash", arguments={}, id="bash:6")],
+        ),
+    ]
+    provider = _ScriptedProvider(replay_responses)
+    agent.provider = provider
+
+    wire = Wire()
+    approver_ui = wire.ui_side()
+    collector_ui = wire.ui_side()
+
+    async def auto_approve():
+        try:
+            while True:
+                msg = await approver_ui.receive()
+                if isinstance(msg, ApprovalRequest):
+                    msg.resolve("approve")
+        except QueueShutDown:
+            pass
+
+    approve_task = asyncio.create_task(auto_approve())
+    collector = asyncio.create_task(_collect_from_ui(collector_ui))
+    response = await agent.run("align html display", wire=wire)
+    wire.shutdown()
+    messages = await collector
+    await approve_task
+
+    assert "repeated identical write operations detected" in response
+    assert "Invalid tool call for 'bash'" not in response
+
+    approvals = [m for m in messages if isinstance(m, ApprovalRequest)]
+    assert len(approvals) == 3
+
+    tool_calls = [m for m in messages if isinstance(m, ToolCallEvent)]
+    names = [m.name for m in tool_calls]
+    assert names.count("file_read") == 2
+    assert names.count("file_write") == 3
+    assert "bash" not in names
+
+    # Should stop before consuming the scripted bash response.
+    assert provider.generate_calls == 4

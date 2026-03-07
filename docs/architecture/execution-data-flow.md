@@ -157,19 +157,25 @@ Two code paths exist in `LLMAgent.run()`:
 (next step)
 ```
 
-### Legacy path (`wire=None` — non-interactive/API usage)
+### Misconfiguration Path (Wire Without UI Subscriber)
 
 ```text
+[run(..., wire=Wire())]
+    |
+    v
+[No UI subscriber attached]
+    |
+    v
 [Contains write tool requiring approval?]
     | Yes
-    v
-[Queue pending calls + pause]
+    +--> if approval_handler exists: delegate approval via handler
     |
-    v
-[Return "pending approval" message]
+    +--> else: fail fast with
+         "Tool call(s) require approval, but no Wire UI consumer or approval handler is available."
     |
+   No
     v
-[Wait for approve_pending_tool_calls() call]
+[Continue normal execution]
 ```
 
 Safety and reliability mechanisms in both paths:

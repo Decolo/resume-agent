@@ -145,10 +145,15 @@ class OrchestratorAgent(BaseAgent):
             prompt = self._build_prompt(task)
 
             # Run the LLM agent (which will use agent tools for delegation)
-            response = await self.llm_agent.run(
-                user_input=prompt,
-                max_steps=self.config.max_steps,
-            )
+            local_wire = Wire()
+            try:
+                response = await self.llm_agent.run(
+                    user_input=prompt,
+                    max_steps=self.config.max_steps,
+                    wire=local_wire,
+                )
+            finally:
+                local_wire.shutdown()
 
             return create_result(
                 task_id=task.task_id,
@@ -198,7 +203,8 @@ class OrchestratorAgent(BaseAgent):
         max_steps: Optional[int] = None,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
-        wire: Optional[Wire] = None,
+        *,
+        wire: Wire,
     ) -> str:
         """Run the orchestrator with user input.
 

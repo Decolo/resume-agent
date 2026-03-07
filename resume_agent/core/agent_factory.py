@@ -206,7 +206,11 @@ class IntentRouter:
             return None
 
         self._agent.reset()
-        response = await self._agent.run(user_input=user_input, max_steps=3)
+        wire = Wire()
+        try:
+            response = await self._agent.run(user_input=user_input, max_steps=3, wire=wire)
+        finally:
+            wire.shutdown()
         decision = (response or "").strip().upper()
 
         if "MULTI" in decision:
@@ -281,7 +285,8 @@ class AutoAgent:
         user_input: str,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
-        wire: Optional[Wire] = None,
+        *,
+        wire: Wire,
     ) -> str:
         if await self._should_use_multi(user_input):
             return await self.multi_agent.run(
@@ -302,7 +307,8 @@ class AutoAgent:
         user_input: str,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
-        wire: Optional[Wire] = None,
+        *,
+        wire: Wire,
     ) -> str:
         return await self.run(
             user_input,

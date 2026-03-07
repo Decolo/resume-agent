@@ -346,30 +346,17 @@ class LLMAgent:
         max_steps: int = 20,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[StreamDelta], None]] = None,
-        wire: Optional[Wire] = None,
+        *,
+        wire: Wire,
     ) -> str:
-        """Run the agent with user input using the wire-mode event loop.
-
-        If ``wire`` is omitted, an ephemeral Wire is created so callers can
-        still use the same API without manually wiring UI events.
-        """
-        # Local import to avoid runtime import cycles while preserving type-only
-        # import usage under TYPE_CHECKING.
-        from .wire import Wire as RuntimeWire
-
-        owns_wire = wire is None
-        active_wire = wire or RuntimeWire()
-        try:
-            return await self._run_wire(
-                user_input,
-                max_steps=max_steps,
-                stream=stream,
-                on_stream_delta=on_stream_delta,
-                wire=active_wire,
-            )
-        finally:
-            if owns_wire:
-                active_wire.shutdown()
+        """Run the agent with user input using the wire-mode event loop."""
+        return await self._run_wire(
+            user_input,
+            max_steps=max_steps,
+            stream=stream,
+            on_stream_delta=on_stream_delta,
+            wire=wire,
+        )
 
     # --- Wire-mode agent loop ---
 
@@ -483,42 +470,27 @@ class LLMAgent:
 
                 # 8. Inline approval (replaces pause-and-return)
                 if self._requires_tool_approval(function_calls) and not approval.is_yolo():
+                    approved_calls: Optional[List[FunctionCall]] = function_calls
+                    rejection_reason = ""
+
                     if self._approval_handler is not None:
-                        approved_calls, rejection = await self._approval_handler(function_calls)
-                        if not approved_calls:
-                            tool_message = Message(
-                                role="tool",
-                                parts=[
-                                    MessagePart.from_function_response(
-                                        FunctionResponse(
-                                            name=fc.name,
-                                            response={"result": f"Rejected: {rejection}"},
-                                            call_id=fc.id,
-                                        )
-                                    )
-                                    for fc in function_calls
-                                ],
+                        approved_calls, rejection_reason = await self._approval_handler(function_calls)
+                    else:
+                        if not self._wire_has_ui_subscribers(wire):
+                            response_text = (
+                                "Error: Tool call(s) require approval, but no Wire UI consumer or "
+                                "approval handler is available."
                             )
-                            self.history_manager.add_message(tool_message)
+                            self.observer.log_error(
+                                error_type="approval_unavailable",
+                                message=response_text,
+                                context={"step": step},
+                                agent_id=self.agent_id,
+                            )
                             step_duration = (time.time() - start_time) * 1000
                             self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                            continue
-                        function_calls = approved_calls
-                    elif not self._wire_has_ui_subscribers(wire):
-                        response_text = (
-                            "Error: Tool call(s) require approval, but no Wire UI consumer or "
-                            "approval handler is available."
-                        )
-                        self.observer.log_error(
-                            error_type="approval_unavailable",
-                            message=response_text,
-                            context={"step": step},
-                            agent_id=self.agent_id,
-                        )
-                        step_duration = (time.time() - start_time) * 1000
-                        self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                        break
-                    else:
+                            break
+
                         # Start pipe task if not already running
                         if pipe_task is None or pipe_task.done():
                             pipe_task = asyncio.create_task(self._pipe_approval_to_wire(approval, wire))
@@ -529,24 +501,17 @@ class LLMAgent:
                         )
                         approved = await approval.request("write_tool", function_calls, description)
                         if not approved:
-                            # Inject rejection into history (same as legacy path)
-                            tool_message = Message(
-                                role="tool",
-                                parts=[
-                                    MessagePart.from_function_response(
-                                        FunctionResponse(
-                                            name=fc.name,
-                                            response={"result": "Rejected: user declined approval"},
-                                            call_id=fc.id,
-                                        )
-                                    )
-                                    for fc in function_calls
-                                ],
-                            )
-                            self.history_manager.add_message(tool_message)
-                            step_duration = (time.time() - start_time) * 1000
-                            self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                            continue
+                            approved_calls = []
+                            rejection_reason = "user declined approval"
+
+                    if not approved_calls:
+                        tool_message = self._build_rejection_tool_message(function_calls, rejection_reason)
+                        self.history_manager.add_message(tool_message)
+                        step_duration = (time.time() - start_time) * 1000
+                        self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                        continue
+
+                    function_calls = approved_calls
 
                 # 9. Loop guard
                 guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
@@ -672,6 +637,23 @@ class LLMAgent:
             pass
         except Exception:
             pass
+
+    @staticmethod
+    def _build_rejection_tool_message(function_calls: List[FunctionCall], reason: str) -> Message:
+        """Build a synthetic tool message for rejected tool calls."""
+        return Message(
+            role="tool",
+            parts=[
+                MessagePart.from_function_response(
+                    FunctionResponse(
+                        name=fc.name,
+                        response={"result": f"Rejected: {reason}"},
+                        call_id=fc.id,
+                    )
+                )
+                for fc in function_calls
+            ],
+        )
 
     # --- Extracted helper methods ---
 

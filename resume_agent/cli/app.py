@@ -416,14 +416,6 @@ def _get_llm_agents(agent: Union[ResumeAgent, OrchestratorAgent]):
     return unique
 
 
-def _list_pending_tool_calls(agent: Union[ResumeAgent, OrchestratorAgent]) -> list:
-    pending = []
-    for llm_agent in _get_llm_agents(agent):
-        if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
-            pending.extend(llm_agent.list_pending_tool_calls())
-    return pending
-
-
 def _get_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent]) -> Optional[str]:
     states = []
     for llm_agent in _get_llm_agents(agent):
@@ -1672,11 +1664,6 @@ def main():
         help="Path to configuration file",
     )
     parser.add_argument(
-        "--prompt",
-        "-p",
-        help="Run a single prompt and exit (non-interactive mode)",
-    )
-    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -1786,41 +1773,16 @@ def main():
             tools=tools,
         )
 
-    # Run
-    if args.prompt:
-        # Non-interactive mode
-        async def run_once():
-            stream_enabled = bool(args.stream) if args.stream is not None else False
-
-            response = await agent.run(
-                args.prompt,
-                stream=stream_enabled,
-            )
-            if response.startswith("Error:"):
-                console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
-            else:
-                console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
-
-            pending = _list_pending_tool_calls(agent)
-            if pending:
-                console.print(
-                    f"\n⚠️ {len(pending)} pending tool call(s) require approval. "
-                    "Run in interactive mode for inline approval.",
-                    style="yellow",
-                )
-
-        asyncio.run(run_once())
-    else:
-        # Interactive mode
-        interactive_stream_default = False if args.stream is None else bool(args.stream)
-        asyncio.run(
-            run_interactive(
-                agent,
-                session_manager,
-                stream_enabled_default=interactive_stream_default,
-                verbose=args.verbose,
-            )
+    # Interactive mode (default and only mode)
+    interactive_stream_default = False if args.stream is None else bool(args.stream)
+    asyncio.run(
+        run_interactive(
+            agent,
+            session_manager,
+            stream_enabled_default=interactive_stream_default,
+            verbose=args.verbose,
         )
+    )
 
 
 if __name__ == "__main__":
