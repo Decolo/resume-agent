@@ -442,10 +442,9 @@ async def test_wire_invalid_tool_call_missing_args_aborts_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_wire_replay_verbose_repeated_writes_stops_before_invalid_bash():
-    """Replay 2026-03-07 verbose pattern and ensure guard exits before invalid bash call."""
+async def test_wire_repeated_writes_stop_by_max_steps_boundary():
+    """Repeated writes are bounded by max_steps rather than a loop-specific guard."""
     agent = _make_agent()
-    _register_read_tool(agent)
     _register_write_tool_path(agent)
 
     truncated_html = (
@@ -458,22 +457,20 @@ async def test_wire_replay_verbose_repeated_writes_stops_before_invalid_bash():
 
     replay_responses = [
         LLMResponse(
-            text="Read both HTML files first.",
+            text="write-1",
             function_calls=[
                 FunctionCall(
-                    name="file_read",
-                    arguments={"path": "frontend-resume-optimized-2026-03-06.html"},
-                    id="file_read:0",
-                ),
-                FunctionCall(
-                    name="file_read",
-                    arguments={"path": "frontend-resume-improved-2026-02-03.html"},
-                    id="file_read:1",
-                ),
+                    name="file_write",
+                    arguments={
+                        "path": "frontend-resume-optimized-2026-03-06.html",
+                        "content": truncated_html,
+                    },
+                    id="file_write:1",
+                )
             ],
         ),
         LLMResponse(
-            text="I'll align the file now.",
+            text="write-2",
             function_calls=[
                 FunctionCall(
                     name="file_write",
@@ -485,36 +482,7 @@ async def test_wire_replay_verbose_repeated_writes_stops_before_invalid_bash():
                 )
             ],
         ),
-        LLMResponse(
-            text="I need to write the complete file with proper content.",
-            function_calls=[
-                FunctionCall(
-                    name="file_write",
-                    arguments={
-                        "path": "frontend-resume-optimized-2026-03-06.html",
-                        "content": truncated_html,
-                    },
-                    id="file_write:3",
-                )
-            ],
-        ),
-        LLMResponse(
-            text="The file seems to be getting truncated. Let me write it in one go.",
-            function_calls=[
-                FunctionCall(
-                    name="file_write",
-                    arguments={
-                        "path": "frontend-resume-optimized-2026-03-06.html",
-                        "content": truncated_html,
-                    },
-                    id="file_write:4",
-                )
-            ],
-        ),
-        LLMResponse(
-            text="I notice truncation. I will use bash.",
-            function_calls=[FunctionCall(name="bash", arguments={}, id="bash:6")],
-        ),
+        LLMResponse(text="unused", function_calls=[]),
     ]
     provider = _ScriptedProvider(replay_responses)
     agent.provider = provider
@@ -534,22 +502,17 @@ async def test_wire_replay_verbose_repeated_writes_stops_before_invalid_bash():
 
     approve_task = asyncio.create_task(auto_approve())
     collector = asyncio.create_task(_collect_from_ui(collector_ui))
-    response = await agent.run("align html display", wire=wire)
+    response = await agent.run("align html display", max_steps=2, wire=wire)
     wire.shutdown()
     messages = await collector
     await approve_task
 
-    assert "repeated identical file_write args detected" in response
-    assert "Invalid tool call for 'bash'" not in response
+    assert response == "Max steps (2) reached."
 
     approvals = [m for m in messages if isinstance(m, ApprovalRequest)]
     assert len(approvals) == 2
 
     tool_calls = [m for m in messages if isinstance(m, ToolCallEvent)]
     names = [m.name for m in tool_calls]
-    assert names.count("file_read") == 2
     assert names.count("file_write") == 2
-    assert "bash" not in names
-
-    # Should stop before consuming the scripted bash response.
-    assert provider.generate_calls == 3
+    assert provider.generate_calls == 2

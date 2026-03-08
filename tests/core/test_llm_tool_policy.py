@@ -5,14 +5,17 @@ from __future__ import annotations
 import pytest
 
 from resume_agent.core.llm import LLMAgent, LLMConfig
+from resume_agent.core.retry import RetryConfig, TransientError
 from resume_agent.providers.types import FunctionCall, FunctionResponse, LLMResponse, Message, MessagePart
 
 
 class _FakeProvider:
     def __init__(self, responses: list[LLMResponse]):
         self._responses = list(responses)
+        self.generate_calls = 0
 
     async def generate(self, messages, tools, config):  # noqa: ANN001
+        self.generate_calls += 1
         if self._responses:
             return self._responses.pop(0)
         return LLMResponse(text="done")
@@ -128,26 +131,36 @@ async def test_execute_tool_infers_path_from_recent_file_list_when_missing():
     assert "parsed sample_resume.md" in response.response.get("result", "")
 
 
-def test_loop_guard_triggers_on_identical_file_write_args():
+@pytest.mark.asyncio
+async def test_call_llm_retries_on_empty_response_then_succeeds():
     agent = _new_agent()
-    state = {"last_file_write_sig": None, "same_file_write_repeats": 0}
-    fc = FunctionCall(name="file_write", arguments={"path": "a.html", "content": "<html>ok</html>"}, id="c1")
-    fr = FunctionResponse(
-        name="file_write", response={"result": "Successfully wrote 15 characters to a.html"}, call_id="c1"
+    agent._retry_config = RetryConfig(max_attempts=3, base_delay=0, max_delay=0, jitter_factor=0)
+    provider = _FakeProvider(
+        [
+            LLMResponse(text="", function_calls=[]),
+            LLMResponse(text="ok", function_calls=[]),
+        ]
     )
+    agent.provider = provider
 
-    assert agent._check_loop_guard([fc], [fr], state) is None
-    reason = agent._check_loop_guard([fc], [fr], state)
-    assert reason is not None
-    assert "repeated identical file_write args" in reason
+    response = await agent._call_llm()
+    assert response.text == "ok"
+    assert provider.generate_calls == 2
 
 
-def test_loop_guard_ignores_non_file_write_calls():
+@pytest.mark.asyncio
+async def test_call_llm_raises_after_repeated_empty_responses():
     agent = _new_agent()
-    state = {"last_file_write_sig": None, "same_file_write_repeats": 0}
+    agent._retry_config = RetryConfig(max_attempts=3, base_delay=0, max_delay=0, jitter_factor=0)
+    provider = _FakeProvider(
+        [
+            LLMResponse(text="", function_calls=[]),
+            LLMResponse(text="", function_calls=[]),
+            LLMResponse(text="", function_calls=[]),
+        ]
+    )
+    agent.provider = provider
 
-    for idx in range(12):
-        fc = FunctionCall(name="file_read", arguments={"path": f"file_{idx}.md"}, id=f"c{idx}")
-        fr = FunctionResponse(name="file_read", response={"result": f"read file_{idx}.md"}, call_id=f"c{idx}")
-        reason = agent._check_loop_guard([fc], [fr], state)
-        assert reason is None
+    with pytest.raises(TransientError, match="Empty LLM response"):
+        await agent._call_llm()
+    assert provider.generate_calls == 3

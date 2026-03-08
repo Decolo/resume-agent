@@ -116,11 +116,28 @@ class FileWriteTool(BaseTool):
             file_path = self._resolve_path(path)
             fingerprint = hashlib.sha1(content.encode("utf-8", "ignore")).hexdigest()[:12]
             changed = True
+            existing_size = None
             if file_path.exists() and file_path.is_file():
                 try:
-                    changed = file_path.read_text(encoding=encoding) != content
+                    existing_text = file_path.read_text(encoding=encoding)
+                    existing_size = len(existing_text)
+                    changed = existing_text != content
                 except Exception:
                     changed = True
+
+            # No-op for idempotent writes: do not rewrite unchanged content.
+            if not changed:
+                return ToolResult(
+                    success=True,
+                    output=f"No changes needed for {path}; file content is already up to date.",
+                    data={
+                        "path": str(file_path),
+                        "size": existing_size if existing_size is not None else len(content),
+                        "changed": False,
+                        "no_op": True,
+                        "fingerprint_after": fingerprint,
+                    },
+                )
 
             # Preview mode: intercept write, but return the same success
             # message as a real write so the LLM continues normally.

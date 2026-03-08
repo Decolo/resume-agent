@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import time
 from dataclasses import dataclass
@@ -255,8 +254,6 @@ class LLMAgent:
     """Provider-agnostic LLM agent with tool calling."""
 
     _COST_PER_MILLION_TOKENS = 0.08
-    # File-write loop guard thresholds
-    _MAX_REPEAT_FILE_WRITE = 1
     # Backward-compatible fallback when a tool is registered without capabilities.
     _WRITE_TOOLS = {"file_write", "resume_write", "file_rename"}
 
@@ -369,7 +366,15 @@ class LLMAgent:
         on_stream_delta: Optional[Callable[[StreamDelta], None]] = None,
         wire: Wire,
     ) -> str:
-        """Agent loop with Wire event bus — approval happens inline."""
+        """Agent loop with Wire event bus — approval happens inline.
+
+        Control-flow contract (high level):
+        1) LLM responds with text and/or tool calls.
+        2) Optional approval gate runs inside the same loop iteration.
+        3) Approved tool calls execute, emit wire events, then write tool results to history.
+        4) Loop continues until model returns no tool calls, a fatal condition triggers,
+           or max_steps is reached.
+        """
         from .wire.approval import Approval
         from .wire.types import (
             StepBegin,
@@ -386,11 +391,6 @@ class LLMAgent:
         pipe_task: Optional[asyncio.Task] = None
 
         wire.soul_side.send(TurnBegin(user_input=user_input))
-
-        loop_state: Dict[str, Any] = {
-            "last_file_write_sig": None,
-            "same_file_write_repeats": 0,
-        }
 
         response_text = ""
         try:
@@ -473,6 +473,8 @@ class LLMAgent:
                         approved_calls, rejection_reason = await self._approval_handler(function_calls)
                     else:
                         if not self._wire_has_ui_subscribers(wire):
+                            # No UI consumer means an approval request can never be answered.
+                            # Fail fast here instead of hanging the turn indefinitely.
                             response_text = (
                                 "Error: Tool call(s) require approval, but no Wire UI consumer or "
                                 "approval handler is available."
@@ -489,6 +491,9 @@ class LLMAgent:
 
                         # Start pipe task if not already running
                         if pipe_task is None or pipe_task.done():
+                            # Background bridge: Approval.fetch_request() -> Wire ApprovalRequest.
+                            # The main loop awaits `approval.request(...)` below, while this task
+                            # forwards the request and resolves it from UI/user input.
                             pipe_task = asyncio.create_task(self._pipe_approval_to_wire(approval, wire))
 
                         description = ", ".join(
@@ -519,6 +524,9 @@ class LLMAgent:
                         )
                     )
 
+                # Execute calls from one model turn concurrently.
+                # This assumes calls in the same batch are independent; if a provider emits
+                # dependency-ordered calls in one response, that ordering is not preserved here.
                 executed_responses = await asyncio.gather(
                     *[self._execute_tool(fc) for fc in function_calls],
                     return_exceptions=False,
@@ -537,22 +545,6 @@ class LLMAgent:
                         )
                     )
 
-                guard_reason = self._check_loop_guard(function_calls, executed_responses, loop_state)
-                if guard_reason:
-                    response_text = guard_reason
-                    step_duration = (time.time() - start_time) * 1000
-                    self.observer.log_error(
-                        error_type="loop_guard",
-                        message=guard_reason,
-                        context={
-                            "same_file_write_repeats": loop_state.get("same_file_write_repeats"),
-                            "last_file_write_sig": loop_state.get("last_file_write_sig"),
-                        },
-                        agent_id=self.agent_id,
-                    )
-                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                    break
-
                 # 11. Update history + auto-save
                 tool_message = Message(
                     role="tool",
@@ -562,6 +554,9 @@ class LLMAgent:
                 if self.session_manager:
                     await self._auto_save()
 
+                # Some tool-call errors are considered unrecoverable for this turn (for example:
+                # missing required arguments). We still persist the tool message above so the
+                # model/user can inspect the failure in history/session logs.
                 fatal_tool_error = self._fatal_tool_error_message(function_calls, executed_responses)
                 if fatal_tool_error:
                     response_text = fatal_tool_error
@@ -643,6 +638,10 @@ class LLMAgent:
                 config=self._build_generation_config(),
             )
             self._raise_if_retryable_malformed_function_call(response)
+            # Retry empty responses in the provider-call layer so the main loop
+            # only handles actionable LLM outputs.
+            if not response.text and not response.function_calls:
+                raise TransientError("Empty LLM response: no text or tool calls")
             return response
 
         return await retry_with_backoff(make_request, self._retry_config)
@@ -1388,69 +1387,12 @@ class LLMAgent:
 
         return {}
 
-    def _check_loop_guard(
-        self,
-        function_calls: List[FunctionCall],
-        responses: List[FunctionResponse],
-        state: Dict[str, Any],
-    ) -> Optional[str]:
-        """Stop only repeated identical successful file_write calls."""
-        if len(function_calls) != 1 or len(responses) != 1:
-            state["same_file_write_repeats"] = 0
-            state["last_file_write_sig"] = None
-            return None
-
-        fc = function_calls[0]
-        fr = responses[0]
-        if fc.name != "file_write":
-            state["same_file_write_repeats"] = 0
-            state["last_file_write_sig"] = None
-            return None
-
-        args = dict(fc.arguments) if fc.arguments else {}
-        if "path" not in args or "content" not in args:
-            state["same_file_write_repeats"] = 0
-            state["last_file_write_sig"] = None
-            return None
-
-        result = fr.response.get("result", "") if fr and fr.response else ""
-        if result.startswith("Error:"):
-            state["same_file_write_repeats"] = 0
-            state["last_file_write_sig"] = None
-            return None
-
-        write_sig = (
-            self._fingerprint_value(args.get("path")),
-            self._fingerprint_value(args.get("content")),
-        )
-        if state.get("last_file_write_sig") == write_sig:
-            state["same_file_write_repeats"] = int(state.get("same_file_write_repeats", 0)) + 1
-        else:
-            state["last_file_write_sig"] = write_sig
-            state["same_file_write_repeats"] = 0
-
-        if state["same_file_write_repeats"] >= self._MAX_REPEAT_FILE_WRITE:
-            return (
-                "Loop guard triggered: repeated identical file_write args detected. "
-                "Aborting to prevent infinite rewrite attempts."
-            )
-        return None
-
     def _tool_requires_approval(self, tool_name: str) -> bool:
         policy = self._tool_policies.get(tool_name, {})
         requires_approval = policy.get("requires_approval")
         if requires_approval is not None:
             return bool(requires_approval)
         return tool_name in self._WRITE_TOOLS
-
-    def _fingerprint_value(self, value: Any) -> str:
-        if isinstance(value, str):
-            return self._fingerprint_text(value) if len(value) > 256 else value
-        try:
-            serialized = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
-        except Exception:
-            serialized = repr(value)
-        return self._fingerprint_text(serialized) if len(serialized) > 256 else serialized
 
     def _requires_tool_approval(self, function_calls: list) -> bool:
         for fc in function_calls:
