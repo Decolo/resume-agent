@@ -40,7 +40,7 @@ class ApprovalState:
         on_change: Optional[Callable[[], None]] = None,
     ):
         self.yolo = yolo
-        self.auto_approve_actions: set[str] = auto_approve_actions or set()
+        self.auto_approve_actions: set[str] = set(auto_approve_actions) if auto_approve_actions is not None else set()
         self._on_change = on_change
 
     def notify_change(self) -> None:

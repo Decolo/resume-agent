@@ -1,16 +1,13 @@
 # LinkedIn Tools Reference
 
 Canonical contract for LinkedIn browser tools in `resume_agent/tools/linkedin_tools.py`.
-Last updated: 2026-03-03.
+Last updated: 2026-03-07.
 
 ## Overview
 
-This repo exposes two LinkedIn tools with intentionally separated responsibilities:
+This repo currently exposes one LinkedIn tool:
 
 - `job_search`: discover jobs by keywords/location and return listing results.
-- `job_detail`: fetch full detail for exactly one explicit LinkedIn job URL.
-
-They are designed to avoid mixed intent in one tool call.
 
 ## Tool Contracts
 
@@ -41,38 +38,6 @@ Output behavior:
   - `job_id`, `url`, `posted_time`
   - `jd` (JD snippet if fetched)
 - Dedupe key: `job_id`, then `url`, then `title|company|location`.
-
-### `job_detail`
-
-Use only when the input already contains one concrete LinkedIn job URL.
-
-Parameters:
-
-| Name | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `job_url` | string | Yes | N/A | Must match LinkedIn format: `https://www.linkedin.com/jobs/view/<id>/...` |
-
-Output behavior:
-
-- Returns formatted full detail text and structured fields in `data`, including:
-  - `title`, `company`, `location`
-  - `description`
-  - `url`, `posted_time`
-  - `seniority_level`, `employment_type`
-
-## Runtime Policy (Important)
-
-`LLMAgent` enforces a hard policy:
-
-- If `job_search` and `job_detail` are requested in the same step, `job_detail` is rejected for that step.
-- Rejection reason is added as a tool response:
-  - `Rejected by policy: job_detail cannot run in the same step as job_search...`
-
-Recommended flow:
-
-1. Run `job_search` first (optionally with `include_jd=true` to get JD snippets inline).
-2. Select a specific job URL from search results.
-3. Run `job_detail` in a later step with `job_url`.
 
 ## Pagination and Anti-Bot Behavior
 
@@ -110,9 +75,8 @@ Port behavior:
 Common validation rules:
 
 - Missing required args are rejected before tool execution.
-- `job_detail` rejects invalid/non-LinkedIn URLs with:
-  - `Invalid job_url. Expected LinkedIn job URL like https://www.linkedin.com/jobs/view/<job_id>/`
-- Both tools run a LinkedIn login preflight check and return login guidance when session is not authenticated.
+- `job_search` rejects missing/invalid `keywords` and out-of-range `limit`.
+- `job_search` runs a LinkedIn login preflight check and returns login guidance when session is not authenticated.
 
 ## Configuration
 
@@ -143,17 +107,6 @@ Search:
     "location": "China",
     "limit": 40,
     "include_jd": true
-  }
-}
-```
-
-Detail:
-
-```json
-{
-  "name": "job_detail",
-  "arguments": {
-    "job_url": "https://www.linkedin.com/jobs/view/4353119521/"
   }
 }
 ```

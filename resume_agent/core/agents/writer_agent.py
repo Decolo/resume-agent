@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from ..skills.writer_prompt import WRITER_AGENT_PROMPT
+from ..wire import Wire
 from .base import AgentConfig, BaseAgent
 from .protocol import AgentResult, AgentTask, create_result
 
@@ -112,11 +113,26 @@ class WriterAgent(BaseAgent):
             # Build the prompt for the LLM
             prompt = self._build_prompt(task)
 
+            # Delegated writer runs have no interactive UI subscriber.
+            # Attach a local approval handler so write/edit tools can proceed.
+            previous_approval_handler = self.llm_agent._approval_handler
+
+            async def _approve_all(function_calls):  # noqa: ANN001
+                return function_calls, ""
+
+            self.llm_agent.set_approval_handler(_approve_all)
+
             # Run the LLM agent
-            response = await self.llm_agent.run(
-                user_input=prompt,
-                max_steps=self.config.max_steps,
-            )
+            wire = Wire()
+            try:
+                response = await self.llm_agent.run(
+                    user_input=prompt,
+                    max_steps=self.config.max_steps,
+                    wire=wire,
+                )
+            finally:
+                self.llm_agent.set_approval_handler(previous_approval_handler)
+                wire.shutdown()
 
             return create_result(
                 task_id=task.task_id,

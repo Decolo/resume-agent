@@ -14,6 +14,7 @@ Each ADR follows this structure:
 
 - [ADR-001: Gemini Function Calling Format](./001-gemini-function-calling.md) - Why we convert OpenAI format to Gemini types
 - [ADR-002: Multi-Agent Architecture](./002-multi-agent-architecture.md) - Three operational modes (single, multi, auto)
+- [ADR-003: Agent Loop and Tool Responsibility Boundary](./003-agent-loop-tool-boundary.md) - Keep loop orchestration generic; mutation semantics and approval previews live in tools
 
 ## Creating New ADRs
 

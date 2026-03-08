@@ -1,8 +1,8 @@
 """Resume Agent Tools - file, bash, resume domain, and web tool wrappers."""
 
 from .bash_tool import BashTool
-from .file_tool import FileListTool, FileReadTool, FileRenameTool, FileWriteTool
-from .linkedin_tools import JobDetailTool, JobSearchTool
+from .file_tool import FileEditTool, FileListTool, FileReadTool, FileRenameTool, FileWriteTool
+from .linkedin_tools import JobSearchTool
 from .resume_tools import (
     JobMatcherTool,
     ResumeLinterTool,
@@ -17,6 +17,7 @@ __all__ = [
     "FileWriteTool",
     "FileListTool",
     "FileRenameTool",
+    "FileEditTool",
     "BashTool",
     "ResumeParserTool",
     "ResumeWriterTool",
@@ -24,7 +25,6 @@ __all__ = [
     "JobMatcherTool",
     "ResumeValidatorTool",
     "JobSearchTool",
-    "JobDetailTool",
     "WebFetchTool",
     "WebReadTool",
 ]

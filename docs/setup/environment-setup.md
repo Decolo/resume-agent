@@ -51,7 +51,7 @@ log_level: "DEBUG"
 
 ### LinkedIn Tool Settings (Optional)
 
-If you use `job_search` / `job_detail`, configure LinkedIn CDP settings.
+If you use `job_search`, configure LinkedIn CDP settings.
 
 ```yaml
 cdp:
@@ -62,7 +62,6 @@ cdp:
 
 Notes:
 - The tools require a logged-in LinkedIn browser session.
-- `job_detail` requires a full LinkedIn `job_url` input (not just a numeric `job_id`).
 
 ## Configuration Priority
 

@@ -99,11 +99,14 @@ class OrchestratorAgent(BaseAgent):
             )
 
             # Register with LLM agent
+            mutation_fields = getattr(agent_tool, "mutation_signature_fields", None)
             self.llm_agent.register_tool(
                 name=agent_tool.name,
                 description=agent_tool.description,
                 parameters=agent_tool.get_parameters(),
                 func=agent_tool.execute,
+                requires_approval=getattr(agent_tool, "requires_approval", None),
+                mutation_signature_fields=list(mutation_fields) if mutation_fields else None,
             )
 
             self._agent_tools.append(agent_tool)
@@ -145,10 +148,15 @@ class OrchestratorAgent(BaseAgent):
             prompt = self._build_prompt(task)
 
             # Run the LLM agent (which will use agent tools for delegation)
-            response = await self.llm_agent.run(
-                user_input=prompt,
-                max_steps=self.config.max_steps,
-            )
+            local_wire = Wire()
+            try:
+                response = await self.llm_agent.run(
+                    user_input=prompt,
+                    max_steps=self.config.max_steps,
+                    wire=local_wire,
+                )
+            finally:
+                local_wire.shutdown()
 
             return create_result(
                 task_id=task.task_id,
@@ -198,7 +206,8 @@ class OrchestratorAgent(BaseAgent):
         max_steps: Optional[int] = None,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[Any], None]] = None,
-        wire: Optional[Wire] = None,
+        *,
+        wire: Wire,
     ) -> str:
         """Run the orchestrator with user input.
 

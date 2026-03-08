@@ -4,11 +4,11 @@ from typing import Any, Dict, Optional
 
 from resume_agent.tools import (
     BashTool,
+    FileEditTool,
     FileListTool,
     FileReadTool,
     FileRenameTool,
     FileWriteTool,
-    JobDetailTool,
     JobMatcherTool,
     JobSearchTool,
     ResumeLinterTool,
@@ -42,6 +42,7 @@ def create_tools(workspace_dir: str, raw_config: Optional[Dict[str, Any]] = None
         "file_write": FileWriteTool(workspace_dir),
         "file_list": FileListTool(workspace_dir),
         "file_rename": FileRenameTool(workspace_dir),
+        "file_edit": FileEditTool(workspace_dir),
         "bash": BashTool(workspace_dir),
         "resume_parse": ResumeParserTool(workspace_dir),
         "resume_write": ResumeWriterTool(workspace_dir),
@@ -53,11 +54,6 @@ def create_tools(workspace_dir: str, raw_config: Optional[Dict[str, Any]] = None
             chrome_profile=chrome_profile,
             auto_launch=auto_launch,
             api_key=merged_config.get("api_key", ""),
-        ),
-        "job_detail": JobDetailTool(
-            cdp_port=cdp_port,
-            chrome_profile=chrome_profile,
-            auto_launch=auto_launch,
         ),
         "web_fetch": WebFetchTool(),
         "web_read": WebReadTool(),

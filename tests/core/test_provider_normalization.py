@@ -1,5 +1,6 @@
 """Provider normalization and streaming regression tests."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -162,6 +163,130 @@ def test_openai_stream_delta_keeps_tool_call_id_by_index():
     assert len(arg_deltas) == 2
     assert arg_deltas[0].function_call_id == "call_1"
     assert arg_deltas[1].function_call_id == "call_2"
+
+
+def test_openai_stream_delta_merges_dict_argument_snapshots_by_index():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    call_ids_by_index = {}
+    call_args_by_index = {}
+
+    chunk1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    tool_calls=[
+                        SimpleNamespace(
+                            index=0,
+                            id="call_1",
+                            function=SimpleNamespace(name="file_write", arguments={"path": "resume.html"}),
+                        )
+                    ],
+                ),
+                finish_reason=None,
+            )
+        ]
+    )
+    provider._iter_stream_deltas(chunk1, call_ids_by_index, call_args_by_index)
+
+    chunk2 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    tool_calls=[
+                        SimpleNamespace(
+                            index=0,
+                            id=None,
+                            function=SimpleNamespace(name=None, arguments={"content": "<html>ok</html>"}),
+                        )
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    deltas = provider._iter_stream_deltas(chunk2, call_ids_by_index, call_args_by_index)
+
+    arg_deltas = [d for d in deltas if d.function_call_delta]
+    assert len(arg_deltas) == 1
+    assert arg_deltas[0].function_call_id == "call_1"
+    assert '"path": "resume.html"' in arg_deltas[0].function_call_delta
+    assert '"content": "<html>ok</html>"' in arg_deltas[0].function_call_delta
+
+
+def test_openai_safe_parse_args_recovers_python_dict_style():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    raw = "{'path': 'resume.html', 'content': '<html>ok</html>'}"
+    parsed = provider._safe_parse_args(raw)
+    assert parsed == {"path": "resume.html", "content": "<html>ok</html>"}
+
+
+def test_openai_safe_parse_args_recovers_unescaped_newlines_in_content():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    raw = '{"path":"resume.html","content":"<h1>Title</h1>\n<div>line2</div>"}'
+    parsed = provider._safe_parse_args(raw)
+    assert parsed["path"] == "resume.html"
+    assert parsed["content"] == "<h1>Title</h1>\n<div>line2</div>"
+
+
+def test_openai_safe_parse_args_recovers_concatenated_json_snapshots():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    raw = '{"path":"resume.html"}{"path":"resume.html","content":"<html>ok</html>"}'
+    parsed = provider._safe_parse_args(raw)
+    assert parsed == {"path": "resume.html", "content": "<html>ok</html>"}
+
+
+def test_openai_safe_parse_args_recovers_double_encoded_json():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    inner = '{"path":"resume.html","content":"<html>ok</html>"}'
+    raw = json.dumps(inner)
+    parsed = provider._safe_parse_args(raw)
+    assert parsed == {"path": "resume.html", "content": "<html>ok</html>"}
+
+
+def test_openai_safe_parse_args_salvages_unescaped_html_quotes():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    raw = '{"path":"resume.html","content":"<html lang="en"><body><h1>Hello</h1></body></html>"}'
+    parsed = provider._safe_parse_args(raw)
+    assert parsed["path"] == "resume.html"
+    assert parsed["content"] == '<html lang="en"><body><h1>Hello</h1></body></html>'
+
+
+def test_openai_safe_parse_args_salvages_content_before_following_field():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    raw = '{"path":"resume.html","content":"<div class="hero">Hi</div>","encoding":"utf-8"}'
+    parsed = provider._safe_parse_args(raw)
+    assert parsed["path"] == "resume.html"
+    assert parsed["content"] == '<div class="hero">Hi</div>'
 
 
 def test_openai_kwargs_use_configured_temperature_by_default():
@@ -377,3 +502,160 @@ async def test_llm_stream_normalizes_cumulative_function_call_argument_deltas():
     assert len(response.function_calls) == 1
     assert response.function_calls[0].name == "file_write"
     assert response.function_calls[0].arguments == {"path": "out.md", "content": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_llm_stream_preserves_function_call_start_arguments_without_deltas():
+    class FakeProvider:
+        async def generate(self, messages, tools, config):
+            raise AssertionError("generate should not be called in this test")
+
+        async def generate_stream(self, messages, tools, config):
+            # Gemini-style streaming can include full args in function_call_start
+            # and omit function_call_delta chunks entirely.
+            yield StreamDelta(
+                function_call_start=FunctionCall(
+                    name="file_write",
+                    arguments={"path": "resume.html", "content": "<html>ok</html>"},
+                    id="call_1",
+                ),
+                function_call_id="call_1",
+                function_call_index=0,
+            )
+
+    agent = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="gemini",
+            model="gemini-2.5-flash",
+            api_base="",
+        )
+    )
+    agent.provider = FakeProvider()
+
+    response = await agent._call_llm_stream()
+
+    assert len(response.function_calls) == 1
+    assert response.function_calls[0].name == "file_write"
+    assert response.function_calls[0].arguments == {"path": "resume.html", "content": "<html>ok</html>"}
+
+
+def test_llm_parse_tool_argument_buffer_recovers_best_json_snapshot():
+    raw = '{"path":"resume.html"}{"path":"resume.html","content":"<html>ok</html>"}'
+    parsed = LLMAgent._parse_tool_argument_buffer(raw)
+    assert parsed == {"path": "resume.html", "content": "<html>ok</html>"}
+
+
+def test_llm_repairs_empty_tool_args_from_raw_response():
+    class FakeProvider:
+        async def generate(self, messages, tools, config):
+            raise AssertionError("generate should not be called in this test")
+
+        async def generate_stream(self, messages, tools, config):
+            raise AssertionError("generate_stream should not be called in this test")
+            yield  # pragma: no cover
+
+    agent = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="kimi",
+            model="kimi-k2",
+            api_base="https://api.moonshot.cn/v1",
+        )
+    )
+    agent.provider = FakeProvider()
+    # Borrow robust parser implementation used in production provider.
+    parser_provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    agent.provider._safe_parse_args = parser_provider._safe_parse_args
+
+    function_calls = [FunctionCall(name="file_write", arguments={}, id="c1")]
+    raw_response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    tool_calls=[
+                        SimpleNamespace(
+                            id="c1",
+                            function=SimpleNamespace(
+                                name="file_write",
+                                arguments='{"path":"resume.html","content":"<div class="hero">Hi</div>"}',
+                            ),
+                        )
+                    ]
+                )
+            )
+        ]
+    )
+
+    repaired = agent._repair_function_call_args_from_raw_response(function_calls, raw_response)
+    assert repaired[0].arguments["path"] == "resume.html"
+    assert repaired[0].arguments["content"] == '<div class="hero">Hi</div>'
+
+
+def test_llm_repairs_truncated_tool_args_from_raw_response():
+    class FakeProvider:
+        async def generate(self, messages, tools, config):
+            raise AssertionError("generate should not be called in this test")
+
+        async def generate_stream(self, messages, tools, config):
+            raise AssertionError("generate_stream should not be called in this test")
+            yield  # pragma: no cover
+
+    agent = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="kimi",
+            model="kimi-k2",
+            api_base="https://api.moonshot.cn/v1",
+        )
+    )
+    agent.provider = FakeProvider()
+    parser_provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    agent.provider._safe_parse_args = parser_provider._safe_parse_args
+    # Register schema so required keys are known.
+    agent.register_tool(
+        name="file_write",
+        description="Write file",
+        parameters={
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        func=lambda path, content: "ok",
+    )
+
+    function_calls = [
+        FunctionCall(
+            name="file_write",
+            arguments={"path": "resume.html", "content": '<!DOCTYPE html><html lang="en">\\'},
+            id="c1",
+        )
+    ]
+    raw_response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    tool_calls=[
+                        SimpleNamespace(
+                            id="c1",
+                            function=SimpleNamespace(
+                                name="file_write",
+                                arguments='{"path":"resume.html","content":"<!DOCTYPE html><html lang=\\"en\\"><body>ok</body></html>"}',
+                            ),
+                        )
+                    ]
+                )
+            )
+        ]
+    )
+
+    repaired = agent._repair_function_call_args_from_raw_response(function_calls, raw_response)
+    assert repaired[0].arguments["path"] == "resume.html"
+    assert repaired[0].arguments["content"] == '<!DOCTYPE html><html lang="en"><body>ok</body></html>'

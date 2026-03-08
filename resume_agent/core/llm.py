@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
@@ -252,27 +254,8 @@ class LLMAgent:
     """Provider-agnostic LLM agent with tool calling."""
 
     _COST_PER_MILLION_TOKENS = 0.08
-    _READ_ONLY_TOOLS = {
-        "file_read",
-        "file_list",
-        "resume_parse",
-        "web_fetch",
-        "web_read",
-        "lint_resume",
-        "job_match",
-        "resume_validate",
-    }
-    # Loop-guard thresholds (tune as needed)
-    _MAX_TOOL_ONLY_STEPS = 8
-    _MAX_REPEAT_READ_ONLY = 2
-    _MAX_REPEAT_DEFAULT = 1
+    # Backward-compatible fallback when a tool is registered without capabilities.
     _WRITE_TOOLS = {"file_write", "resume_write", "file_rename"}
-    _JOB_SEARCH_TOOL = "job_search"
-    _JOB_DETAIL_TOOL = "job_detail"
-    _JOB_DETAIL_CONFLICT_REASON = (
-        "Rejected by policy: job_detail cannot run in the same step as job_search. "
-        "Use job_search for discovery, then call job_detail in a later step with an explicit LinkedIn job_url."
-    )
 
     def __init__(
         self,
@@ -286,6 +269,12 @@ class LLMAgent:
         self.system_prompt = system_prompt
         self.agent_id = agent_id
         self.verbose = verbose
+        self._debug_tool_args = self.verbose or os.getenv("RESUME_AGENT_DEBUG_TOOL_ARGS", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
         # Initialize provider
         self.provider = create_provider(
@@ -298,6 +287,7 @@ class LLMAgent:
 
         # Tools registry: name -> (function, schema)
         self._tools: Dict[str, tuple] = {}
+        self._tool_policies: Dict[str, Dict[str, Any]] = {}
 
         # History manager with automatic pruning
         self.history_manager = HistoryManager(max_messages=50, max_tokens=100000)
@@ -314,10 +304,10 @@ class LLMAgent:
 
         # Retry configuration for LLM calls (defaults match RetryConfig dataclass)
         self._retry_config = RetryConfig()
-        # Pending tool calls that require user approval
-        self._pending_tool_calls: List[FunctionCall] = []
         # Auto-approve tool calls that require approval
         self._auto_approve_tools = False
+        # Session-scoped action-level approvals (tool action keys, e.g. "file_write").
+        self._auto_approve_actions: set[str] = set()
 
         # Pluggable hooks for API integration
         self._approval_handler: Optional[Callable] = None  # async (function_calls) → (approved_calls, rejection_reason)
@@ -330,10 +320,19 @@ class LLMAgent:
         description: str,
         parameters: Dict[str, Any],
         func: Callable,
+        *,
+        requires_approval: Optional[bool] = None,
+        mutation_signature_fields: Optional[List[str]] = None,
     ):
         """Register a tool that the agent can use."""
         schema = ToolSchema(name=name, description=description, parameters=parameters)
         self._tools[name] = (func, schema)
+        self._tool_policies[name] = {
+            "requires_approval": requires_approval,
+            "mutation_signature_fields": tuple(mutation_signature_fields)
+            if mutation_signature_fields is not None
+            else None,
+        }
 
     def _get_tools(self) -> Optional[List[ToolSchema]]:
         if not self._tools:
@@ -346,209 +345,17 @@ class LLMAgent:
         max_steps: int = 20,
         stream: bool = False,
         on_stream_delta: Optional[Callable[[StreamDelta], None]] = None,
-        wire: Optional[Wire] = None,
+        *,
+        wire: Wire,
     ) -> str:
-        """Run the agent with user input, handling tool calls automatically.
-
-        When ``wire`` is provided, events are emitted to the Wire and approval
-        happens inline (the loop never exits mid-turn).  When ``wire is None``,
-        behavior is unchanged from the legacy path.
-        """
-        if wire is not None:
-            return await self._run_wire(
-                user_input,
-                max_steps=max_steps,
-                stream=stream,
-                on_stream_delta=on_stream_delta,
-                wire=wire,
-            )
-
-        # ── Legacy path (wire=None) ──────────────────────────────────
-        # If we already have pending tool calls, ask for approval first
-        if self._pending_tool_calls:
-            return "Pending tool call(s) require approval. Use /approve or /reject."
-
-        # Add user message to history
-        self.history_manager.add_message(Message.user(user_input))
-
-        # Ensure history ordering is valid before calling the model
-        self.history_manager._ensure_valid_sequence()
-
-        loop_state: Dict[str, Any] = {
-            "last_call": None,
-            "same_call_repeats": 0,
-            "tool_only_steps": 0,
-            "last_result": None,
-        }
-
-        for step in range(1, max_steps + 1):
-            # Check for interrupt before each step
-            if self._interrupt_checker and await self._interrupt_checker():
-                raise asyncio.CancelledError("Run interrupted")
-
-            self.observer.log_step_start(
-                step,
-                user_input if step == 1 else None,
-                agent_id=self.agent_id,
-            )
-            start_time = time.time()
-
-            # 1. Call LLM
-            try:
-                response = await self._call_llm_with_resilience(
-                    stream=stream,
-                    on_stream_delta=on_stream_delta,
-                    wire=None,
-                )
-            except asyncio.CancelledError:
-                # Allow user-initiated interruption to bubble up
-                raise
-            except Exception as e:
-                self.observer.log_error(
-                    error_type="llm_request",
-                    message=str(e),
-                    context={"model": self.config.model, "step": step},
-                    agent_id=self.agent_id,
-                )
-                return f"Error: LLM request failed: {e}"
-
-            # 2. Log LLM metrics
-            self._log_llm_metrics(step, start_time, response.usage)
-
-            # 3. Parse response
-            function_calls, text_parts = self._parse_response(response)
-            response_text = " ".join(text_parts).strip()
-
-            # 4. Log response summary
-            tool_calls_dump = []
-            if function_calls:
-                for fc in function_calls:
-                    tool_calls_dump.append(
-                        {
-                            "name": fc.name,
-                            "args": dict(fc.arguments) if fc.arguments else {},
-                        }
-                    )
-            self.observer.log_llm_response(
-                step=step,
-                text=response_text or "(no text)",
-                tool_calls=tool_calls_dump,
-                agent_id=self.agent_id,
-            )
-
-            # 5. Add model response to history
-            assistant_parts: List[MessagePart] = []
-            if response_text:
-                assistant_parts.append(MessagePart.from_text(response_text))
-            for fc in function_calls:
-                assistant_parts.append(MessagePart.from_function_call(fc))
-            if assistant_parts:
-                self.history_manager.add_message(
-                    Message(role="assistant", parts=assistant_parts),
-                    allow_incomplete=bool(function_calls),
-                )
-
-            # 6. If no tool calls → done
-            if not function_calls:
-                if self.session_manager:
-                    await self._auto_save()
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                if self.verbose:
-                    self.observer.print_session_summary()
-                    self.cache.print_stats()
-                return response_text
-
-            # 7. Apply tool policy filters before execution / approval flow.
-            function_calls, policy_responses = self._apply_tool_call_policy(function_calls)
-
-            # If all calls were rejected by policy, record rejections and continue.
-            if not function_calls and policy_responses:
-                tool_message = Message(
-                    role="tool",
-                    parts=[MessagePart.from_function_response(fr) for fr in policy_responses],
-                )
-                self.history_manager.add_message(tool_message)
-                if self.session_manager:
-                    await self._auto_save()
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                continue
-
-            # 8. Pause before executing any write tools (approval required)
-            if self._requires_tool_approval(function_calls) and not self._auto_approve_tools:
-                if self._approval_handler:
-                    # API mode: delegate to approval handler
-                    approved, rejection = await self._approval_handler(function_calls)
-                    if not approved:
-                        # Write rejection result into history so LLM knows it was rejected
-                        tool_message = Message(
-                            role="tool",
-                            parts=[
-                                MessagePart.from_function_response(
-                                    FunctionResponse(
-                                        name=fc.name,
-                                        response={"result": f"Rejected: {rejection}"},
-                                        call_id=fc.id,
-                                    )
-                                )
-                                for fc in function_calls
-                            ],
-                        )
-                        self.history_manager.add_message(tool_message)
-                        continue
-                    function_calls = approved
-                else:
-                    # CLI mode: pause and wait for /approve
-                    self._pending_tool_calls = list(function_calls)
-                    step_duration = (time.time() - start_time) * 1000
-                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                    return "Tool call(s) require approval before execution. Use /approve or /reject."
-
-            # 9. Loop guard to prevent runaway tool-only loops
-            guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
-            if guard_reason:
-                step_duration = (time.time() - start_time) * 1000
-                self.observer.log_error(
-                    error_type="loop_guard",
-                    message=guard_reason,
-                    context={
-                        "last_call": loop_state.get("last_call"),
-                        "tool_only_steps": loop_state.get("tool_only_steps"),
-                        "same_call_repeats": loop_state.get("same_call_repeats"),
-                    },
-                    agent_id=self.agent_id,
-                )
-                self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                return guard_reason
-
-            # 10. Execute tools in parallel
-            executed_responses = await asyncio.gather(
-                *[self._execute_tool(fc) for fc in function_calls],
-                return_exceptions=False,
-            )
-            function_responses = [*policy_responses, *executed_responses]
-
-            # 11. Capture last tool result for fallback
-            if len(function_calls) == 1 and executed_responses:
-                fr = executed_responses[0]
-                if fr and fr.response:
-                    loop_state["last_result"] = fr.response.get("result")
-
-            # 12. Update history + auto-save
-            tool_message = Message(
-                role="tool",
-                parts=[MessagePart.from_function_response(fr) for fr in function_responses],
-            )
-            self.history_manager.add_message(tool_message)
-            if self.session_manager:
-                await self._auto_save()
-
-            # 13. Log step end
-            step_duration = (time.time() - start_time) * 1000
-            self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-
-        return f"Max steps ({max_steps}) reached."
+        """Run the agent with user input using the wire-mode event loop."""
+        return await self._run_wire(
+            user_input,
+            max_steps=max_steps,
+            stream=stream,
+            on_stream_delta=on_stream_delta,
+            wire=wire,
+        )
 
     # --- Wire-mode agent loop ---
 
@@ -561,8 +368,16 @@ class LLMAgent:
         on_stream_delta: Optional[Callable[[StreamDelta], None]] = None,
         wire: Wire,
     ) -> str:
-        """Agent loop with Wire event bus — approval happens inline."""
-        from .wire.approval import Approval
+        """Agent loop with Wire event bus — approval happens inline.
+
+        Control-flow contract (high level):
+        1) LLM responds with text and/or tool calls.
+        2) Optional approval gate runs inside the same loop iteration.
+        3) Approved tool calls execute, emit wire events, then write tool results to history.
+        4) Loop continues until model returns no tool calls, a fatal condition triggers,
+           or max_steps is reached.
+        """
+        from .wire.approval import Approval, ApprovalState
         from .wire.types import (
             StepBegin,
             ToolCallEvent,
@@ -574,17 +389,18 @@ class LLMAgent:
         self.history_manager.add_message(Message.user(user_input))
         self.history_manager._ensure_valid_sequence()
 
-        approval = Approval(yolo=self._auto_approve_tools)
+        def _persist_approval_state() -> None:
+            self._auto_approve_actions = set(approval_state.auto_approve_actions)
+
+        approval_state = ApprovalState(
+            yolo=self._auto_approve_tools,
+            auto_approve_actions=self._auto_approve_actions,
+            on_change=_persist_approval_state,
+        )
+        approval = Approval(state=approval_state)
         pipe_task: Optional[asyncio.Task] = None
 
         wire.soul_side.send(TurnBegin(user_input=user_input))
-
-        loop_state: Dict[str, Any] = {
-            "last_call": None,
-            "same_call_repeats": 0,
-            "tool_only_steps": 0,
-            "last_result": None,
-        }
 
         response_text = ""
         try:
@@ -617,9 +433,11 @@ class LLMAgent:
 
                 # 2. Log LLM metrics
                 self._log_llm_metrics(step, start_time, response.usage)
+                self._log_raw_response_debug(step, response)
 
                 # 3. Parse response
                 function_calls, text_parts = self._parse_response(response)
+                function_calls = self._repair_function_call_args_from_raw_response(function_calls, response.raw)
                 response_text = " ".join(text_parts).strip()
 
                 # 4. Log response summary
@@ -633,6 +451,8 @@ class LLMAgent:
                     tool_calls=tool_calls_dump,
                     agent_id=self.agent_id,
                 )
+                if function_calls:
+                    self._log_empty_write_args_debug(function_calls, step, response.raw)
 
                 # 5. Add model response to history
                 assistant_parts: List[MessagePart] = []
@@ -654,71 +474,91 @@ class LLMAgent:
                     self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                     break
 
-                # 7. Apply tool policy filters
-                function_calls, policy_responses = self._apply_tool_call_policy(function_calls)
-
-                if not function_calls and policy_responses:
-                    tool_message = Message(
-                        role="tool",
-                        parts=[MessagePart.from_function_response(fr) for fr in policy_responses],
-                    )
-                    self.history_manager.add_message(tool_message)
-                    if self.session_manager:
-                        await self._auto_save()
-                    step_duration = (time.time() - start_time) * 1000
-                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                    continue
-
-                # 8. Inline approval (replaces pause-and-return)
+                # 7. Inline approval (replaces pause-and-return)
                 if self._requires_tool_approval(function_calls) and not approval.is_yolo():
-                    # Start pipe task if not already running
-                    if pipe_task is None or pipe_task.done():
-                        pipe_task = asyncio.create_task(self._pipe_approval_to_wire(approval, wire))
+                    approved_calls: Optional[List[FunctionCall]] = function_calls
+                    rejection_reason = ""
 
-                    description = ", ".join(
-                        f"{fc.name}({', '.join(f'{k}={v!r}' for k, v in (fc.arguments or {}).items())})"
-                        for fc in function_calls
-                    )
-                    approved = await approval.request("write_tool", function_calls, description)
-                    if not approved:
-                        # Inject rejection into history (same as legacy path)
-                        tool_message = Message(
-                            role="tool",
-                            parts=[
-                                MessagePart.from_function_response(
-                                    FunctionResponse(
-                                        name=fc.name,
-                                        response={"result": "Rejected: user declined approval"},
-                                        call_id=fc.id,
-                                    )
-                                )
-                                for fc in function_calls
-                            ],
-                        )
-                        self.history_manager.add_message(tool_message)
+                    if self._approval_handler is not None:
+                        handler_approved_calls, rejection_reason = await self._approval_handler(function_calls)
+                        approved_calls = []
+                        rejected_calls: List[FunctionCall] = []
+                        approved_ids = {
+                            fc.id for fc in (handler_approved_calls or []) if getattr(fc, "id", None) is not None
+                        }
+                        rejection_reason = rejection_reason or "user declined approval"
+
+                        for fc in function_calls:
+                            if not self._tool_requires_approval(fc.name):
+                                approved_calls.append(fc)
+                                continue
+
+                            is_approved = False
+                            if fc.id is not None:
+                                is_approved = fc.id in approved_ids
+                            elif handler_approved_calls:
+                                is_approved = fc in handler_approved_calls
+
+                            if is_approved:
+                                approved_calls.append(fc)
+                            else:
+                                rejected_calls.append(fc)
+
+                        if rejected_calls:
+                            rejection_message = self._build_rejection_tool_message(rejected_calls, rejection_reason)
+                            self.history_manager.add_message(rejection_message)
+                    else:
+                        if not self._wire_has_ui_subscribers(wire):
+                            # No UI consumer means an approval request can never be answered.
+                            # Fail fast here instead of hanging the turn indefinitely.
+                            response_text = (
+                                "Error: Tool call(s) require approval, but no Wire UI consumer or "
+                                "approval handler is available."
+                            )
+                            self.observer.log_error(
+                                error_type="approval_unavailable",
+                                message=response_text,
+                                context={"step": step},
+                                agent_id=self.agent_id,
+                            )
+                            step_duration = (time.time() - start_time) * 1000
+                            self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                            break
+
+                        # Start pipe task if not already running
+                        if pipe_task is None or pipe_task.done():
+                            # Background bridge: Approval.fetch_request() -> Wire ApprovalRequest.
+                            # The main loop awaits `approval.request(...)` below, while this task
+                            # forwards the request and resolves it from UI/user input.
+                            pipe_task = asyncio.create_task(self._pipe_approval_to_wire(approval, wire))
+
+                        approved_calls = []
+                        rejected_calls: List[FunctionCall] = []
+                        rejection_reason = "user declined approval"
+                        for fc in function_calls:
+                            if not self._tool_requires_approval(fc.name):
+                                approved_calls.append(fc)
+                                continue
+
+                            action, description = await self._build_approval_for_call(fc)
+                            approved = await approval.request(action, [fc], description)
+                            if approved:
+                                approved_calls.append(fc)
+                            else:
+                                rejected_calls.append(fc)
+
+                        if rejected_calls:
+                            rejection_message = self._build_rejection_tool_message(rejected_calls, rejection_reason)
+                            self.history_manager.add_message(rejection_message)
+
+                    if not approved_calls:
                         step_duration = (time.time() - start_time) * 1000
                         self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                         continue
 
-                # 9. Loop guard
-                guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
-                if guard_reason:
-                    step_duration = (time.time() - start_time) * 1000
-                    self.observer.log_error(
-                        error_type="loop_guard",
-                        message=guard_reason,
-                        context={
-                            "last_call": loop_state.get("last_call"),
-                            "tool_only_steps": loop_state.get("tool_only_steps"),
-                            "same_call_repeats": loop_state.get("same_call_repeats"),
-                        },
-                        agent_id=self.agent_id,
-                    )
-                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                    response_text = guard_reason
-                    break
+                    function_calls = approved_calls
 
-                # 10. Emit ToolCallEvents + execute tools
+                # 8. Emit ToolCallEvents + execute tools
                 for fc in function_calls:
                     wire.soul_side.send(
                         ToolCallEvent(
@@ -728,13 +568,16 @@ class LLMAgent:
                         )
                     )
 
+                # Execute calls from one model turn concurrently.
+                # This assumes calls in the same batch are independent; if a provider emits
+                # dependency-ordered calls in one response, that ordering is not preserved here.
                 executed_responses = await asyncio.gather(
                     *[self._execute_tool(fc) for fc in function_calls],
                     return_exceptions=False,
                 )
-                function_responses = [*policy_responses, *executed_responses]
+                function_responses = list(executed_responses)
 
-                # 11. Emit ToolResultEvents
+                # 9. Emit ToolResultEvents
                 for fc, fr in zip(function_calls, executed_responses):
                     result_str = fr.response.get("result", "") if fr.response else ""
                     wire.soul_side.send(
@@ -746,13 +589,7 @@ class LLMAgent:
                         )
                     )
 
-                # 12. Capture last tool result for fallback
-                if len(function_calls) == 1 and executed_responses:
-                    fr = executed_responses[0]
-                    if fr and fr.response:
-                        loop_state["last_result"] = fr.response.get("result")
-
-                # 13. Update history + auto-save
+                # 10. Update history + auto-save
                 tool_message = Message(
                     role="tool",
                     parts=[MessagePart.from_function_response(fr) for fr in function_responses],
@@ -760,6 +597,16 @@ class LLMAgent:
                 self.history_manager.add_message(tool_message)
                 if self.session_manager:
                     await self._auto_save()
+
+                # Some tool-call errors are considered unrecoverable for this turn (for example:
+                # missing required arguments). We still persist the tool message above so the
+                # model/user can inspect the failure in history/session logs.
+                fatal_tool_error = self._fatal_tool_error_message(function_calls, executed_responses)
+                if fatal_tool_error:
+                    response_text = fatal_tool_error
+                    step_duration = (time.time() - start_time) * 1000
+                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
+                    break
 
                 step_duration = (time.time() - start_time) * 1000
                 self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
@@ -791,19 +638,110 @@ class LLMAgent:
                 req = await approval.fetch_request()
                 wire_req = ApprovalRequest(
                     id=req.id,
+                    action=req.action,
                     tool_calls=req.tool_calls,
                     description=req.description,
                 )
                 wire.soul_side.send(wire_req)
                 resp = await wire_req.wait()
-                if resp == "approve_all":
-                    # Persist beyond the current turn to match UI wording.
-                    self.set_auto_approve_tools(True)
                 approval.resolve_request(req.id, resp)
         except asyncio.CancelledError:
             pass
         except Exception:
             pass
+
+    async def _build_approval_for_call(self, function_call: FunctionCall) -> tuple[str, str]:
+        """Build action + description for a single function call approval."""
+        args = dict(function_call.arguments) if function_call.arguments else {}
+        default_action = function_call.name or "tool_call"
+
+        # Baseline fallback description.
+        arg_pairs: List[str] = []
+        for k, v in args.items():
+            if isinstance(v, str):
+                preview = v if len(v) <= 80 else f"{v[:80]}…"
+                arg_pairs.append(f"{k}={preview!r}")
+            else:
+                arg_pairs.append(f"{k}={v!r}")
+        arg_preview = ", ".join(arg_pairs)
+        fallback_description = f"{function_call.name}({arg_preview})"
+        fallback_action = default_action
+
+        # Prefer tool-provided action/description when available.
+        tool_entry = self._tools.get(function_call.name)
+        if tool_entry:
+            func, _schema = tool_entry
+            tool_instance = getattr(func, "__self__", None)
+            if tool_instance is not None:
+                request_builder = getattr(tool_instance, "build_approval_request", None)
+                if callable(request_builder):
+                    try:
+                        spec = request_builder(**args)
+                        if asyncio.iscoroutine(spec):
+                            spec = await spec
+                        action = getattr(spec, "action", None)
+                        description = getattr(spec, "description", None)
+                        if isinstance(action, str) and action.strip():
+                            fallback_action = action.strip()
+                        if isinstance(description, str) and description.strip():
+                            return fallback_action, description
+                    except Exception as e:
+                        self._log_tool_arg_debug(
+                            "approval_request_build_failed",
+                            "Tool-provided approval request builder failed.",
+                            {"tool": function_call.name, "error": str(e)},
+                        )
+
+        preview = await self._build_tool_approval_preview(function_call.name, args)
+        if preview:
+            fallback_description = f"{fallback_description}\n\n{preview}"
+        return fallback_action, fallback_description
+
+    async def _build_tool_approval_preview(self, tool_name: str, args: Dict[str, Any]) -> str:
+        """Ask the tool instance for approval preview text, if it provides a hook."""
+        tool_entry = self._tools.get(tool_name)
+        if not tool_entry:
+            return ""
+
+        func, _schema = tool_entry
+        tool_instance = getattr(func, "__self__", None)
+        if tool_instance is None:
+            return ""
+
+        preview_builder = getattr(tool_instance, "build_approval_context", None)
+        if not callable(preview_builder):
+            return ""
+
+        try:
+            preview = preview_builder(**args)
+            if asyncio.iscoroutine(preview):
+                preview = await preview
+            return preview if isinstance(preview, str) else ""
+        except Exception as e:
+            # Approval preview is best-effort and must never block tool execution.
+            self._log_tool_arg_debug(
+                "approval_preview_build_failed",
+                "Tool-provided approval preview builder failed.",
+                {"tool": tool_name, "error": str(e)},
+            )
+            return ""
+
+    @staticmethod
+    def _build_rejection_tool_message(function_calls: List[FunctionCall], reason: str) -> Message:
+        """Build a synthetic tool message for rejected tool calls."""
+        return Message(
+            role="tool",
+            parts=[
+                MessagePart.from_function_response(
+                    FunctionResponse(
+                        name=fc.name,
+                        response={"result": f"Rejected: {reason}"},
+                        call_id=fc.id,
+                    )
+                )
+                for fc in function_calls
+            ],
+        )
 
     # --- Extracted helper methods ---
 
@@ -812,11 +750,17 @@ class LLMAgent:
 
         async def make_request():
             messages = list(self.history_manager.get_history())
-            return await self.provider.generate(
+            response = await self.provider.generate(
                 messages=messages,
                 tools=self._get_tools(),
                 config=self._build_generation_config(),
             )
+            self._raise_if_retryable_malformed_function_call(response)
+            # Retry empty responses in the provider-call layer so the main loop
+            # only handles actionable LLM outputs.
+            if not response.text and not response.function_calls:
+                raise TransientError("Empty LLM response: no text or tool calls")
+            return response
 
         return await retry_with_backoff(make_request, self._retry_config)
 
@@ -927,7 +871,7 @@ class LLMAgent:
                 if call_key not in function_calls_map:
                     function_calls_map[call_key] = FunctionCall(
                         name=call.name,
-                        arguments={},
+                        arguments=dict(call.arguments) if call.arguments else {},
                         id=call_id,
                         thought_signature=call.thought_signature,
                     )
@@ -938,11 +882,25 @@ class LLMAgent:
                         existing_call.name = call.name
                     if not existing_call.id:
                         existing_call.id = call_id
+                    if not existing_call.arguments and call.arguments:
+                        existing_call.arguments = dict(call.arguments)
                     if existing_call.thought_signature is None and call.thought_signature is not None:
                         existing_call.thought_signature = call.thought_signature
 
                 arg_buffers.setdefault(call_key, "")
                 last_call_key = call_key
+                self._log_tool_arg_debug(
+                    "stream_function_call_start",
+                    "Observed function_call_start in stream.",
+                    {
+                        "call_key": call_key,
+                        "call_id": call_id,
+                        "function_name": call.name,
+                        "start_args_summary": self._summarize_argument_shapes(
+                            dict(call.arguments) if call.arguments else {}
+                        ),
+                    },
+                )
 
             if delta.function_call_delta:
                 if delta.function_call_id:
@@ -964,12 +922,23 @@ class LLMAgent:
                     function_calls_map[call_key] = FunctionCall(name="", arguments={}, id=generated_id)
                     function_call_order.append(call_key)
 
-                # Normalize argument chunks because some providers emit cumulative
-                # snapshots instead of incremental deltas.
+                # Merge argument chunks conservatively: support cumulative
+                # snapshots, partial dict snapshots, and plain incremental text.
                 prior_args = arg_buffers.get(call_key, "")
-                normalized_args_delta = self._normalize_stream_text_delta(prior_args, delta.function_call_delta)
-                if normalized_args_delta:
-                    arg_buffers[call_key] = prior_args + normalized_args_delta
+                merged_args = self._merge_stream_argument_buffer(prior_args, delta.function_call_delta)
+                arg_buffers[call_key] = merged_args
+                self._log_tool_arg_debug(
+                    "stream_function_call_delta",
+                    "Merged function_call_delta into argument buffer.",
+                    {
+                        "call_key": call_key,
+                        "delta_len": len(delta.function_call_delta),
+                        "delta_sha": self._fingerprint_text(delta.function_call_delta),
+                        "buffer_len_before": len(prior_args),
+                        "buffer_len_after": len(merged_args),
+                        "buffer_sha_after": self._fingerprint_text(merged_args),
+                    },
+                )
                 last_call_key = call_key
 
         # finalize function call arguments
@@ -978,12 +947,32 @@ class LLMAgent:
             call = function_calls_map[call_key]
             buf = arg_buffers.get(call_key, "")
             if buf:
-                try:
-                    import json
-
-                    call.arguments = json.loads(buf)
-                except Exception:
-                    call.arguments = {}
+                parsed_args = self._parse_tool_argument_buffer(buf)
+                if parsed_args is not None:
+                    call.arguments = parsed_args
+                    self._log_tool_arg_debug(
+                        "stream_function_call_args_parsed",
+                        "Parsed argument buffer into structured tool args.",
+                        {
+                            "call_key": call_key,
+                            "function_name": call.name,
+                            "buffer_len": len(buf),
+                            "buffer_sha": self._fingerprint_text(buf),
+                            "args_summary": self._summarize_argument_shapes(parsed_args),
+                        },
+                    )
+                else:
+                    self._log_tool_arg_debug(
+                        "stream_function_call_args_parse_failed",
+                        "Failed to parse argument buffer; keeping existing call.arguments.",
+                        {
+                            "call_key": call_key,
+                            "function_name": call.name,
+                            "buffer_len": len(buf),
+                            "buffer_sha": self._fingerprint_text(buf),
+                            "existing_args_summary": self._summarize_argument_shapes(call.arguments or {}),
+                        },
+                    )
             function_calls.append(call)
 
         return LLMResponse(
@@ -1014,12 +1003,319 @@ class LLMAgent:
                 return incoming_text[size:]
         return incoming_text
 
+    @staticmethod
+    def _merge_stream_argument_buffer(accumulated_text: str, incoming_text: str) -> str:
+        """Merge streamed argument chunks while preserving parseability."""
+        if not incoming_text:
+            return accumulated_text
+        if not accumulated_text:
+            return incoming_text
+
+        # Cumulative snapshots from some providers.
+        if incoming_text.startswith(accumulated_text):
+            return incoming_text
+        # Repeated stale snapshots.
+        if accumulated_text.startswith(incoming_text):
+            return accumulated_text
+
+        # If both sides parse as dict and incoming has at least the same keys,
+        # treat incoming as a fresh snapshot replacement.
+        prior_dict = LLMAgent._parse_tool_argument_buffer(accumulated_text)
+        incoming_dict = LLMAgent._parse_tool_argument_buffer(incoming_text)
+        if isinstance(prior_dict, dict) and isinstance(incoming_dict, dict):
+            if set(incoming_dict.keys()) >= set(prior_dict.keys()):
+                return incoming_text
+
+        # Best-effort overlap merge for true incremental chunks.
+        overlap_max = min(len(accumulated_text), len(incoming_text))
+        for size in range(overlap_max, 0, -1):
+            if accumulated_text.endswith(incoming_text[:size]):
+                return accumulated_text + incoming_text[size:]
+        return accumulated_text + incoming_text
+
+    @staticmethod
+    def _parse_tool_argument_buffer(raw: str) -> Optional[Dict[str, Any]]:
+        """Parse streamed tool arguments into a dictionary when possible."""
+        if not raw:
+            return {}
+
+        try:
+            import json
+
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        # Recover from duplicated/concatenated JSON snapshots by scanning for
+        # the "best" parseable dict object inside the buffer.
+        try:
+            import json
+
+            decoder = json.JSONDecoder()
+            best: Optional[Dict[str, Any]] = None
+            best_score = -1
+            for idx, ch in enumerate(raw):
+                if ch != "{":
+                    continue
+                try:
+                    candidate, _end = decoder.raw_decode(raw[idx:])
+                except Exception:
+                    continue
+                if not isinstance(candidate, dict):
+                    continue
+                score = len(candidate)
+                if "path" in candidate:
+                    score += 100
+                if "content" in candidate:
+                    score += 200
+                if score > best_score:
+                    best = candidate
+                    best_score = score
+            if best is not None:
+                return best
+        except Exception:
+            pass
+
+        # Some OpenAI-compatible providers may emit Python-style dict strings
+        # (`{'path': 'x'}`) in stream deltas.
+        try:
+            import ast
+
+            parsed = ast.literal_eval(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _summarize_argument_shapes(args: Dict[str, Any]) -> Dict[str, str]:
+        """Return a non-sensitive summary of argument value shapes."""
+        summary: Dict[str, str] = {}
+        for key, value in args.items():
+            if isinstance(value, str):
+                summary[key] = f"str(len={len(value)})"
+            elif isinstance(value, dict):
+                summary[key] = f"dict(len={len(value)})"
+            elif isinstance(value, list):
+                summary[key] = f"list(len={len(value)})"
+            elif value is None:
+                summary[key] = "none"
+            else:
+                summary[key] = type(value).__name__
+        return summary
+
+    @staticmethod
+    def _fingerprint_text(text: str) -> str:
+        """Stable short fingerprint for debug correlation without full payload."""
+        if not text:
+            return "0"
+        return hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:12]
+
+    def _log_tool_arg_debug(self, debug_type: str, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Emit debug events for tool-argument stream reconstruction."""
+        if not self._debug_tool_args:
+            return
+        self.observer.log_debug(
+            debug_type=debug_type,
+            message=message,
+            context=context or {},
+            agent_id=self.agent_id,
+        )
+
+    def _log_raw_response_debug(self, step: int, response: LLMResponse) -> None:
+        """Emit a structured raw-response snapshot before response parsing."""
+        if not self._debug_tool_args:
+            return
+
+        raw = response.raw
+        normalized_text = response.text or ""
+        normalized_calls = response.function_calls or []
+
+        if raw is None:
+            self._log_tool_arg_debug(
+                "llm_raw_response_missing",
+                "Provider response.raw is empty before parse.",
+                {
+                    "step": step,
+                    "provider": self.config.provider,
+                    "model": self.config.model,
+                    "normalized_text_len": len(normalized_text),
+                    "normalized_tool_calls": len(normalized_calls),
+                },
+            )
+            return
+
+        raw_summary = self._summarize_raw_response(raw)
+        preview, preview_total_len, preview_truncated = self._build_raw_response_preview(raw)
+        self._log_tool_arg_debug(
+            "llm_raw_response_summary",
+            "Captured provider raw response summary before parse.",
+            {
+                "step": step,
+                "provider": self.config.provider,
+                "model": self.config.model,
+                "raw_type": type(raw).__name__,
+                "normalized_text_len": len(normalized_text),
+                "normalized_tool_calls": len(normalized_calls),
+                "raw_summary": raw_summary,
+                "raw_preview_len": preview_total_len,
+                "raw_preview_truncated": preview_truncated,
+                "raw_preview": preview,
+            },
+        )
+
+    @staticmethod
+    def _summarize_raw_response(raw_response: Any) -> Dict[str, Any]:
+        """Summarize provider raw response shape in a provider-agnostic way."""
+        summary: Dict[str, Any] = {"raw_type": type(raw_response).__name__}
+
+        # Gemini-like shape
+        if hasattr(raw_response, "candidates"):
+            candidates = getattr(raw_response, "candidates", None) or []
+            summary["shape"] = "gemini_like"
+            summary["candidates_count"] = len(candidates)
+            if candidates:
+                candidate0 = candidates[0]
+                summary["candidate0_finish_reason"] = str(getattr(candidate0, "finish_reason", None))
+                content = getattr(candidate0, "content", None)
+                parts = getattr(content, "parts", None) or []
+                summary["candidate0_parts_count"] = len(parts)
+                parts_summary: List[Dict[str, Any]] = []
+                for idx, part in enumerate(parts[:6]):
+                    entry: Dict[str, Any] = {"index": idx}
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str):
+                        entry["text_len"] = len(text)
+                    thought = getattr(part, "thought", None)
+                    if thought is not None:
+                        entry["thought"] = bool(thought)
+                    function_call = getattr(part, "function_call", None)
+                    if function_call is not None:
+                        entry["function_name"] = getattr(function_call, "name", None)
+                        args = getattr(function_call, "args", None)
+                        entry["function_args_type"] = type(args).__name__ if args is not None else "none"
+                        try:
+                            if isinstance(args, dict):
+                                entry["function_arg_keys"] = sorted(args.keys())
+                            elif args is not None:
+                                entry["function_args_len"] = len(str(args))
+                        except Exception:
+                            pass
+                    parts_summary.append(entry)
+                if parts_summary:
+                    summary["candidate0_parts"] = parts_summary
+            return summary
+
+        # OpenAI-compatible shape
+        if hasattr(raw_response, "choices"):
+            choices = getattr(raw_response, "choices", None) or []
+            summary["shape"] = "openai_like"
+            summary["choices_count"] = len(choices)
+            if choices:
+                choice0 = choices[0]
+                summary["choice0_finish_reason"] = str(getattr(choice0, "finish_reason", None))
+                message = getattr(choice0, "message", None)
+                if message is not None:
+                    content = getattr(message, "content", None)
+                    summary["choice0_content_type"] = type(content).__name__ if content is not None else "none"
+                    if isinstance(content, str):
+                        summary["choice0_content_len"] = len(content)
+                    elif isinstance(content, list):
+                        summary["choice0_content_items"] = len(content)
+                    tool_calls = getattr(message, "tool_calls", None) or []
+                    summary["choice0_tool_calls_count"] = len(tool_calls)
+                    if tool_calls:
+                        names: List[str] = []
+                        for call in tool_calls[:6]:
+                            fn = getattr(call, "function", None)
+                            names.append(str(getattr(fn, "name", "")))
+                        summary["choice0_tool_call_names"] = names
+            return summary
+
+        return summary
+
+    @staticmethod
+    def _build_raw_response_preview(raw_response: Any) -> tuple[str, int, bool]:
+        """Serialize raw response into a truncated preview for observability."""
+        preview_limit = 3000
+        try:
+            raw_limit = os.getenv("RESUME_AGENT_DEBUG_RAW_PREVIEW_CHARS", "").strip()
+            if raw_limit:
+                preview_limit = int(raw_limit)
+        except Exception:
+            preview_limit = 3000
+        preview_limit = max(256, min(preview_limit, 20000))
+
+        raw_text = ""
+        try:
+            if hasattr(raw_response, "model_dump_json"):
+                raw_text = str(raw_response.model_dump_json(exclude_none=True))
+            elif hasattr(raw_response, "model_dump"):
+                import json
+
+                raw_text = json.dumps(raw_response.model_dump(exclude_none=True), ensure_ascii=True)
+            else:
+                raw_text = repr(raw_response)
+        except Exception:
+            raw_text = repr(raw_response)
+
+        raw_len = len(raw_text)
+        truncated = raw_len > preview_limit
+        if truncated:
+            return raw_text[:preview_limit], raw_len, True
+        return raw_text, raw_len, False
+
     def _build_generation_config(self) -> GenerationConfig:
         return GenerationConfig(
             system_prompt=self.system_prompt,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
         )
+
+    def _raise_if_retryable_malformed_function_call(self, response: LLMResponse) -> None:
+        """Raise transient error for provider-level malformed tool-call replies."""
+        if not self._is_retryable_malformed_function_call_response(response):
+            return
+
+        raw_summary = self._summarize_raw_response(response.raw)
+        self.observer.log_error(
+            error_type="llm_malformed_function_call",
+            message="Provider returned MALFORMED_FUNCTION_CALL without callable payload. Retrying.",
+            context={
+                "provider": self.config.provider,
+                "model": self.config.model,
+                "raw_summary": raw_summary,
+            },
+            agent_id=self.agent_id,
+        )
+        raise TransientError("Provider returned MALFORMED_FUNCTION_CALL without callable payload")
+
+    @staticmethod
+    def _is_retryable_malformed_function_call_response(response: LLMResponse) -> bool:
+        """Detect malformed function-call responses that should be retried."""
+        if response.text or response.function_calls:
+            return False
+
+        raw = response.raw
+        if raw is None or not hasattr(raw, "candidates"):
+            return False
+
+        candidates = getattr(raw, "candidates", None) or []
+        if not candidates:
+            return False
+
+        candidate0 = candidates[0]
+        finish_reason = str(getattr(candidate0, "finish_reason", "") or "").upper()
+        if "MALFORMED_FUNCTION_CALL" not in finish_reason:
+            return False
+
+        content = getattr(candidate0, "content", None)
+        parts = getattr(content, "parts", None) or []
+        return len(parts) == 0
 
     def _log_llm_metrics(self, step: int, start_time: float, usage: Optional[Dict[str, int]] = None) -> None:
         """Log LLM request metrics (tokens, cost, duration)."""
@@ -1050,60 +1346,292 @@ class LLMAgent:
 
         return function_calls, text_parts
 
-    def _check_loop_guard(
+    def _repair_function_call_args_from_raw_response(
         self,
-        function_calls: list,
-        response_text: str,
-        state: Dict[str, Any],
-    ) -> Optional[str]:
-        """Update loop-guard state. Return a stop reason if stuck."""
-        tool_only = bool(function_calls) and not response_text
+        function_calls: List[FunctionCall],
+        raw_response: Optional[Any],
+    ) -> List[FunctionCall]:
+        """Best-effort repair for parsed args using provider raw response."""
+        if not function_calls or raw_response is None:
+            return function_calls
 
-        if tool_only:
-            state["tool_only_steps"] += 1
-        else:
-            state["tool_only_steps"] = 0
+        raw_calls = self._extract_raw_tool_calls(raw_response)
+        if not raw_calls:
+            return function_calls
 
-        if tool_only and len(function_calls) == 1:
-            current_call = {
-                "name": function_calls[0].name,
-                "args": dict(function_calls[0].arguments) if function_calls[0].arguments else {},
-            }
-            if state["last_call"] == current_call:
-                state["same_call_repeats"] += 1
-            else:
-                state["same_call_repeats"] = 0
-            state["last_call"] = current_call
-        else:
-            state["same_call_repeats"] = 0
-            state["last_call"] = None
+        repaired: List[FunctionCall] = []
+        for fc in function_calls:
+            args = dict(fc.arguments) if fc.arguments else {}
 
-        if state["tool_only_steps"] >= self._MAX_TOOL_ONLY_STEPS:
-            return (
-                f"Loop guard triggered: {state['tool_only_steps']} consecutive tool-only steps "
-                "without model text. Aborting to prevent token waste."
-            )
+            raw_entry = self._match_raw_tool_call(fc, raw_calls)
+            if not raw_entry:
+                repaired.append(fc)
+                continue
 
-        if state["same_call_repeats"] > 0 and state["last_call"] is not None:
-            tool_name = state["last_call"].get("name", "unknown")
-            limit = self._MAX_REPEAT_READ_ONLY if tool_name in self._READ_ONLY_TOOLS else self._MAX_REPEAT_DEFAULT
-            if state["same_call_repeats"] >= limit:
-                return (
-                    f"Loop guard triggered: repeated tool call '{tool_name}' "
-                    f"{state['same_call_repeats']} time(s) without model text. "
-                    "Aborting to prevent token waste."
+            raw_args = raw_entry.get("arguments")
+            parsed = self._best_effort_parse_raw_tool_args(raw_args)
+            required_keys = self._required_tool_keys(fc.name)
+            if parsed and self._should_prefer_parsed_tool_args(fc.name, args, parsed, required_keys):
+                fc.arguments = parsed
+                self._log_tool_arg_debug(
+                    "llm_repaired_tool_args_from_raw",
+                    "Recovered/expanded tool args from raw provider response.",
+                    {
+                        "tool": fc.name,
+                        "call_id": fc.id,
+                        "old_keys": sorted(args.keys()),
+                        "new_keys": sorted(parsed.keys()),
+                        "old_content_len": len(args.get("content", ""))
+                        if isinstance(args.get("content"), str)
+                        else None,
+                        "new_content_len": (
+                            len(parsed.get("content", "")) if isinstance(parsed.get("content"), str) else None
+                        ),
+                        "raw_type": type(raw_args).__name__,
+                        "raw_len": len(raw_args) if isinstance(raw_args, str) else None,
+                    },
                 )
+            repaired.append(fc)
+        return repaired
 
-        return None
+    def _required_tool_keys(self, tool_name: str) -> set[str]:
+        if tool_name not in self._tools:
+            return set()
+        _func, schema = self._tools[tool_name]
+        params = getattr(schema, "parameters", {}) or {}
+        required = params.get("required", [])
+        if not isinstance(required, list):
+            return set()
+        return {k for k in required if isinstance(k, str)}
+
+    @staticmethod
+    def _should_prefer_parsed_tool_args(
+        tool_name: str,
+        current_args: Dict[str, Any],
+        parsed_args: Dict[str, Any],
+        required_keys: set[str],
+    ) -> bool:
+        if not parsed_args:
+            return False
+        if not current_args:
+            return True
+
+        current_keys = set(current_args.keys())
+        parsed_keys = set(parsed_args.keys())
+
+        # Prefer candidate when it fills required keys missing from current args.
+        if required_keys and not required_keys.issubset(current_keys) and required_keys.issubset(parsed_keys):
+            return True
+
+        # Prefer candidate when it contains strictly more keys.
+        if parsed_keys > current_keys:
+            return True
+
+        # Prefer longer payload for common heavy fields.
+        for heavy_key in ("content", "command", "text", "body", "code", "data"):
+            cur_val = current_args.get(heavy_key)
+            new_val = parsed_args.get(heavy_key)
+            if isinstance(cur_val, str) and isinstance(new_val, str):
+                if len(new_val) > len(cur_val) + 32:
+                    return True
+
+        # Prefer non-truncated-looking content for write tools.
+        if tool_name in {"file_write", "resume_write"}:
+            cur_content = current_args.get("content")
+            new_content = parsed_args.get("content")
+            if isinstance(cur_content, str) and isinstance(new_content, str):
+                if cur_content.endswith("\\") and len(new_content) >= len(cur_content):
+                    return True
+
+        return False
+
+    @staticmethod
+    def _extract_raw_tool_calls(raw_response: Any) -> List[Dict[str, Any]]:
+        """Extract raw provider tool calls in OpenAI-compatible shape."""
+        choices = getattr(raw_response, "choices", None) or []
+        if not choices:
+            return []
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return []
+        tool_calls = getattr(message, "tool_calls", None) or []
+        extracted: List[Dict[str, Any]] = []
+        for idx, call in enumerate(tool_calls):
+            function = getattr(call, "function", None)
+            extracted.append(
+                {
+                    "index": idx,
+                    "id": getattr(call, "id", None),
+                    "name": getattr(function, "name", "") if function else "",
+                    "arguments": getattr(function, "arguments", None) if function else None,
+                }
+            )
+        return extracted
+
+    @staticmethod
+    def _match_raw_tool_call(fc: FunctionCall, raw_calls: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if fc.id:
+            for rc in raw_calls:
+                if rc.get("id") == fc.id:
+                    return rc
+        name_matches = [rc for rc in raw_calls if rc.get("name") == fc.name]
+        if len(name_matches) == 1:
+            return name_matches[0]
+        return name_matches[0] if name_matches else None
+
+    def _best_effort_parse_raw_tool_args(self, raw_args: Any) -> Dict[str, Any]:
+        if raw_args is None:
+            return {}
+        if isinstance(raw_args, dict):
+            return raw_args
+        if not isinstance(raw_args, str):
+            return {}
+
+        # Reuse stream parser first.
+        parsed = self._parse_tool_argument_buffer(raw_args)
+        if parsed:
+            return parsed
+
+        # Reuse provider parser when available (OpenAI-compatible provider has
+        # richer malformed-JSON recovery tailored to real-world tool-call args).
+        parser = getattr(self.provider, "_safe_parse_args", None)
+        if callable(parser):
+            try:
+                parsed2 = parser(raw_args)
+                if isinstance(parsed2, dict) and parsed2:
+                    return parsed2
+            except Exception:
+                pass
+
+        return {}
+
+    def _tool_requires_approval(self, tool_name: str) -> bool:
+        policy = self._tool_policies.get(tool_name, {})
+        requires_approval = policy.get("requires_approval")
+        if requires_approval is not None:
+            return bool(requires_approval)
+        return tool_name in self._WRITE_TOOLS
 
     def _requires_tool_approval(self, function_calls: list) -> bool:
         for fc in function_calls:
-            if fc.name in self._WRITE_TOOLS:
+            if self._tool_requires_approval(fc.name):
                 return True
         return False
 
-    def has_pending_tool_calls(self) -> bool:
-        return len(self._pending_tool_calls) > 0
+    def _log_empty_write_args_debug(
+        self,
+        function_calls: List[FunctionCall],
+        step: int,
+        raw_response: Optional[Any] = None,
+    ) -> None:
+        """Emit targeted debug signal when write tools arrive with empty args."""
+        raw_summaries = self._extract_raw_tool_call_argument_summaries(raw_response)
+        for fc in function_calls:
+            if not self._tool_requires_approval(fc.name):
+                continue
+            args = dict(fc.arguments) if fc.arguments else {}
+            if args:
+                continue
+            raw_summary = self._select_raw_summary_for_function_call(fc, raw_summaries)
+            self._log_tool_arg_debug(
+                "llm_response_empty_write_args",
+                "LLM returned write tool call with empty args.",
+                {"step": step, "tool": fc.name, "call_id": fc.id, "raw_args_summary": raw_summary},
+            )
+
+    @staticmethod
+    def _extract_raw_tool_call_argument_summaries(raw_response: Optional[Any]) -> List[Dict[str, Any]]:
+        """Extract non-sensitive summaries of raw provider tool_call arguments."""
+        if raw_response is None:
+            return []
+        choices = getattr(raw_response, "choices", None) or []
+        if not choices:
+            return []
+        choice0 = choices[0]
+        message = getattr(choice0, "message", None)
+        if message is None:
+            return []
+        tool_calls = getattr(message, "tool_calls", None) or []
+
+        summaries: List[Dict[str, Any]] = []
+        for idx, call in enumerate(tool_calls):
+            fn = getattr(call, "function", None)
+            name = getattr(fn, "name", "") if fn else ""
+            raw_args = getattr(fn, "arguments", None) if fn else None
+            raw_type = type(raw_args).__name__ if raw_args is not None else "none"
+            raw_text = ""
+            if raw_args is not None:
+                try:
+                    if isinstance(raw_args, str):
+                        raw_text = raw_args
+                    else:
+                        import json
+
+                        raw_text = json.dumps(raw_args, ensure_ascii=False)
+                except Exception:
+                    raw_text = str(raw_args)
+            summaries.append(
+                {
+                    "index": idx,
+                    "id": getattr(call, "id", None),
+                    "name": name,
+                    "raw_type": raw_type,
+                    "raw_len": len(raw_text),
+                    "raw_sha": LLMAgent._fingerprint_text(raw_text),
+                    "raw_present": bool(raw_text.strip()) if isinstance(raw_text, str) else bool(raw_text),
+                }
+            )
+        return summaries
+
+    @staticmethod
+    def _select_raw_summary_for_function_call(
+        fc: FunctionCall,
+        raw_summaries: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Pick the most relevant raw-summary entry for a function call."""
+        if not raw_summaries:
+            return {}
+        if fc.id:
+            for s in raw_summaries:
+                if s.get("id") == fc.id:
+                    return s
+        matches = [s for s in raw_summaries if s.get("name") == fc.name]
+        if len(matches) == 1:
+            return matches[0]
+        return matches[0] if matches else raw_summaries[0]
+
+    @staticmethod
+    def _is_invalid_tool_call_missing_args_error(result: str) -> bool:
+        if not isinstance(result, str):
+            return False
+        return result.startswith("Error: Invalid tool call for ") and "missing required argument(s):" in result
+
+    def _fatal_tool_error_message(
+        self,
+        function_calls: List[FunctionCall],
+        responses: List[FunctionResponse],
+    ) -> Optional[str]:
+        """Return a user-facing fatal message for unrecoverable tool-call errors."""
+        for fc, fr in zip(function_calls, responses):
+            result = fr.response.get("result", "") if fr and fr.response else ""
+            if self._is_invalid_tool_call_missing_args_error(result):
+                self.observer.log_error(
+                    error_type="invalid_tool_call",
+                    message=result,
+                    context={"tool": fc.name, "call_id": fc.id},
+                    agent_id=self.agent_id,
+                )
+                return (
+                    f"{result}\n" "Turn aborted to prevent repeated approval/tool loops. " "Please retry the command."
+                )
+        return None
+
+    @staticmethod
+    def _wire_has_ui_subscribers(wire: Wire) -> bool:
+        """Best-effort check: a Wire has at least one UI subscriber."""
+        queue = getattr(wire, "_queue", None)
+        subscribers = getattr(queue, "_queues", None)
+        return bool(subscribers)
 
     def set_auto_approve_tools(self, enabled: bool) -> None:
         self._auto_approve_tools = bool(enabled)
@@ -1122,57 +1650,6 @@ class LLMAgent:
     def set_interrupt_checker(self, checker: Optional[Callable]) -> None:
         """Set async interrupt checker: () → bool."""
         self._interrupt_checker = checker
-
-    def list_pending_tool_calls(self) -> List[Dict[str, Any]]:
-        pending = []
-        for fc in self._pending_tool_calls:
-            pending.append(
-                {
-                    "name": fc.name,
-                    "args": dict(fc.arguments) if getattr(fc, "arguments", None) else {},
-                }
-            )
-        return pending
-
-    async def approve_pending_tool_calls(self) -> List[Dict[str, Any]]:
-        calls = list(self._pending_tool_calls)
-        self._pending_tool_calls = []
-        if not calls:
-            return []
-
-        calls, policy_responses = self._apply_tool_call_policy(calls)
-        executed_responses: List[FunctionResponse] = []
-        if calls:
-            executed_responses = await asyncio.gather(
-                *[self._execute_tool(fc) for fc in calls],
-                return_exceptions=False,
-            )
-        responses = [*policy_responses, *executed_responses]
-
-        # Add function responses to history for continuity
-        if responses:
-            tool_message = Message(
-                role="tool",
-                parts=[MessagePart.from_function_response(fr) for fr in responses],
-            )
-            self.history_manager.add_message(tool_message)
-            if self.session_manager:
-                await self._auto_save()
-
-        results = []
-        for fr in responses:
-            results.append(
-                {
-                    "name": fr.name,
-                    "result": fr.response.get("result") if getattr(fr, "response", None) else "",
-                }
-            )
-        return results
-
-    def reject_pending_tool_calls(self) -> int:
-        count = len(self._pending_tool_calls)
-        self._pending_tool_calls = []
-        return count
 
     def _missing_required_tool_args(self, func_name: str, func_args: Dict[str, Any]) -> List[str]:
         """Return required args that are absent/empty for the target tool."""
@@ -1274,45 +1751,6 @@ class LLMAgent:
 
         return normalized
 
-    def _apply_tool_call_policy(
-        self, function_calls: List[FunctionCall]
-    ) -> tuple[List[FunctionCall], List[FunctionResponse]]:
-        """Apply execution-time policy filters to model tool calls."""
-        has_job_search = any(fc.name == self._JOB_SEARCH_TOOL for fc in function_calls)
-        has_job_detail = any(fc.name == self._JOB_DETAIL_TOOL for fc in function_calls)
-        if not (has_job_search and has_job_detail):
-            return function_calls, []
-
-        filtered_calls: List[FunctionCall] = []
-        rejected_responses: List[FunctionResponse] = []
-        for fc in function_calls:
-            if fc.name != self._JOB_DETAIL_TOOL:
-                filtered_calls.append(fc)
-                continue
-
-            rejected = FunctionResponse(
-                name=fc.name,
-                response={"result": self._JOB_DETAIL_CONFLICT_REASON},
-                call_id=fc.id,
-            )
-            rejected_responses.append(rejected)
-            self.observer.log_error(
-                error_type="tool_policy",
-                message=self._JOB_DETAIL_CONFLICT_REASON,
-                context={"tool": fc.name, "args": dict(fc.arguments) if fc.arguments else {}},
-                agent_id=self.agent_id,
-            )
-            self.observer.log_tool_call(
-                tool_name=fc.name,
-                args=dict(fc.arguments) if fc.arguments else {},
-                result=self._JOB_DETAIL_CONFLICT_REASON,
-                duration_ms=0.0,
-                success=False,
-                cached=False,
-                agent_id=self.agent_id,
-            )
-        return filtered_calls, rejected_responses
-
     async def _execute_tool(self, fc: FunctionCall) -> FunctionResponse:
         """Execute a single tool call, with caching and observability."""
         func_name = fc.name
@@ -1323,6 +1761,7 @@ class LLMAgent:
         result_str = ""
         cached = False
         tool_error = None
+        tool_data: Dict[str, Any] = {}
 
         # Notify tool start
         if self._tool_event_handler:
@@ -1342,6 +1781,16 @@ class LLMAgent:
                 func, _ = self._tools[func_name]
                 missing_required = self._missing_required_tool_args(func_name, func_args)
                 if missing_required:
+                    self._log_tool_arg_debug(
+                        "tool_call_missing_required_args",
+                        "Tool execution blocked due to missing required args.",
+                        {
+                            "tool": func_name,
+                            "missing_required": missing_required,
+                            "provided_args_summary": self._summarize_argument_shapes(func_args),
+                            "call_id": fc.id,
+                        },
+                    )
                     success = False
                     result_str = (
                         f"Error: Invalid tool call for '{func_name}': "
@@ -1361,6 +1810,9 @@ class LLMAgent:
                             result_str = result.to_message()
                             success = getattr(result, "success", True)
                             tool_error = getattr(result, "error", None)
+                            raw_data = getattr(result, "data", None)
+                            if isinstance(raw_data, dict):
+                                tool_data = raw_data
                         else:
                             result_str = str(result)
 
@@ -1415,7 +1867,7 @@ class LLMAgent:
 
         return FunctionResponse(
             name=func_name,
-            response={"result": result_str},
+            response={"result": result_str, "success": success, "data": tool_data},
             call_id=fc.id,
         )
 

@@ -71,7 +71,7 @@ def _parse_approval_choice(raw_choice: str) -> str:
     # Match explicit intent first to avoid accidental privilege escalation.
     if "reject" in text or text.startswith("deny"):
         return "reject"
-    if "approve all" in text:
+    if "approve all" in text or "approve tools" in text:
         return "approve_all"
     if text.startswith("approve"):
         return "approve"
@@ -414,14 +414,6 @@ def _get_llm_agents(agent: Union[ResumeAgent, OrchestratorAgent]):
         seen.add(aid)
         unique.append(a)
     return unique
-
-
-def _list_pending_tool_calls(agent: Union[ResumeAgent, OrchestratorAgent]) -> list:
-    pending = []
-    for llm_agent in _get_llm_agents(agent):
-        if hasattr(llm_agent, "has_pending_tool_calls") and llm_agent.has_pending_tool_calls():
-            pending.extend(llm_agent.list_pending_tool_calls())
-    return pending
 
 
 def _get_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent]) -> Optional[str]:
@@ -1131,6 +1123,20 @@ async def handle_command(
             else:
                 console.print("⚠️ No observability data available.", style="yellow")
 
+        def _format_debug_context(context: Any, limit: int = 4000) -> str:
+            """Render debug context for human-readable verbose exports."""
+            if context is None:
+                return ""
+            try:
+                import json
+
+                rendered = json.dumps(context, ensure_ascii=True, default=str)
+            except Exception:
+                rendered = repr(context)
+            if len(rendered) <= limit:
+                return rendered
+            return f"{rendered[:limit]}... [truncated {len(rendered) - limit} chars]"
+
         # Format the history
         if format_type == "json":
             import json
@@ -1230,6 +1236,14 @@ async def handle_command(
                     elif event.event_type == "error":
                         lines.append(f"  ❌ {event.data.get('error_type')}: {event.data.get('message')}")
 
+                    elif event.event_type == "debug":
+                        debug_type = event.data.get("debug_type", "debug")
+                        message = event.data.get("message", "")
+                        lines.append(f"  🐞 {debug_type}: {message}")
+                        context_dump = _format_debug_context(event.data.get("context"))
+                        if context_dump:
+                            lines.append(f"  Context: {context_dump}")
+
                     elif event.event_type in ["step_start", "step_end"]:
                         lines.append(f"  Step: {event.data.get('step')}")
                         if event.duration_ms:
@@ -1313,6 +1327,14 @@ async def handle_command(
                         error_type = event.data.get("error_type")
                         message = event.data.get("message")
                         lines.append(f"- **[{timestamp}]** ❌ Error: `{error_type}` - {message}")
+
+                    elif event.event_type == "debug":
+                        debug_type = event.data.get("debug_type", "debug")
+                        message = event.data.get("message", "")
+                        lines.append(f"- **[{timestamp}]** 🐞 Debug: `{debug_type}` - {message}")
+                        context_dump = _format_debug_context(event.data.get("context"))
+                        if context_dump:
+                            lines.append(f"  - Context: `{context_dump}`")
 
                     elif event.event_type == "step_start":
                         step = event.data.get("step")
@@ -1410,13 +1432,23 @@ async def _consume_wire(
                     f"\n🛡️ Approval required ({len(msg.tool_calls)} tool call(s)):",
                     style="bold cyan",
                 )
+                if msg.action:
+                    console.print(f"  Action: {msg.action}", style="bold yellow")
                 for tc in msg.tool_calls:
                     args = dict(tc.arguments) if tc.arguments else {}
                     preview = _format_tool_call_approval_inline(tc.name, args)
                     console.print(f"  {preview}", style="cyan", markup=False)
+                if msg.description:
+                    console.print(
+                        Panel.fit(
+                            msg.description,
+                            title="Approval Context",
+                            border_style="blue",
+                        )
+                    )
 
                 console.print("\n  [1] ✅ Approve", style="green")
-                console.print("  [2] ✅ Approve all (don't ask again)", style="green")
+                console.print("  [2] ✅ Approve this action for session (/approve tools)", style="green")
                 console.print("  [3] ❌ Reject", style="red")
 
                 if esc_pause_event is not None:
@@ -1642,11 +1674,6 @@ def main():
         help="Path to configuration file",
     )
     parser.add_argument(
-        "--prompt",
-        "-p",
-        help="Run a single prompt and exit (non-interactive mode)",
-    )
-    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -1756,41 +1783,16 @@ def main():
             tools=tools,
         )
 
-    # Run
-    if args.prompt:
-        # Non-interactive mode
-        async def run_once():
-            stream_enabled = bool(args.stream) if args.stream is not None else False
-
-            response = await agent.run(
-                args.prompt,
-                stream=stream_enabled,
-            )
-            if response.startswith("Error:"):
-                console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
-            else:
-                console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
-
-            pending = _list_pending_tool_calls(agent)
-            if pending:
-                console.print(
-                    f"\n⚠️ {len(pending)} pending tool call(s) require approval. "
-                    "Run in interactive mode for inline approval.",
-                    style="yellow",
-                )
-
-        asyncio.run(run_once())
-    else:
-        # Interactive mode
-        interactive_stream_default = False if args.stream is None else bool(args.stream)
-        asyncio.run(
-            run_interactive(
-                agent,
-                session_manager,
-                stream_enabled_default=interactive_stream_default,
-                verbose=args.verbose,
-            )
+    # Interactive mode (default and only mode)
+    interactive_stream_default = False if args.stream is None else bool(args.stream)
+    asyncio.run(
+        run_interactive(
+            agent,
+            session_manager,
+            stream_enabled_default=interactive_stream_default,
+            verbose=args.verbose,
         )
+    )
 
 
 if __name__ == "__main__":

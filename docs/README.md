@@ -12,7 +12,7 @@ If you want guided onboarding and background reading, use
 - **[Architecture Map](./architecture.md)** - Layering and dependency direction
 - **[Execution Data Flow](./architecture/execution-data-flow.md)** - Runtime path from CLI to provider/tools
 - **[Phase 1 Quick Reference](./api-reference/phase1-quick-reference.md)** - Runtime reliability APIs
-- **[LinkedIn Tools Reference](./api-reference/linkedin-tools.md)** - `job_search` and `job_detail` contracts and policy
+- **[LinkedIn Tools Reference](./api-reference/linkedin-tools.md)** - `job_search` contract and behavior
 - **[Session Persistence](./sessions/session-persistence.md)** - Session storage and restore flows
 
 ## Architecture
@@ -21,6 +21,7 @@ If you want guided onboarding and background reading, use
 - **[Kimi CLI History Design Reference](./learn/kimi-cli-history-design-reference.md)** - External session/compaction design learnings
 - **[PI-Mono History Design Reference](./learn/pi-mono-history-design-reference.md)** - External history-management design learnings
 - **[Phase 1 Improvements (Archived)](./archive/phase1-improvements.md)** - Historical reliability/perf/security details
+- **[Agent Loop Approval Refactor (Archived)](./archive/agent-loop-approval-refactor-2026-03-09.md)** - Completed approval architecture migration and boundary cleanup
 
 ## Ops and Maintenance
 

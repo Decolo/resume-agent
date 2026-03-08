@@ -53,9 +53,6 @@ uv run resume-agent --workspace ./examples/my_resume
 
 # Or with Python
 uv run python -m resume_agent.cli.app
-
-# Single prompt mode
-uv run resume-agent --prompt "Parse my resume and analyze it"
 ```
 
 For detailed instructions, see [Documentation Index](./docs/README.md).
