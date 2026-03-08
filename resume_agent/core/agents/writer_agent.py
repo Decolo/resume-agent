@@ -113,6 +113,15 @@ class WriterAgent(BaseAgent):
             # Build the prompt for the LLM
             prompt = self._build_prompt(task)
 
+            # Delegated writer runs have no interactive UI subscriber.
+            # Attach a local approval handler so write/edit tools can proceed.
+            previous_approval_handler = self.llm_agent._approval_handler
+
+            async def _approve_all(function_calls):  # noqa: ANN001
+                return function_calls, ""
+
+            self.llm_agent.set_approval_handler(_approve_all)
+
             # Run the LLM agent
             wire = Wire()
             try:
@@ -122,6 +131,7 @@ class WriterAgent(BaseAgent):
                     wire=wire,
                 )
             finally:
+                self.llm_agent.set_approval_handler(previous_approval_handler)
                 wire.shutdown()
 
             return create_result(

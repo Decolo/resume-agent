@@ -598,6 +598,44 @@ async def test_wire_write_call_uses_approval_handler_when_configured():
 
 
 @pytest.mark.asyncio
+async def test_wire_approval_handler_rejection_injects_tool_response():
+    """Approval-handler denials should still inject tool responses for call pairing."""
+    agent = _make_agent()
+    _register_write_tool(agent)
+
+    async def reject_handler(function_calls):  # noqa: ANN001
+        return [], "handler denied"
+
+    agent.set_approval_handler(reject_handler)
+    agent.provider = _ScriptedProvider(
+        [
+            LLMResponse(
+                text="",
+                function_calls=[
+                    FunctionCall(name="file_write", arguments={"file_path": "a.txt", "content": "hi"}, id="c1")
+                ],
+            ),
+            LLMResponse(text="denied handled", function_calls=[]),
+        ]
+    )
+
+    wire = Wire()
+    response = await agent.run("write a file", wire=wire)
+    wire.shutdown()
+
+    assert response == "denied handled"
+    tool_messages = [m for m in agent.history_manager.get_history() if m.role == "tool"]
+    assert tool_messages
+    assert any(
+        part.function_response
+        and part.function_response.call_id == "c1"
+        and part.function_response.response.get("result") == "Rejected: handler denied"
+        for msg in tool_messages
+        for part in msg.parts
+    )
+
+
+@pytest.mark.asyncio
 async def test_wire_invalid_tool_call_missing_args_aborts_turn(monkeypatch):
     """Invalid tool-call args should abort the turn to avoid approval loops."""
     agent = _make_agent()

@@ -480,7 +480,33 @@ class LLMAgent:
                     rejection_reason = ""
 
                     if self._approval_handler is not None:
-                        approved_calls, rejection_reason = await self._approval_handler(function_calls)
+                        handler_approved_calls, rejection_reason = await self._approval_handler(function_calls)
+                        approved_calls = []
+                        rejected_calls: List[FunctionCall] = []
+                        approved_ids = {
+                            fc.id for fc in (handler_approved_calls or []) if getattr(fc, "id", None) is not None
+                        }
+                        rejection_reason = rejection_reason or "user declined approval"
+
+                        for fc in function_calls:
+                            if not self._tool_requires_approval(fc.name):
+                                approved_calls.append(fc)
+                                continue
+
+                            is_approved = False
+                            if fc.id is not None:
+                                is_approved = fc.id in approved_ids
+                            elif handler_approved_calls:
+                                is_approved = fc in handler_approved_calls
+
+                            if is_approved:
+                                approved_calls.append(fc)
+                            else:
+                                rejected_calls.append(fc)
+
+                        if rejected_calls:
+                            rejection_message = self._build_rejection_tool_message(rejected_calls, rejection_reason)
+                            self.history_manager.add_message(rejection_message)
                     else:
                         if not self._wire_has_ui_subscribers(wire):
                             # No UI consumer means an approval request can never be answered.
