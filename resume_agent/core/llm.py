@@ -474,7 +474,7 @@ class LLMAgent:
                     self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                     break
 
-                # 8. Inline approval (replaces pause-and-return)
+                # 7. Inline approval (replaces pause-and-return)
                 if self._requires_tool_approval(function_calls) and not approval.is_yolo():
                     approved_calls: Optional[List[FunctionCall]] = function_calls
                     rejection_reason = ""
@@ -532,7 +532,7 @@ class LLMAgent:
 
                     function_calls = approved_calls
 
-                # 9. Emit ToolCallEvents + execute tools
+                # 8. Emit ToolCallEvents + execute tools
                 for fc in function_calls:
                     wire.soul_side.send(
                         ToolCallEvent(
@@ -551,7 +551,7 @@ class LLMAgent:
                 )
                 function_responses = list(executed_responses)
 
-                # 10. Emit ToolResultEvents
+                # 9. Emit ToolResultEvents
                 for fc, fr in zip(function_calls, executed_responses):
                     result_str = fr.response.get("result", "") if fr.response else ""
                     wire.soul_side.send(
@@ -563,7 +563,7 @@ class LLMAgent:
                         )
                     )
 
-                # 11. Update history + auto-save
+                # 10. Update history + auto-save
                 tool_message = Message(
                     role="tool",
                     parts=[MessagePart.from_function_response(fr) for fr in function_responses],
