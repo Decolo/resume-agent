@@ -99,11 +99,14 @@ class OrchestratorAgent(BaseAgent):
             )
 
             # Register with LLM agent
+            mutation_fields = getattr(agent_tool, "mutation_signature_fields", None)
             self.llm_agent.register_tool(
                 name=agent_tool.name,
                 description=agent_tool.description,
                 parameters=agent_tool.get_parameters(),
                 func=agent_tool.execute,
+                requires_approval=getattr(agent_tool, "requires_approval", None),
+                mutation_signature_fields=list(mutation_fields) if mutation_fields else None,
             )
 
             self._agent_tools.append(agent_tool)

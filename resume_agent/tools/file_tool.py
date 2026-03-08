@@ -1,5 +1,6 @@
 """File operation tools - read, write, list, rename files."""
 
+import hashlib
 from pathlib import Path
 
 from resume_agent.core.tools.base import BaseTool, ToolResult
@@ -81,6 +82,8 @@ class FileWriteTool(BaseTool):
     """Write contents to a file."""
 
     name = "file_write"
+    requires_approval = True
+    mutation_signature_fields = ("path", "content")
     description = (
         "Use when you need to create or overwrite a text file. "
         "Creates parent directories automatically; in preview mode it stages a pending write "
@@ -111,6 +114,13 @@ class FileWriteTool(BaseTool):
     async def execute(self, path: str, content: str, encoding: str = "utf-8") -> ToolResult:
         try:
             file_path = self._resolve_path(path)
+            fingerprint = hashlib.sha1(content.encode("utf-8", "ignore")).hexdigest()[:12]
+            changed = True
+            if file_path.exists() and file_path.is_file():
+                try:
+                    changed = file_path.read_text(encoding=encoding) != content
+                except Exception:
+                    changed = True
 
             # Preview mode: intercept write, but return the same success
             # message as a real write so the LLM continues normally.
@@ -119,7 +129,14 @@ class FileWriteTool(BaseTool):
                 return ToolResult(
                     success=True,
                     output=f"Successfully wrote {len(content)} characters to {path}",
-                    data={"preview": True, "pending_path": path},
+                    data={
+                        "preview": True,
+                        "pending_path": path,
+                        "path": str(file_path),
+                        "size": len(content),
+                        "changed": changed,
+                        "fingerprint_after": fingerprint,
+                    },
                 )
 
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +144,12 @@ class FileWriteTool(BaseTool):
             return ToolResult(
                 success=True,
                 output=f"Successfully wrote {len(content)} characters to {path}",
-                data={"path": str(file_path), "size": len(content)},
+                data={
+                    "path": str(file_path),
+                    "size": len(content),
+                    "changed": changed,
+                    "fingerprint_after": fingerprint,
+                },
             )
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))
@@ -209,6 +231,8 @@ class FileRenameTool(BaseTool):
     """Rename (move) a file within the workspace."""
 
     name = "file_rename"
+    requires_approval = True
+    mutation_signature_fields = ("source_path", "dest_path", "overwrite")
     description = (
         "Use when you need to rename or move one file path to another. "
         "Fails if source is missing or destination exists unless overwrite=true."

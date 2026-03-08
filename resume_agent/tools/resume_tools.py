@@ -6,6 +6,7 @@ the actual resume logic to ``resume_agent.domain``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Dict, Tuple
@@ -144,6 +145,8 @@ class ResumeWriterTool(BaseTool):
     """Write/generate resume files in various formats."""
 
     name = "resume_write"
+    requires_approval = True
+    mutation_signature_fields = ("path", "content", "template")
     description = (
         "Write resume content to disk, with output format determined by file extension. "
         "Supported outputs: .md, .txt, .json, .html. "
@@ -193,19 +196,41 @@ class ResumeWriterTool(BaseTool):
                     error=f"Unsupported output format: {suffix}. Supported: .md, .txt, .json, .html",
                 )
 
+            fingerprint = hashlib.sha1(output_content.encode("utf-8", "ignore")).hexdigest()[:12]
+            changed = True
+            if file_path.exists() and file_path.is_file():
+                try:
+                    changed = file_path.read_text(encoding="utf-8") != output_content
+                except Exception:
+                    changed = True
+
             if self._preview_manager is not None:
                 self._preview_manager.add(path, output_content, file_path)
                 return ToolResult(
                     success=True,
                     output=f"Successfully wrote resume to {path} ({len(output_content)} characters)",
-                    data={"preview": True, "pending_path": path, "format": suffix},
+                    data={
+                        "preview": True,
+                        "pending_path": path,
+                        "path": str(file_path),
+                        "format": suffix,
+                        "size": len(output_content),
+                        "changed": changed,
+                        "fingerprint_after": fingerprint,
+                    },
                 )
 
             file_path.write_text(output_content, encoding="utf-8")
             return ToolResult(
                 success=True,
                 output=f"Successfully wrote resume to {path} ({len(output_content)} characters)",
-                data={"path": str(file_path), "format": suffix, "size": len(output_content)},
+                data={
+                    "path": str(file_path),
+                    "format": suffix,
+                    "size": len(output_content),
+                    "changed": changed,
+                    "fingerprint_after": fingerprint,
+                },
             )
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))

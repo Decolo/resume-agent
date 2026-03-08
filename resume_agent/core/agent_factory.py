@@ -683,10 +683,13 @@ def _register_tools(llm_agent: LLMAgent, tools: Dict, tool_names: list) -> None:
             "properties": tool.parameters,
             "required": [k for k, v in tool.parameters.items() if v.get("required", False)],
         }
+        mutation_fields = getattr(tool, "mutation_signature_fields", None)
 
         llm_agent.register_tool(
             name=tool.name,
             description=tool.description,
             parameters=params,
             func=tool.execute,
+            requires_approval=getattr(tool, "requires_approval", None),
+            mutation_signature_fields=list(mutation_fields) if mutation_fields else None,
         )

@@ -31,6 +31,9 @@ class BaseTool(ABC):
     name: str
     description: str
     parameters: Dict[str, Any]
+    # Capabilities used by the agent loop for generic policies/guards.
+    requires_approval: bool = False
+    mutation_signature_fields: tuple[str, ...] = ()
 
     @abstractmethod
     async def execute(self, **kwargs) -> ToolResult:

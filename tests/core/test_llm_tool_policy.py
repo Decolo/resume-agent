@@ -140,4 +140,14 @@ def test_repeated_write_guard_triggers_on_identical_rewrites():
     assert agent._check_repeated_write_guard([fc], [fr], state) is None
     reason = agent._check_repeated_write_guard([fc], [fr], state)
     assert reason is not None
-    assert "repeated identical write operations" in reason
+    assert "repeated identical mutating operations" in reason
+
+
+def test_loop_guard_allows_long_tool_only_read_sequences_without_repeats():
+    agent = _new_agent()
+    state = {"last_call": None, "same_call_repeats": 0}
+
+    for idx in range(12):
+        fc = FunctionCall(name="file_read", arguments={"path": f"file_{idx}.md"}, id=f"c{idx}")
+        reason = agent._check_loop_guard([fc], "", state)
+        assert reason is None

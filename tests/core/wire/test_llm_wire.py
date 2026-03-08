@@ -539,7 +539,7 @@ async def test_wire_replay_verbose_repeated_writes_stops_before_invalid_bash():
     messages = await collector
     await approve_task
 
-    assert "repeated identical write operations detected" in response
+    assert "repeated identical mutating operations detected" in response
     assert "Invalid tool call for 'bash'" not in response
 
     approvals = [m for m in messages if isinstance(m, ApprovalRequest)]

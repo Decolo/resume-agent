@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -265,9 +266,9 @@ class LLMAgent:
         "resume_validate",
     }
     # Loop-guard thresholds (tune as needed)
-    _MAX_TOOL_ONLY_STEPS = 8
     _MAX_REPEAT_READ_ONLY = 2
     _MAX_REPEAT_DEFAULT = 1
+    # Backward-compatible fallback when a tool is registered without capabilities.
     _WRITE_TOOLS = {"file_write", "resume_write", "file_rename"}
 
     def __init__(
@@ -300,6 +301,7 @@ class LLMAgent:
 
         # Tools registry: name -> (function, schema)
         self._tools: Dict[str, tuple] = {}
+        self._tool_policies: Dict[str, Dict[str, Any]] = {}
 
         # History manager with automatic pruning
         self.history_manager = HistoryManager(max_messages=50, max_tokens=100000)
@@ -330,10 +332,19 @@ class LLMAgent:
         description: str,
         parameters: Dict[str, Any],
         func: Callable,
+        *,
+        requires_approval: Optional[bool] = None,
+        mutation_signature_fields: Optional[List[str]] = None,
     ):
         """Register a tool that the agent can use."""
         schema = ToolSchema(name=name, description=description, parameters=parameters)
         self._tools[name] = (func, schema)
+        self._tool_policies[name] = {
+            "requires_approval": requires_approval,
+            "mutation_signature_fields": tuple(mutation_signature_fields)
+            if mutation_signature_fields is not None
+            else None,
+        }
 
     def _get_tools(self) -> Optional[List[ToolSchema]]:
         if not self._tools:
@@ -390,10 +401,8 @@ class LLMAgent:
         loop_state: Dict[str, Any] = {
             "last_call": None,
             "same_call_repeats": 0,
-            "tool_only_steps": 0,
-            "last_result": None,
-            "last_write_sig": None,
-            "same_write_repeats": 0,
+            "last_mutation_sig": None,
+            "same_mutation_repeats": 0,
         }
 
         response_text = ""
@@ -522,7 +531,6 @@ class LLMAgent:
                         message=guard_reason,
                         context={
                             "last_call": loop_state.get("last_call"),
-                            "tool_only_steps": loop_state.get("tool_only_steps"),
                             "same_call_repeats": loop_state.get("same_call_repeats"),
                         },
                         agent_id=self.agent_id,
@@ -559,20 +567,16 @@ class LLMAgent:
                         )
                     )
 
-                # 12. Capture last tool result for fallback
-                if len(function_calls) == 1 and executed_responses:
-                    fr = executed_responses[0]
-                    if fr and fr.response:
-                        loop_state["last_result"] = fr.response.get("result")
-
-                write_guard_reason = self._check_repeated_write_guard(function_calls, executed_responses, loop_state)
-                if write_guard_reason:
-                    response_text = write_guard_reason
+                mutation_guard_reason = self._check_repeated_mutation_guard(
+                    function_calls, executed_responses, loop_state
+                )
+                if mutation_guard_reason:
+                    response_text = mutation_guard_reason
                     step_duration = (time.time() - start_time) * 1000
                     self.observer.log_error(
                         error_type="loop_guard",
-                        message=write_guard_reason,
-                        context={"same_write_repeats": loop_state.get("same_write_repeats")},
+                        message=mutation_guard_reason,
+                        context={"same_mutation_repeats": loop_state.get("same_mutation_repeats")},
                         agent_id=self.agent_id,
                     )
                     self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
@@ -1422,11 +1426,6 @@ class LLMAgent:
         """Update loop-guard state. Return a stop reason if stuck."""
         tool_only = bool(function_calls) and not response_text
 
-        if tool_only:
-            state["tool_only_steps"] += 1
-        else:
-            state["tool_only_steps"] = 0
-
         if tool_only and len(function_calls) == 1:
             current_call = {
                 "name": function_calls[0].name,
@@ -1441,12 +1440,6 @@ class LLMAgent:
             state["same_call_repeats"] = 0
             state["last_call"] = None
 
-        if state["tool_only_steps"] >= self._MAX_TOOL_ONLY_STEPS:
-            return (
-                f"Loop guard triggered: {state['tool_only_steps']} consecutive tool-only steps "
-                "without model text. Aborting to prevent token waste."
-            )
-
         if state["same_call_repeats"] > 0 and state["last_call"] is not None:
             tool_name = state["last_call"].get("name", "unknown")
             limit = self._MAX_REPEAT_READ_ONLY if tool_name in self._READ_ONLY_TOOLS else self._MAX_REPEAT_DEFAULT
@@ -1459,54 +1452,110 @@ class LLMAgent:
 
         return None
 
+    def _check_repeated_mutation_guard(
+        self,
+        function_calls: List[FunctionCall],
+        responses: List[FunctionResponse],
+        state: Dict[str, Any],
+    ) -> Optional[str]:
+        """Stop loops that repeatedly execute identical mutating calls."""
+        if len(function_calls) != 1 or len(responses) != 1:
+            state["same_mutation_repeats"] = 0
+            state["last_mutation_sig"] = None
+            return None
+
+        fc = function_calls[0]
+        mutation_sig = self._build_mutation_signature(fc)
+        if mutation_sig is None:
+            state["same_mutation_repeats"] = 0
+            state["last_mutation_sig"] = None
+            return None
+
+        result = responses[0].response.get("result", "") if responses[0] and responses[0].response else ""
+        if result.startswith("Error:"):
+            state["same_mutation_repeats"] = 0
+            state["last_mutation_sig"] = None
+            return None
+
+        if state.get("last_mutation_sig") == mutation_sig:
+            state["same_mutation_repeats"] = int(state.get("same_mutation_repeats", 0)) + 1
+        else:
+            state["last_mutation_sig"] = mutation_sig
+            state["same_mutation_repeats"] = 0
+
+        if state["same_mutation_repeats"] >= 2:
+            return (
+                "Loop guard triggered: repeated identical mutating operations detected. "
+                "Aborting to prevent infinite rewrite attempts."
+            )
+        return None
+
     def _check_repeated_write_guard(
         self,
         function_calls: List[FunctionCall],
         responses: List[FunctionResponse],
         state: Dict[str, Any],
     ) -> Optional[str]:
-        """Stop loops that repeatedly write identical content to the same path."""
-        if len(function_calls) != 1 or len(responses) != 1:
-            state["same_write_repeats"] = 0
-            state["last_write_sig"] = None
+        """Backward-compatible alias for repeated mutating guard."""
+        if "last_write_sig" in state and "last_mutation_sig" not in state:
+            state["last_mutation_sig"] = state.get("last_write_sig")
+        if "same_write_repeats" in state and "same_mutation_repeats" not in state:
+            state["same_mutation_repeats"] = state.get("same_write_repeats", 0)
+
+        reason = self._check_repeated_mutation_guard(function_calls, responses, state)
+
+        if "last_write_sig" in state:
+            state["last_write_sig"] = state.get("last_mutation_sig")
+        if "same_write_repeats" in state:
+            state["same_write_repeats"] = state.get("same_mutation_repeats", 0)
+        return reason
+
+    def _build_mutation_signature(self, function_call: FunctionCall) -> Optional[tuple]:
+        fields = self._mutation_signature_fields(function_call.name)
+        if not fields:
             return None
 
-        fc = function_calls[0]
-        if fc.name not in {"file_write", "resume_write"}:
-            state["same_write_repeats"] = 0
-            state["last_write_sig"] = None
-            return None
+        args = dict(function_call.arguments) if function_call.arguments else {}
+        sig_parts = []
+        for field in fields:
+            if field not in args:
+                return None
+            sig_parts.append((field, self._fingerprint_value(args.get(field))))
+        return (function_call.name, tuple(sig_parts))
 
-        args = dict(fc.arguments) if fc.arguments else {}
-        path = args.get("path")
-        content = args.get("content")
-        result = responses[0].response.get("result", "") if responses[0] and responses[0].response else ""
-        if not isinstance(path, str) or not isinstance(content, str):
-            state["same_write_repeats"] = 0
-            state["last_write_sig"] = None
-            return None
-        if result.startswith("Error:"):
-            state["same_write_repeats"] = 0
-            state["last_write_sig"] = None
-            return None
+    def _mutation_signature_fields(self, tool_name: str) -> tuple[str, ...]:
+        policy = self._tool_policies.get(tool_name, {})
+        fields = policy.get("mutation_signature_fields")
+        if fields is not None:
+            return tuple(fields)
 
-        write_sig = (fc.name, path, self._fingerprint_text(content))
-        if state.get("last_write_sig") == write_sig:
-            state["same_write_repeats"] = int(state.get("same_write_repeats", 0)) + 1
-        else:
-            state["last_write_sig"] = write_sig
-            state["same_write_repeats"] = 0
+        # Backward compatibility for callers that register tools without metadata.
+        legacy: Dict[str, tuple[str, ...]] = {
+            "file_write": ("path", "content"),
+            "resume_write": ("path", "content"),
+            "file_rename": ("source_path", "dest_path", "overwrite"),
+        }
+        return legacy.get(tool_name, ())
 
-        if state["same_write_repeats"] >= 2:
-            return (
-                "Loop guard triggered: repeated identical write operations detected. "
-                "Aborting to prevent infinite rewrite attempts."
-            )
-        return None
+    def _tool_requires_approval(self, tool_name: str) -> bool:
+        policy = self._tool_policies.get(tool_name, {})
+        requires_approval = policy.get("requires_approval")
+        if requires_approval is not None:
+            return bool(requires_approval)
+        return tool_name in self._WRITE_TOOLS
+
+    def _fingerprint_value(self, value: Any) -> str:
+        if isinstance(value, str):
+            return self._fingerprint_text(value) if len(value) > 256 else value
+        try:
+            serialized = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:
+            serialized = repr(value)
+        return self._fingerprint_text(serialized) if len(serialized) > 256 else serialized
 
     def _requires_tool_approval(self, function_calls: list) -> bool:
         for fc in function_calls:
-            if fc.name in self._WRITE_TOOLS:
+            if self._tool_requires_approval(fc.name):
                 return True
         return False
 
@@ -1519,7 +1568,7 @@ class LLMAgent:
         """Emit targeted debug signal when write tools arrive with empty args."""
         raw_summaries = self._extract_raw_tool_call_argument_summaries(raw_response)
         for fc in function_calls:
-            if fc.name not in self._WRITE_TOOLS:
+            if not self._tool_requires_approval(fc.name):
                 continue
             args = dict(fc.arguments) if fc.arguments else {}
             if args:
@@ -1753,6 +1802,7 @@ class LLMAgent:
         result_str = ""
         cached = False
         tool_error = None
+        tool_data: Dict[str, Any] = {}
 
         # Notify tool start
         if self._tool_event_handler:
@@ -1801,6 +1851,9 @@ class LLMAgent:
                             result_str = result.to_message()
                             success = getattr(result, "success", True)
                             tool_error = getattr(result, "error", None)
+                            raw_data = getattr(result, "data", None)
+                            if isinstance(raw_data, dict):
+                                tool_data = raw_data
                         else:
                             result_str = str(result)
 
@@ -1855,7 +1908,7 @@ class LLMAgent:
 
         return FunctionResponse(
             name=func_name,
-            response={"result": result_str},
+            response={"result": result_str, "success": success, "data": tool_data},
             call_id=fc.id,
         )
 
