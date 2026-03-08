@@ -128,26 +128,26 @@ async def test_execute_tool_infers_path_from_recent_file_list_when_missing():
     assert "parsed sample_resume.md" in response.response.get("result", "")
 
 
-def test_repeated_write_guard_triggers_on_identical_rewrites():
+def test_loop_guard_triggers_on_identical_file_write_args():
     agent = _new_agent()
-    state = {"last_write_sig": None, "same_write_repeats": 0}
+    state = {"last_file_write_sig": None, "same_file_write_repeats": 0}
     fc = FunctionCall(name="file_write", arguments={"path": "a.html", "content": "<html>ok</html>"}, id="c1")
     fr = FunctionResponse(
         name="file_write", response={"result": "Successfully wrote 15 characters to a.html"}, call_id="c1"
     )
 
-    assert agent._check_repeated_write_guard([fc], [fr], state) is None
-    assert agent._check_repeated_write_guard([fc], [fr], state) is None
-    reason = agent._check_repeated_write_guard([fc], [fr], state)
+    assert agent._check_loop_guard([fc], [fr], state) is None
+    reason = agent._check_loop_guard([fc], [fr], state)
     assert reason is not None
-    assert "repeated identical mutating operations" in reason
+    assert "repeated identical file_write args" in reason
 
 
-def test_loop_guard_allows_long_tool_only_read_sequences_without_repeats():
+def test_loop_guard_ignores_non_file_write_calls():
     agent = _new_agent()
-    state = {"last_call": None, "same_call_repeats": 0}
+    state = {"last_file_write_sig": None, "same_file_write_repeats": 0}
 
     for idx in range(12):
         fc = FunctionCall(name="file_read", arguments={"path": f"file_{idx}.md"}, id=f"c{idx}")
-        reason = agent._check_loop_guard([fc], "", state)
+        fr = FunctionResponse(name="file_read", response={"result": f"read file_{idx}.md"}, call_id=f"c{idx}")
+        reason = agent._check_loop_guard([fc], [fr], state)
         assert reason is None

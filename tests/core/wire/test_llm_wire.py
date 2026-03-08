@@ -539,17 +539,17 @@ async def test_wire_replay_verbose_repeated_writes_stops_before_invalid_bash():
     messages = await collector
     await approve_task
 
-    assert "repeated identical mutating operations detected" in response
+    assert "repeated identical file_write args detected" in response
     assert "Invalid tool call for 'bash'" not in response
 
     approvals = [m for m in messages if isinstance(m, ApprovalRequest)]
-    assert len(approvals) == 3
+    assert len(approvals) == 2
 
     tool_calls = [m for m in messages if isinstance(m, ToolCallEvent)]
     names = [m.name for m in tool_calls]
     assert names.count("file_read") == 2
-    assert names.count("file_write") == 3
+    assert names.count("file_write") == 2
     assert "bash" not in names
 
     # Should stop before consuming the scripted bash response.
-    assert provider.generate_calls == 4
+    assert provider.generate_calls == 3

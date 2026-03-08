@@ -255,19 +255,8 @@ class LLMAgent:
     """Provider-agnostic LLM agent with tool calling."""
 
     _COST_PER_MILLION_TOKENS = 0.08
-    _READ_ONLY_TOOLS = {
-        "file_read",
-        "file_list",
-        "resume_parse",
-        "web_fetch",
-        "web_read",
-        "lint_resume",
-        "job_match",
-        "resume_validate",
-    }
-    # Loop-guard thresholds (tune as needed)
-    _MAX_REPEAT_READ_ONLY = 2
-    _MAX_REPEAT_DEFAULT = 1
+    # File-write loop guard thresholds
+    _MAX_REPEAT_FILE_WRITE = 1
     # Backward-compatible fallback when a tool is registered without capabilities.
     _WRITE_TOOLS = {"file_write", "resume_write", "file_rename"}
 
@@ -399,10 +388,8 @@ class LLMAgent:
         wire.soul_side.send(TurnBegin(user_input=user_input))
 
         loop_state: Dict[str, Any] = {
-            "last_call": None,
-            "same_call_repeats": 0,
-            "last_mutation_sig": None,
-            "same_mutation_repeats": 0,
+            "last_file_write_sig": None,
+            "same_file_write_repeats": 0,
         }
 
         response_text = ""
@@ -522,24 +509,7 @@ class LLMAgent:
 
                     function_calls = approved_calls
 
-                # 9. Loop guard
-                guard_reason = self._check_loop_guard(function_calls, response_text, loop_state)
-                if guard_reason:
-                    step_duration = (time.time() - start_time) * 1000
-                    self.observer.log_error(
-                        error_type="loop_guard",
-                        message=guard_reason,
-                        context={
-                            "last_call": loop_state.get("last_call"),
-                            "same_call_repeats": loop_state.get("same_call_repeats"),
-                        },
-                        agent_id=self.agent_id,
-                    )
-                    self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
-                    response_text = guard_reason
-                    break
-
-                # 10. Emit ToolCallEvents + execute tools
+                # 9. Emit ToolCallEvents + execute tools
                 for fc in function_calls:
                     wire.soul_side.send(
                         ToolCallEvent(
@@ -555,7 +525,7 @@ class LLMAgent:
                 )
                 function_responses = list(executed_responses)
 
-                # 11. Emit ToolResultEvents
+                # 10. Emit ToolResultEvents
                 for fc, fr in zip(function_calls, executed_responses):
                     result_str = fr.response.get("result", "") if fr.response else ""
                     wire.soul_side.send(
@@ -567,22 +537,23 @@ class LLMAgent:
                         )
                     )
 
-                mutation_guard_reason = self._check_repeated_mutation_guard(
-                    function_calls, executed_responses, loop_state
-                )
-                if mutation_guard_reason:
-                    response_text = mutation_guard_reason
+                guard_reason = self._check_loop_guard(function_calls, executed_responses, loop_state)
+                if guard_reason:
+                    response_text = guard_reason
                     step_duration = (time.time() - start_time) * 1000
                     self.observer.log_error(
                         error_type="loop_guard",
-                        message=mutation_guard_reason,
-                        context={"same_mutation_repeats": loop_state.get("same_mutation_repeats")},
+                        message=guard_reason,
+                        context={
+                            "same_file_write_repeats": loop_state.get("same_file_write_repeats"),
+                            "last_file_write_sig": loop_state.get("last_file_write_sig"),
+                        },
                         agent_id=self.agent_id,
                     )
                     self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                     break
 
-                # 13. Update history + auto-save
+                # 11. Update history + auto-save
                 tool_message = Message(
                     role="tool",
                     parts=[MessagePart.from_function_response(fr) for fr in function_responses],
@@ -1419,123 +1390,51 @@ class LLMAgent:
 
     def _check_loop_guard(
         self,
-        function_calls: list,
-        response_text: str,
-        state: Dict[str, Any],
-    ) -> Optional[str]:
-        """Update loop-guard state. Return a stop reason if stuck."""
-        tool_only = bool(function_calls) and not response_text
-
-        if tool_only and len(function_calls) == 1:
-            current_call = {
-                "name": function_calls[0].name,
-                "args": dict(function_calls[0].arguments) if function_calls[0].arguments else {},
-            }
-            if state["last_call"] == current_call:
-                state["same_call_repeats"] += 1
-            else:
-                state["same_call_repeats"] = 0
-            state["last_call"] = current_call
-        else:
-            state["same_call_repeats"] = 0
-            state["last_call"] = None
-
-        if state["same_call_repeats"] > 0 and state["last_call"] is not None:
-            tool_name = state["last_call"].get("name", "unknown")
-            limit = self._MAX_REPEAT_READ_ONLY if tool_name in self._READ_ONLY_TOOLS else self._MAX_REPEAT_DEFAULT
-            if state["same_call_repeats"] >= limit:
-                return (
-                    f"Loop guard triggered: repeated tool call '{tool_name}' "
-                    f"{state['same_call_repeats']} time(s) without model text. "
-                    "Aborting to prevent token waste."
-                )
-
-        return None
-
-    def _check_repeated_mutation_guard(
-        self,
         function_calls: List[FunctionCall],
         responses: List[FunctionResponse],
         state: Dict[str, Any],
     ) -> Optional[str]:
-        """Stop loops that repeatedly execute identical mutating calls."""
+        """Stop only repeated identical successful file_write calls."""
         if len(function_calls) != 1 or len(responses) != 1:
-            state["same_mutation_repeats"] = 0
-            state["last_mutation_sig"] = None
+            state["same_file_write_repeats"] = 0
+            state["last_file_write_sig"] = None
             return None
 
         fc = function_calls[0]
-        mutation_sig = self._build_mutation_signature(fc)
-        if mutation_sig is None:
-            state["same_mutation_repeats"] = 0
-            state["last_mutation_sig"] = None
+        fr = responses[0]
+        if fc.name != "file_write":
+            state["same_file_write_repeats"] = 0
+            state["last_file_write_sig"] = None
             return None
 
-        result = responses[0].response.get("result", "") if responses[0] and responses[0].response else ""
+        args = dict(fc.arguments) if fc.arguments else {}
+        if "path" not in args or "content" not in args:
+            state["same_file_write_repeats"] = 0
+            state["last_file_write_sig"] = None
+            return None
+
+        result = fr.response.get("result", "") if fr and fr.response else ""
         if result.startswith("Error:"):
-            state["same_mutation_repeats"] = 0
-            state["last_mutation_sig"] = None
+            state["same_file_write_repeats"] = 0
+            state["last_file_write_sig"] = None
             return None
 
-        if state.get("last_mutation_sig") == mutation_sig:
-            state["same_mutation_repeats"] = int(state.get("same_mutation_repeats", 0)) + 1
+        write_sig = (
+            self._fingerprint_value(args.get("path")),
+            self._fingerprint_value(args.get("content")),
+        )
+        if state.get("last_file_write_sig") == write_sig:
+            state["same_file_write_repeats"] = int(state.get("same_file_write_repeats", 0)) + 1
         else:
-            state["last_mutation_sig"] = mutation_sig
-            state["same_mutation_repeats"] = 0
+            state["last_file_write_sig"] = write_sig
+            state["same_file_write_repeats"] = 0
 
-        if state["same_mutation_repeats"] >= 2:
+        if state["same_file_write_repeats"] >= self._MAX_REPEAT_FILE_WRITE:
             return (
-                "Loop guard triggered: repeated identical mutating operations detected. "
+                "Loop guard triggered: repeated identical file_write args detected. "
                 "Aborting to prevent infinite rewrite attempts."
             )
         return None
-
-    def _check_repeated_write_guard(
-        self,
-        function_calls: List[FunctionCall],
-        responses: List[FunctionResponse],
-        state: Dict[str, Any],
-    ) -> Optional[str]:
-        """Backward-compatible alias for repeated mutating guard."""
-        if "last_write_sig" in state and "last_mutation_sig" not in state:
-            state["last_mutation_sig"] = state.get("last_write_sig")
-        if "same_write_repeats" in state and "same_mutation_repeats" not in state:
-            state["same_mutation_repeats"] = state.get("same_write_repeats", 0)
-
-        reason = self._check_repeated_mutation_guard(function_calls, responses, state)
-
-        if "last_write_sig" in state:
-            state["last_write_sig"] = state.get("last_mutation_sig")
-        if "same_write_repeats" in state:
-            state["same_write_repeats"] = state.get("same_mutation_repeats", 0)
-        return reason
-
-    def _build_mutation_signature(self, function_call: FunctionCall) -> Optional[tuple]:
-        fields = self._mutation_signature_fields(function_call.name)
-        if not fields:
-            return None
-
-        args = dict(function_call.arguments) if function_call.arguments else {}
-        sig_parts = []
-        for field in fields:
-            if field not in args:
-                return None
-            sig_parts.append((field, self._fingerprint_value(args.get(field))))
-        return (function_call.name, tuple(sig_parts))
-
-    def _mutation_signature_fields(self, tool_name: str) -> tuple[str, ...]:
-        policy = self._tool_policies.get(tool_name, {})
-        fields = policy.get("mutation_signature_fields")
-        if fields is not None:
-            return tuple(fields)
-
-        # Backward compatibility for callers that register tools without metadata.
-        legacy: Dict[str, tuple[str, ...]] = {
-            "file_write": ("path", "content"),
-            "resume_write": ("path", "content"),
-            "file_rename": ("source_path", "dest_path", "overwrite"),
-        }
-        return legacy.get(tool_name, ())
 
     def _tool_requires_approval(self, tool_name: str) -> bool:
         policy = self._tool_policies.get(tool_name, {})
