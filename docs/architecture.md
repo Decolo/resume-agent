@@ -2,7 +2,7 @@
 
 This document is the high-level system map for contributors and agents.
 Deep design details stay in specialized docs under `docs/architecture/`.
-Last validated against code: 2026-03-03.
+Last validated against code: 2026-03-08.
 
 ## System Overview
 
@@ -64,14 +64,39 @@ For step-by-step runtime behavior (inline wire approval, loop guard, auto-save, 
 3. Session/run lifecycle must remain deterministic
 4. CI quality gates (`test`, `lint`, `typecheck`) are required for merge to `main`
 
+## Agent Loop vs Tool Boundary (Mandatory)
+
+Use these rules when deciding where code should live.
+
+1. `LLMAgent` (`resume_agent/core/llm.py`) owns orchestration only:
+   - provider call and response normalization
+   - history append/prune and step lifecycle
+   - approval control flow (`request`/`resolve`)
+   - tool dispatch, observability, and session save trigger
+2. Tool implementations (`resume_agent/tools/*`) own side effects and mutation semantics:
+   - filesystem/network/process I/O
+   - domain-specific validation (for example ambiguous edit matches)
+   - idempotency and no-op detection
+   - preview material for approval (for example diffs) via `build_approval_context()`
+3. `LLMAgent` must not read or mutate target resources to "simulate" tool behavior.
+   - Example: do not read files in loop code to generate write diffs.
+   - Instead, call tool hook (`build_approval_context`) and display returned text.
+4. Generic policies may stay in loop only if they are tool-agnostic.
+   - Allowed: max steps per turn, malformed/empty provider response retries, missing required args.
+   - Not allowed: file-specific rewrite guards hardcoded in loop.
+5. Cross-tool UX contracts are explicit and structured.
+   - If UI needs extra context before approval, expose it from tool layer.
+   - Keep loop consumption generic so new mutation tools can reuse the same path.
+
 ## Related Docs
 
 1. `docs/architecture/execution-data-flow.md` - End-to-end runtime flow
 2. `docs/architecture/adrs/README.md` - ADR index
-3. `docs/archive/phase1-improvements.md` - Archived phase summary
-4. `docs/sessions/session-persistence.md` - Session save/load internals
-5. `AGENTS.md` - Cross-agent repository operating constraints
-6. `CLAUDE.md` - Claude-specific runtime guidance
+3. `docs/architecture/adrs/003-agent-loop-tool-boundary.md` - Boundary decision for loop/tool responsibilities
+4. `docs/archive/phase1-improvements.md` - Archived phase summary
+5. `docs/sessions/session-persistence.md` - Session save/load internals
+6. `AGENTS.md` - Cross-agent repository operating constraints
+7. `CLAUDE.md` - Claude-specific runtime guidance
 
 ## Architecture Doc Freshness
 
@@ -82,6 +107,7 @@ Use this section to avoid starting from stale details when editing docs:
 | `docs/architecture/execution-data-flow.md` | Current | Canonical runtime behavior for CLI, LLM loop, tools, and delegation. |
 | `docs/architecture/adrs/001-gemini-function-calling.md` | Current (updated) | Decision remains valid; references now map to provider-agnostic schema + provider adapter code. |
 | `docs/architecture/adrs/002-multi-agent-architecture.md` | Current | Operational mode model remains `single` / `multi` / `auto`. |
+| `docs/architecture/adrs/003-agent-loop-tool-boundary.md` | Current | Defines hard ownership boundary between loop orchestration and tool mutation semantics. |
 | `docs/archive/phase1-improvements.md` | Archived | Historical implementation summary retained for context only. |
 
 ## Resume Lint Path (Current)

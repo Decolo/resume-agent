@@ -35,6 +35,10 @@ class BaseTool(ABC):
     requires_approval: bool = False
     mutation_signature_fields: tuple[str, ...] = ()
 
+    def build_approval_context(self, **kwargs) -> str:
+        """Optional hook for approval-time preview details (default: none)."""
+        return ""
+
     @abstractmethod
     async def execute(self, **kwargs) -> ToolResult:
         """Execute the tool with given parameters."""

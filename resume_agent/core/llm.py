@@ -496,10 +496,7 @@ class LLMAgent:
                             # forwards the request and resolves it from UI/user input.
                             pipe_task = asyncio.create_task(self._pipe_approval_to_wire(approval, wire))
 
-                        description = ", ".join(
-                            f"{fc.name}({', '.join(f'{k}={v!r}' for k, v in (fc.arguments or {}).items())})"
-                            for fc in function_calls
-                        )
+                        description = await self._build_approval_description(function_calls)
                         approved = await approval.request("write_tool", function_calls, description)
                         if not approved:
                             approved_calls = []
@@ -607,6 +604,55 @@ class LLMAgent:
             pass
         except Exception:
             pass
+
+    async def _build_approval_description(self, function_calls: List[FunctionCall]) -> str:
+        """Build human-readable approval context from tool-provided preview hooks."""
+        blocks: List[str] = []
+        for fc in function_calls:
+            args = dict(fc.arguments) if fc.arguments else {}
+            arg_pairs: List[str] = []
+            for k, v in args.items():
+                if isinstance(v, str):
+                    preview = v if len(v) <= 80 else f"{v[:80]}…"
+                    arg_pairs.append(f"{k}={preview!r}")
+                else:
+                    arg_pairs.append(f"{k}={v!r}")
+            arg_preview = ", ".join(arg_pairs)
+            blocks.append(f"{fc.name}({arg_preview})")
+            preview = await self._build_tool_approval_preview(fc.name, args)
+            if preview:
+                blocks.append(preview)
+
+        return "\n\n".join(blocks)
+
+    async def _build_tool_approval_preview(self, tool_name: str, args: Dict[str, Any]) -> str:
+        """Ask the tool instance for approval preview text, if it provides a hook."""
+        tool_entry = self._tools.get(tool_name)
+        if not tool_entry:
+            return ""
+
+        func, _schema = tool_entry
+        tool_instance = getattr(func, "__self__", None)
+        if tool_instance is None:
+            return ""
+
+        preview_builder = getattr(tool_instance, "build_approval_context", None)
+        if not callable(preview_builder):
+            return ""
+
+        try:
+            preview = preview_builder(**args)
+            if asyncio.iscoroutine(preview):
+                preview = await preview
+            return preview if isinstance(preview, str) else ""
+        except Exception as e:
+            # Approval preview is best-effort and must never block tool execution.
+            self._log_tool_arg_debug(
+                "approval_preview_build_failed",
+                "Tool-provided approval preview builder failed.",
+                {"tool": tool_name, "error": str(e)},
+            )
+            return ""
 
     @staticmethod
     def _build_rejection_tool_message(function_calls: List[FunctionCall], reason: str) -> Message:
