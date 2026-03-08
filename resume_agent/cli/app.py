@@ -71,7 +71,7 @@ def _parse_approval_choice(raw_choice: str) -> str:
     # Match explicit intent first to avoid accidental privilege escalation.
     if "reject" in text or text.startswith("deny"):
         return "reject"
-    if "approve all" in text:
+    if "approve all" in text or "approve tools" in text:
         return "approve_all"
     if text.startswith("approve"):
         return "approve"
@@ -1432,13 +1432,23 @@ async def _consume_wire(
                     f"\n🛡️ Approval required ({len(msg.tool_calls)} tool call(s)):",
                     style="bold cyan",
                 )
+                if msg.action:
+                    console.print(f"  Action: {msg.action}", style="bold yellow")
                 for tc in msg.tool_calls:
                     args = dict(tc.arguments) if tc.arguments else {}
                     preview = _format_tool_call_approval_inline(tc.name, args)
                     console.print(f"  {preview}", style="cyan", markup=False)
+                if msg.description:
+                    console.print(
+                        Panel.fit(
+                            msg.description,
+                            title="Approval Context",
+                            border_style="blue",
+                        )
+                    )
 
                 console.print("\n  [1] ✅ Approve", style="green")
-                console.print("  [2] ✅ Approve all (don't ask again)", style="green")
+                console.print("  [2] ✅ Approve this action for session (/approve tools)", style="green")
                 console.print("  [3] ❌ Reject", style="red")
 
                 if esc_pause_event is not None:

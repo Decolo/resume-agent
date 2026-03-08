@@ -306,6 +306,8 @@ class LLMAgent:
         self._retry_config = RetryConfig()
         # Auto-approve tool calls that require approval
         self._auto_approve_tools = False
+        # Session-scoped action-level approvals (tool action keys, e.g. "file_write").
+        self._auto_approve_actions: set[str] = set()
 
         # Pluggable hooks for API integration
         self._approval_handler: Optional[Callable] = None  # async (function_calls) → (approved_calls, rejection_reason)
@@ -375,7 +377,7 @@ class LLMAgent:
         4) Loop continues until model returns no tool calls, a fatal condition triggers,
            or max_steps is reached.
         """
-        from .wire.approval import Approval
+        from .wire.approval import Approval, ApprovalState
         from .wire.types import (
             StepBegin,
             ToolCallEvent,
@@ -387,7 +389,15 @@ class LLMAgent:
         self.history_manager.add_message(Message.user(user_input))
         self.history_manager._ensure_valid_sequence()
 
-        approval = Approval(yolo=self._auto_approve_tools)
+        def _persist_approval_state() -> None:
+            self._auto_approve_actions = set(approval_state.auto_approve_actions)
+
+        approval_state = ApprovalState(
+            yolo=self._auto_approve_tools,
+            auto_approve_actions=self._auto_approve_actions,
+            on_change=_persist_approval_state,
+        )
+        approval = Approval(state=approval_state)
         pipe_task: Optional[asyncio.Task] = None
 
         wire.soul_side.send(TurnBegin(user_input=user_input))
@@ -496,15 +506,26 @@ class LLMAgent:
                             # forwards the request and resolves it from UI/user input.
                             pipe_task = asyncio.create_task(self._pipe_approval_to_wire(approval, wire))
 
-                        description = await self._build_approval_description(function_calls)
-                        approved = await approval.request("write_tool", function_calls, description)
-                        if not approved:
-                            approved_calls = []
-                            rejection_reason = "user declined approval"
+                        approved_calls = []
+                        rejected_calls: List[FunctionCall] = []
+                        rejection_reason = "user declined approval"
+                        for fc in function_calls:
+                            if not self._tool_requires_approval(fc.name):
+                                approved_calls.append(fc)
+                                continue
+
+                            action, description = await self._build_approval_for_call(fc)
+                            approved = await approval.request(action, [fc], description)
+                            if approved:
+                                approved_calls.append(fc)
+                            else:
+                                rejected_calls.append(fc)
+
+                        if rejected_calls:
+                            rejection_message = self._build_rejection_tool_message(rejected_calls, rejection_reason)
+                            self.history_manager.add_message(rejection_message)
 
                     if not approved_calls:
-                        tool_message = self._build_rejection_tool_message(function_calls, rejection_reason)
-                        self.history_manager.add_message(tool_message)
                         step_duration = (time.time() - start_time) * 1000
                         self.observer.log_step_end(step, step_duration, agent_id=self.agent_id)
                         continue
@@ -591,39 +612,64 @@ class LLMAgent:
                 req = await approval.fetch_request()
                 wire_req = ApprovalRequest(
                     id=req.id,
+                    action=req.action,
                     tool_calls=req.tool_calls,
                     description=req.description,
                 )
                 wire.soul_side.send(wire_req)
                 resp = await wire_req.wait()
-                if resp == "approve_all":
-                    # Persist beyond the current turn to match UI wording.
-                    self.set_auto_approve_tools(True)
                 approval.resolve_request(req.id, resp)
         except asyncio.CancelledError:
             pass
         except Exception:
             pass
 
-    async def _build_approval_description(self, function_calls: List[FunctionCall]) -> str:
-        """Build human-readable approval context from tool-provided preview hooks."""
-        blocks: List[str] = []
-        for fc in function_calls:
-            args = dict(fc.arguments) if fc.arguments else {}
-            arg_pairs: List[str] = []
-            for k, v in args.items():
-                if isinstance(v, str):
-                    preview = v if len(v) <= 80 else f"{v[:80]}…"
-                    arg_pairs.append(f"{k}={preview!r}")
-                else:
-                    arg_pairs.append(f"{k}={v!r}")
-            arg_preview = ", ".join(arg_pairs)
-            blocks.append(f"{fc.name}({arg_preview})")
-            preview = await self._build_tool_approval_preview(fc.name, args)
-            if preview:
-                blocks.append(preview)
+    async def _build_approval_for_call(self, function_call: FunctionCall) -> tuple[str, str]:
+        """Build action + description for a single function call approval."""
+        args = dict(function_call.arguments) if function_call.arguments else {}
+        default_action = function_call.name or "tool_call"
 
-        return "\n\n".join(blocks)
+        # Baseline fallback description.
+        arg_pairs: List[str] = []
+        for k, v in args.items():
+            if isinstance(v, str):
+                preview = v if len(v) <= 80 else f"{v[:80]}…"
+                arg_pairs.append(f"{k}={preview!r}")
+            else:
+                arg_pairs.append(f"{k}={v!r}")
+        arg_preview = ", ".join(arg_pairs)
+        fallback_description = f"{function_call.name}({arg_preview})"
+        fallback_action = default_action
+
+        # Prefer tool-provided action/description when available.
+        tool_entry = self._tools.get(function_call.name)
+        if tool_entry:
+            func, _schema = tool_entry
+            tool_instance = getattr(func, "__self__", None)
+            if tool_instance is not None:
+                request_builder = getattr(tool_instance, "build_approval_request", None)
+                if callable(request_builder):
+                    try:
+                        spec = request_builder(**args)
+                        if asyncio.iscoroutine(spec):
+                            spec = await spec
+                        action = getattr(spec, "action", None)
+                        description = getattr(spec, "description", None)
+                        if isinstance(action, str) and action.strip():
+                            fallback_action = action.strip()
+                        if isinstance(description, str) and description.strip():
+                            return fallback_action, description
+                    except Exception as e:
+                        self._log_tool_arg_debug(
+                            "approval_request_build_failed",
+                            "Tool-provided approval request builder failed.",
+                            {"tool": function_call.name, "error": str(e)},
+                        )
+
+        preview = await self._build_tool_approval_preview(function_call.name, args)
+        if preview:
+            fallback_description = f"{fallback_description}\n\n{preview}"
+        return fallback_action, fallback_description
 
     async def _build_tool_approval_preview(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Ask the tool instance for approval preview text, if it provides a hook."""

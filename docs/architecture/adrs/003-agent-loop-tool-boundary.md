@@ -25,9 +25,11 @@ We need a stable rule for where mutation semantics and approval preview logic sh
    - I/O and resource mutation
    - idempotency/no-op logic
    - operation-specific validation
-   - approval preview details via `build_approval_context(**kwargs)`
+   - approval metadata via `build_approval_request(**kwargs)`:
+     - `action`: stable action key for session-level approval scope
+     - `description`: user-facing context (can include diff preview)
 3. `LLMAgent` must not inspect target resources to emulate tool behavior.
-   - For approval UX, loop invokes tool hook and renders returned text.
+   - For approval UX, loop invokes tool hook and renders returned metadata.
 4. Loop guards/policies are allowed only when tool-agnostic.
    - Keep: max step limits, malformed response retries, required-arg validation.
    - Avoid: tool-specific mutation heuristics hardcoded in loop.
@@ -49,6 +51,7 @@ We need a stable rule for where mutation semantics and approval preview logic sh
 ## Implementation Notes
 
 - `BaseTool` provides default no-op hook:
-  - `build_approval_context(**kwargs) -> str`
+  - `build_approval_request(**kwargs) -> ApprovalRequestSpec`
+  - `build_approval_context(**kwargs) -> str` (optional helper for request description)
 - `FileWriteTool` and `FileEditTool` implement unified-diff previews in tool layer.
-- `LLMAgent` consumes tool hook output in approval description build path.
+- `LLMAgent` consumes tool hook output in approval action/description build path.

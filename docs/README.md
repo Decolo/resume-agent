@@ -21,6 +21,7 @@ If you want guided onboarding and background reading, use
 - **[Kimi CLI History Design Reference](./learn/kimi-cli-history-design-reference.md)** - External session/compaction design learnings
 - **[PI-Mono History Design Reference](./learn/pi-mono-history-design-reference.md)** - External history-management design learnings
 - **[Phase 1 Improvements (Archived)](./archive/phase1-improvements.md)** - Historical reliability/perf/security details
+- **[Agent Loop Approval Refactor (Archived)](./archive/agent-loop-approval-refactor-2026-03-09.md)** - Completed approval architecture migration and boundary cleanup
 
 ## Ops and Maintenance
 

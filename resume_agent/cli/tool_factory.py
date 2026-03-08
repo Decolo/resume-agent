@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from resume_agent.tools import (
     BashTool,
+    FileEditTool,
     FileListTool,
     FileReadTool,
     FileRenameTool,
@@ -41,6 +42,7 @@ def create_tools(workspace_dir: str, raw_config: Optional[Dict[str, Any]] = None
         "file_write": FileWriteTool(workspace_dir),
         "file_list": FileListTool(workspace_dir),
         "file_rename": FileRenameTool(workspace_dir),
+        "file_edit": FileEditTool(workspace_dir),
         "bash": BashTool(workspace_dir),
         "resume_parse": ResumeParserTool(workspace_dir),
         "resume_write": ResumeWriterTool(workspace_dir),

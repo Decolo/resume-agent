@@ -25,6 +25,14 @@ class ToolResult:
         return f"Error: {self.error}\n{self.output}" if self.output else f"Error: {self.error}"
 
 
+@dataclass(frozen=True)
+class ApprovalRequestSpec:
+    """Tool-provided approval metadata consumed by the agent loop."""
+
+    action: str
+    description: str = ""
+
+
 class BaseTool(ABC):
     """Base class for all tools."""
 
@@ -34,6 +42,13 @@ class BaseTool(ABC):
     # Capabilities used by the agent loop for generic policies/guards.
     requires_approval: bool = False
     mutation_signature_fields: tuple[str, ...] = ()
+
+    def build_approval_request(self, **kwargs) -> ApprovalRequestSpec:
+        """Optional hook for action + description used by approval prompts."""
+        return ApprovalRequestSpec(
+            action=self.name,
+            description=self.build_approval_context(**kwargs),
+        )
 
     def build_approval_context(self, **kwargs) -> str:
         """Optional hook for approval-time preview details (default: none)."""

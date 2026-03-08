@@ -2,7 +2,7 @@
 
 This document is the high-level system map for contributors and agents.
 Deep design details stay in specialized docs under `docs/architecture/`.
-Last validated against code: 2026-03-08.
+Last validated against code: 2026-03-09.
 
 ## System Overview
 
@@ -77,7 +77,8 @@ Use these rules when deciding where code should live.
    - filesystem/network/process I/O
    - domain-specific validation (for example ambiguous edit matches)
    - idempotency and no-op detection
-   - preview material for approval (for example diffs) via `build_approval_context()`
+   - approval metadata via `build_approval_request()` (action key + description)
+   - optional preview material for approval (for example diffs) via `build_approval_context()`
 3. `LLMAgent` must not read or mutate target resources to "simulate" tool behavior.
    - Example: do not read files in loop code to generate write diffs.
    - Instead, call tool hook (`build_approval_context`) and display returned text.

@@ -112,6 +112,46 @@ def _register_write_tool_path(agent: LLMAgent) -> None:
     )
 
 
+def _register_rename_tool(agent: LLMAgent) -> None:
+    def file_rename(source_path: str = "", dest_path: str = "", overwrite: bool = False) -> str:
+        return f"renamed {source_path} to {dest_path} ({overwrite})"
+
+    agent.register_tool(
+        name="file_rename",
+        description="Rename file",
+        parameters={
+            "properties": {
+                "source_path": {"type": "string", "required": True},
+                "dest_path": {"type": "string", "required": True},
+                "overwrite": {"type": "boolean", "required": False},
+            },
+            "required": ["source_path", "dest_path"],
+        },
+        func=file_rename,
+    )
+
+
+def _register_edit_tool(agent: LLMAgent) -> None:
+    def file_edit(path: str = "", old_string: str = "", new_string: str = "", replace_all: bool = False) -> str:
+        return f"edited {path} ({replace_all})"
+
+    agent.register_tool(
+        name="file_edit",
+        description="Edit file",
+        parameters={
+            "properties": {
+                "path": {"type": "string", "required": True},
+                "old_string": {"type": "string", "required": True},
+                "new_string": {"type": "string", "required": True},
+                "replace_all": {"type": "boolean", "required": False},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+        func=file_edit,
+        requires_approval=True,
+    )
+
+
 async def _collect_from_ui(ui, timeout: float = 5.0) -> list:
     """Collect all wire messages from a pre-subscribed UI side until shutdown."""
     messages = []
@@ -300,7 +340,7 @@ async def test_wire_approval_reject():
 
 @pytest.mark.asyncio
 async def test_wire_approve_all_persists_across_turns():
-    """approve_all should enable global auto-approve for subsequent turns."""
+    """approve_all should persist action-level auto-approval across turns."""
     agent = _make_agent()
     _register_write_tool(agent)
 
@@ -333,7 +373,7 @@ async def test_wire_approve_all_persists_across_turns():
 
     assert response1 == "first done"
     assert any(isinstance(m, ApprovalRequest) for m in messages1)
-    assert agent.is_auto_approve_enabled() is True
+    assert agent.is_auto_approve_enabled() is False
 
     second_tool = LLMResponse(
         text="",
@@ -351,6 +391,162 @@ async def test_wire_approve_all_persists_across_turns():
 
     assert response2 == "second done"
     assert not any(isinstance(m, ApprovalRequest) for m in messages2)
+
+
+@pytest.mark.asyncio
+async def test_wire_approve_all_is_action_scoped_not_global():
+    """approve_all for one action should not auto-approve a different action."""
+    agent = _make_agent()
+    _register_write_tool(agent)
+    _register_rename_tool(agent)
+
+    first_tool = LLMResponse(
+        text="",
+        function_calls=[FunctionCall(name="file_write", arguments={"file_path": "a.txt", "content": "one"}, id="c1")],
+    )
+    first_final = LLMResponse(text="first done", function_calls=[])
+    agent.provider = _ScriptedProvider([first_tool, first_final])
+
+    wire1 = Wire()
+    approver_ui1 = wire1.ui_side()
+    collector_ui1 = wire1.ui_side()
+
+    async def approve_write_for_session():
+        try:
+            while True:
+                msg = await approver_ui1.receive()
+                if isinstance(msg, ApprovalRequest):
+                    msg.resolve("approve_all")
+        except QueueShutDown:
+            pass
+
+    approve_task1 = asyncio.create_task(approve_write_for_session())
+    collector_task1 = asyncio.create_task(_collect_from_ui(collector_ui1))
+    response1 = await agent.run("write first", wire=wire1)
+    wire1.shutdown()
+    messages1 = await collector_task1
+    await approve_task1
+
+    assert response1 == "first done"
+    approvals1 = [m for m in messages1 if isinstance(m, ApprovalRequest)]
+    assert len(approvals1) == 1
+    assert approvals1[0].action == "file_write"
+
+    second_tool = LLMResponse(
+        text="",
+        function_calls=[
+            FunctionCall(
+                name="file_rename",
+                arguments={"source_path": "a.txt", "dest_path": "b.txt", "overwrite": False},
+                id="c2",
+            )
+        ],
+    )
+    second_final = LLMResponse(text="second done", function_calls=[])
+    agent.provider = _ScriptedProvider([second_tool, second_final])
+
+    wire2 = Wire()
+    approver_ui2 = wire2.ui_side()
+    collector_ui2 = wire2.ui_side()
+
+    async def approve_rename_once():
+        try:
+            while True:
+                msg = await approver_ui2.receive()
+                if isinstance(msg, ApprovalRequest):
+                    msg.resolve("approve")
+        except QueueShutDown:
+            pass
+
+    approve_task2 = asyncio.create_task(approve_rename_once())
+    collector_task2 = asyncio.create_task(_collect_from_ui(collector_ui2))
+    response2 = await agent.run("rename second", wire=wire2)
+    wire2.shutdown()
+    messages2 = await collector_task2
+    await approve_task2
+
+    assert response2 == "second done"
+    approvals2 = [m for m in messages2 if isinstance(m, ApprovalRequest)]
+    assert len(approvals2) == 1
+    assert approvals2[0].action == "file_rename"
+
+
+@pytest.mark.asyncio
+async def test_wire_approve_all_for_write_does_not_auto_approve_edit():
+    """approve_all for file_write should not auto-approve file_edit."""
+    agent = _make_agent()
+    _register_write_tool(agent)
+    _register_edit_tool(agent)
+
+    first_tool = LLMResponse(
+        text="",
+        function_calls=[FunctionCall(name="file_write", arguments={"file_path": "a.txt", "content": "one"}, id="c1")],
+    )
+    first_final = LLMResponse(text="first done", function_calls=[])
+    agent.provider = _ScriptedProvider([first_tool, first_final])
+
+    wire1 = Wire()
+    approver_ui1 = wire1.ui_side()
+    collector_ui1 = wire1.ui_side()
+
+    async def approve_write_for_session():
+        try:
+            while True:
+                msg = await approver_ui1.receive()
+                if isinstance(msg, ApprovalRequest):
+                    msg.resolve("approve_all")
+        except QueueShutDown:
+            pass
+
+    approve_task1 = asyncio.create_task(approve_write_for_session())
+    collector_task1 = asyncio.create_task(_collect_from_ui(collector_ui1))
+    response1 = await agent.run("write first", wire=wire1)
+    wire1.shutdown()
+    messages1 = await collector_task1
+    await approve_task1
+
+    assert response1 == "first done"
+    approvals1 = [m for m in messages1 if isinstance(m, ApprovalRequest)]
+    assert len(approvals1) == 1
+    assert approvals1[0].action == "file_write"
+
+    second_tool = LLMResponse(
+        text="",
+        function_calls=[
+            FunctionCall(
+                name="file_edit",
+                arguments={"path": "a.txt", "old_string": "one", "new_string": "two", "replace_all": False},
+                id="c2",
+            )
+        ],
+    )
+    second_final = LLMResponse(text="second done", function_calls=[])
+    agent.provider = _ScriptedProvider([second_tool, second_final])
+
+    wire2 = Wire()
+    approver_ui2 = wire2.ui_side()
+    collector_ui2 = wire2.ui_side()
+
+    async def approve_edit_once():
+        try:
+            while True:
+                msg = await approver_ui2.receive()
+                if isinstance(msg, ApprovalRequest):
+                    msg.resolve("approve")
+        except QueueShutDown:
+            pass
+
+    approve_task2 = asyncio.create_task(approve_edit_once())
+    collector_task2 = asyncio.create_task(_collect_from_ui(collector_ui2))
+    response2 = await agent.run("edit second", wire=wire2)
+    wire2.shutdown()
+    messages2 = await collector_task2
+    await approve_task2
+
+    assert response2 == "second done"
+    approvals2 = [m for m in messages2 if isinstance(m, ApprovalRequest)]
+    assert len(approvals2) == 1
+    assert approvals2[0].action == "file_edit"
 
 
 @pytest.mark.asyncio

@@ -536,7 +536,7 @@ def _create_writer_agent(
         verbose=verbose,
     )
 
-    _register_tools(llm_agent, tools, ["file_read", "file_write", "lint_resume", "job_match"])
+    _register_tools(llm_agent, tools, ["file_read", "file_write", "file_edit", "lint_resume", "job_match"])
 
     llm_agent.history_manager = history_manager.get_agent_history("writer_agent")
 
@@ -583,7 +583,7 @@ def _create_formatter_agent(
         verbose=verbose,
     )
 
-    _register_tools(llm_agent, tools, ["resume_write", "file_read", "file_write", "resume_validate"])
+    _register_tools(llm_agent, tools, ["resume_write", "file_read", "file_write", "file_edit", "resume_validate"])
 
     llm_agent.history_manager = history_manager.get_agent_history("formatter_agent")
 
@@ -640,6 +640,7 @@ def _create_orchestrator_agent(
         [
             "file_list",
             "file_rename",
+            "file_edit",
             "web_read",
             "web_fetch",
             "lint_resume",

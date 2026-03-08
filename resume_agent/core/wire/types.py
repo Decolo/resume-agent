@@ -81,9 +81,10 @@ ApprovalResponseKind = Literal["approve", "approve_all", "reject"]
 
 @dataclass
 class ApprovalRequest:
-    """Request for user approval before executing write tools."""
+    """Request for user approval before executing a gated tool action."""
 
     id: str
+    action: str
     tool_calls: List[FunctionCall]
     description: str
     _future: asyncio.Future = field(default=None, repr=False, compare=False)  # type: ignore[assignment]

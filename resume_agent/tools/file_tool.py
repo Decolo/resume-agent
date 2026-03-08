@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from resume_agent.core.tools.base import BaseTool, ToolResult
+from resume_agent.core.tools.base import ApprovalRequestSpec, BaseTool, ToolResult
 
 # Constants
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -162,6 +162,28 @@ class FileWriteTool(BaseTool):
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
         self._preview_manager = None  # Set by CLI when preview mode is on
+
+    def build_approval_request(
+        self,
+        path: str,
+        content: str,
+        mode: str = "overwrite",
+        encoding: str = "utf-8",
+        **_kwargs: Any,
+    ) -> ApprovalRequestSpec:
+        """Build action + diff description for write approval."""
+        mode_normalized = (mode or "overwrite").strip().lower()
+        if mode_normalized not in {"overwrite", "append"}:
+            mode_normalized = "overwrite"
+        diff_preview = self.build_approval_context(
+            path=path,
+            content=content,
+            mode=mode_normalized,
+            encoding=encoding,
+        )
+        header = f"Write file `{path}` (mode={mode_normalized})"
+        description = header if not diff_preview else f"{header}\n\n{diff_preview}"
+        return ApprovalRequestSpec(action="file_write", description=description)
 
     def build_approval_context(
         self,
@@ -378,6 +400,28 @@ class FileEditTool(BaseTool):
         self.workspace_dir = Path(workspace_dir).resolve()
         self._preview_manager = None  # Set by CLI when preview mode is on
 
+    def build_approval_request(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+        encoding: str = "utf-8",
+        **_kwargs: Any,
+    ) -> ApprovalRequestSpec:
+        """Build action + diff description for edit approval."""
+        diff_preview = self.build_approval_context(
+            path=path,
+            old_string=old_string,
+            new_string=new_string,
+            replace_all=replace_all,
+            encoding=encoding,
+        )
+        replace_mode = "replace_all" if replace_all else "replace_one"
+        header = f"Edit file `{path}` ({replace_mode})"
+        description = header if not diff_preview else f"{header}\n\n{diff_preview}"
+        return ApprovalRequestSpec(action="file_edit", description=description)
+
     def build_approval_context(
         self,
         path: str,
@@ -531,6 +575,18 @@ class FileRenameTool(BaseTool):
 
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
+
+    def build_approval_request(
+        self,
+        source_path: str,
+        dest_path: str,
+        overwrite: bool = False,
+        **_kwargs: Any,
+    ) -> ApprovalRequestSpec:
+        """Build action + description for rename approval."""
+        overwrite_text = "overwrite destination" if overwrite else "fail if destination exists"
+        description = f"Rename/move file `{source_path}` -> `{dest_path}`\n" f"Policy: {overwrite_text}."
+        return ApprovalRequestSpec(action="file_rename", description=description)
 
     async def execute(self, source_path: str, dest_path: str, overwrite: bool = False) -> ToolResult:
         try:
