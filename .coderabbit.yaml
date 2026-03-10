@@ -25,10 +25,10 @@ reviews:
 
     - path: "resume_agent/core/agent_factory.py"
       instructions: |
-        This is the multi-agent factory. Check that:
-        - New tools are also registered here via _register_tools()
-        - Agent tool subsets follow least privilege (ParserAgent, WriterAgent, FormatterAgent each get restricted tools)
-        - IntentRouter routing logic is consistent
+        This creates the single-agent runtime. Check that:
+        - Runtime defaults stay aligned with `resume_agent/core/agent.py`
+        - Prompt-cache config from `load_config()` reaches the provider path
+        - Session manager and tool registry are passed through unchanged
 
     - path: "resume_agent/core/llm.py"
       instructions: |
@@ -39,18 +39,8 @@ reviews:
     - path: "resume_agent/tools/**"
       instructions: |
         All tools must extend BaseTool and return ToolResult.
-        Write tools must never be cached.
+        Tool execution results must not rely on local cache shortcuts.
         Check for command injection in bash tool, path traversal in file tools.
-
-    - path: "resume_agent/core/agents/**"
-      instructions: |
-        Agents must extend BaseAgent with agent_id, agent_type, capabilities.
-        Each agent has isolated HistoryManager — context passed via AgentTask.context, not shared history.
-
-    - path: "resume_agent/core/cache.py"
-      instructions: |
-        TTL cache rules: file_read 60s, file_list 30s, resume_parse 300s.
-        Write tools must NEVER be cached. Uses SHA256 key generation.
 
     - path: "resume_agent/core/retry.py"
       instructions: |

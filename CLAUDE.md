@@ -18,16 +18,8 @@ Config loaded from `config/config.local.yaml` (primary) → `config/config.yaml`
 
 1. Create class in `resume_agent/tools/` extending `BaseTool`
 2. Implement `execute()`, define `name`, `description`, `parameters`
-3. Register in `ResumeAgent._register_tools()` (single-agent) or via `_register_tools()` in `core/agent_factory.py` (multi-agent)
+3. Register it in the runtime tool wiring used by `ResumeAgent`
 4. Add tests in `tests/`
-
-## Adding a New Specialized Agent
-
-1. Create class in `resume_agent/core/agents/` extending `BaseAgent`
-2. Define `agent_id`, `agent_type`, `capabilities`
-3. Implement `execute(task)` and `can_handle(task)`
-4. Create system prompt in `resume_agent/core/skills/`
-5. Register in `core/agent_factory.py`
 
 ## Conventions
 

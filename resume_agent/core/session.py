@@ -167,44 +167,6 @@ class SessionSerializer:
             events.append(event)
         return events
 
-    @staticmethod
-    def serialize_multi_agent_state(agent) -> dict:
-        """Serialize multi-agent specific state.
-
-        Args:
-            agent: OrchestratorAgent instance
-
-        Returns:
-            Dictionary with delegation history, agent stats, shared context
-        """
-        from .agents.orchestrator_agent import OrchestratorAgent
-
-        if not isinstance(agent, OrchestratorAgent):
-            return {}
-
-        # Serialize delegation history
-        delegation_history = []
-        if agent.delegation_manager:
-            for record in agent.delegation_manager._delegation_history:
-                delegation_history.append(
-                    {
-                        "task_id": record.task_id,
-                        "from_agent": record.from_agent,
-                        "to_agent": record.to_agent,
-                        "timestamp": record.timestamp.isoformat(),
-                        "duration_ms": record.duration_ms,
-                        "success": record.success,
-                    }
-                )
-
-        # Serialize agent stats
-        agent_stats = agent.get_agent_stats() if hasattr(agent, "get_agent_stats") else {}
-
-        return {
-            "delegation_history": delegation_history,
-            "agent_stats": agent_stats,
-        }
-
 
 class SessionIndex:
     """Fast session lookup and metadata management."""
@@ -292,16 +254,13 @@ class SessionManager:
         """Save current session to JSON file.
 
         Args:
-            agent: ResumeAgent, OrchestratorAgent, or AutoAgent instance
+            agent: ResumeAgent instance
             session_id: Optional session ID to update existing session
             session_name: Optional custom name for the session
 
         Returns:
             Session ID
         """
-        from .agent_factory import AutoAgent
-        from .agents.orchestrator_agent import OrchestratorAgent
-
         # Generate or reuse session ID
         if session_id is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -315,55 +274,20 @@ class SessionManager:
             else:
                 session_id = f"session_{timestamp}_{unique_id}"
 
-        # Determine agent mode and get LLM agent
-        if isinstance(agent, AutoAgent):
-            # AutoAgent: use single-agent for session management
-            is_multi_agent = False
-            mode = "auto-agent"
-            llm_agent = agent.agent
-        elif isinstance(agent, OrchestratorAgent):
-            is_multi_agent = True
-            mode = "multi-agent"
-            llm_agent = agent.llm_agent
-        else:
-            # ResumeAgent
-            is_multi_agent = False
-            mode = "single-agent"
-            llm_agent = agent.agent
-
-        # Get config
-        if isinstance(agent, AutoAgent):
-            # AutoAgent: use single-agent config
-            config_data = {
-                "model": agent.single_agent.llm_config.model,
-                "max_tokens": agent.single_agent.llm_config.max_tokens,
-                "temperature": agent.single_agent.llm_config.temperature,
-                "workspace_dir": agent.single_agent.agent_config.workspace_dir,
-            }
-        elif is_multi_agent:
-            config_data = {
-                "model": agent.config.model,
-                "max_tokens": agent.config.max_tokens,
-                "temperature": agent.config.temperature,
-            }
-        else:
-            config_data = {
-                "model": agent.llm_config.model,
-                "max_tokens": agent.llm_config.max_tokens,
-                "temperature": agent.llm_config.temperature,
-                "workspace_dir": agent.agent_config.workspace_dir,
-            }
+        mode = "single-agent"
+        llm_agent = agent.agent
+        config_data = {
+            "model": agent.llm_config.model,
+            "max_tokens": agent.llm_config.max_tokens,
+            "temperature": agent.llm_config.temperature,
+            "workspace_dir": agent.agent_config.workspace_dir,
+        }
 
         # Serialize conversation history
         conversation_data = SessionSerializer.serialize_history(llm_agent.history_manager)
 
         # Serialize observability data
         observability_data = SessionSerializer.serialize_observability(llm_agent.observer)
-
-        # Serialize multi-agent state (if applicable)
-        multi_agent_data = {}
-        if is_multi_agent:
-            multi_agent_data = SessionSerializer.serialize_multi_agent_state(agent)
 
         # Build session data
         now = datetime.now()
@@ -380,9 +304,6 @@ class SessionManager:
             "conversation": conversation_data,
             "observability": observability_data,
         }
-
-        if multi_agent_data:
-            session_data["multi_agent"] = multi_agent_data
 
         # Save to file
         session_file = self.sessions_dir / f"{session_id}.json"
@@ -464,32 +385,10 @@ class SessionManager:
         """Restore agent state from session data.
 
         Args:
-            agent: ResumeAgent, OrchestratorAgent, or AutoAgent instance
+            agent: ResumeAgent instance
             session_data: Session data dictionary from load_session()
         """
-        from .agent_factory import AutoAgent
-        from .agents.delegation import DelegationRecord
-        from .agents.orchestrator_agent import OrchestratorAgent
-
-        # Handle AutoAgent
-        if isinstance(agent, AutoAgent):
-            # Restore to single-agent (AutoAgent uses single-agent for history)
-            actual_agent = agent.single_agent
-            is_multi_agent = False
-        elif isinstance(agent, OrchestratorAgent):
-            actual_agent = agent
-            is_multi_agent = True
-        else:
-            actual_agent = agent
-            is_multi_agent = False
-
-        # Get LLM agent
-        if isinstance(agent, AutoAgent):
-            llm_agent = agent.agent
-        elif is_multi_agent:
-            llm_agent = actual_agent.llm_agent
-        else:
-            llm_agent = actual_agent.agent
+        llm_agent = agent.agent
 
         # 1. Restore conversation history
         messages = SessionSerializer.deserialize_history(session_data["conversation"])
@@ -498,21 +397,3 @@ class SessionManager:
         # 2. Restore observability events
         events = SessionSerializer.deserialize_observability(session_data["observability"])
         llm_agent.observer.events = events
-
-        # 3. Restore multi-agent state (if applicable)
-        if is_multi_agent and "multi_agent" in session_data:
-            ma_data = session_data["multi_agent"]
-
-            # Restore delegation history
-            if actual_agent.delegation_manager and "delegation_history" in ma_data:
-                actual_agent.delegation_manager._delegation_history = []
-                for record_data in ma_data["delegation_history"]:
-                    record = DelegationRecord(
-                        task_id=record_data["task_id"],
-                        from_agent=record_data["from_agent"],
-                        to_agent=record_data["to_agent"],
-                        timestamp=datetime.fromisoformat(record_data["timestamp"]),
-                        duration_ms=record_data.get("duration_ms"),
-                        success=record_data.get("success"),
-                    )
-                    actual_agent.delegation_manager._delegation_history.append(record)

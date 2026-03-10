@@ -39,7 +39,6 @@ observer.log_tool_call(
     result="content...",
     duration_ms=42.5,
     success=True,
-    cached=False,
 )
 observer.log_llm_request(
     model="gemini-2.5-flash",
@@ -53,20 +52,23 @@ observer.log_step_end(step=1, duration_ms=640.0)
 stats = observer.get_session_stats()
 ```
 
-## Tool Cache (`resume_agent/core/cache.py`)
+## Prompt Cache (`resume_agent/core/llm.py`)
 
 ```python
-from resume_agent.core.cache import ToolCache, get_tool_ttl, should_cache_tool
+from resume_agent.core.llm import LLMConfig
 
-cache = ToolCache()
-tool_name = "file_read"
-args = {"path": "resume.md"}
+config = LLMConfig(
+    api_key="...",
+    provider="kimi",
+    model="kimi-k2.5",
+    prompt_cache_enabled=True,
+    prompt_cache_retention="24h",
+)
 
-if should_cache_tool(tool_name):
-    cached = cache.get(tool_name, args)
-    if cached is None:
-        fresh = "file content"
-        cache.set(tool_name, args, fresh, ttl_seconds=get_tool_ttl(tool_name))
+# The runtime generates a request-level prompt_cache_key automatically from:
+# - provider + model
+# - system prompt
+# - registered tool schemas
 ```
 
 ## History Management (`resume_agent/core/llm.py`)

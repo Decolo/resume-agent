@@ -77,7 +77,7 @@ I'll analyze your resume...
 ```json
 {
   "exported_at": "2026-02-02T12:34:56",
-  "agent_mode": "multi-agent",
+  "agent_mode": "single-agent",
   "messages": [
     {
       "role": "user",
@@ -92,9 +92,8 @@ I'll analyze your resume...
       "role": "model",
       "parts": [
         {
-          "type": "function_call",
-          "name": "delegate_to_parser",
-          "args": {"path": "examples/resume.md"}
+          "type": "text",
+          "content": "I'll analyze the resume and summarize the strongest improvement opportunities."
         }
       ]
     }
@@ -159,4 +158,3 @@ The `exports/` directory is automatically created and gitignored.
 - **Privacy**: Exported files may contain sensitive information. Handle with care.
 - **Clipboard**: Requires clipboard access. May not work in some terminal environments.
 - **History**: Only exports the current session's conversation history.
-- **Multi-agent**: Exports the orchestrator's conversation history (includes all agent interactions).

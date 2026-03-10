@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Tuple
 
 from resume_agent.core.tools.base import BaseTool, ToolResult
 from resume_agent.domain.job_matcher import format_match_report, match_job
@@ -49,20 +49,12 @@ class ResumeParserTool(BaseTool):
 
     def __init__(self, workspace_dir: str = "."):
         self.workspace_dir = Path(workspace_dir).resolve()
-        self._cache: Dict[str, Tuple[float, ToolResult]] = {}
 
     async def execute(self, path: str) -> ToolResult:
         try:
             file_path = self._resolve_path(path)
             if not file_path.exists():
                 return ToolResult(success=False, output="", error=f"File not found: {path}")
-
-            current_mtime = file_path.stat().st_mtime
-            cache_key = str(file_path)
-            if cache_key in self._cache:
-                cached_mtime, cached_result = self._cache[cache_key]
-                if cached_mtime == current_mtime:
-                    return cached_result
 
             suffix = file_path.suffix.lower()
 
@@ -100,7 +92,6 @@ class ResumeParserTool(BaseTool):
                     "metadata": metadata,
                 },
             )
-            self._cache[cache_key] = (current_mtime, result)
             return result
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))

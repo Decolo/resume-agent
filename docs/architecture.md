@@ -13,7 +13,7 @@ Single `resume_agent/` package with logical submodules:
    - Resume parsing, linting, job matching, validation
    - Pure functions with no external dependencies
 3. **Core** - Agent runtime (`resume_agent/core/`)
-   - LLM orchestration, multi-agent system, session management
+   - LLM orchestration, prompt caching, session management
 4. **Tools** - Tool adapters (`resume_agent/tools/`)
    - File I/O, bash execution, resume tools, LinkedIn browser automation (CDP), web fetch
 5. **Providers** - LLM provider adapters (`resume_agent/providers/`)
@@ -32,11 +32,11 @@ Automated boundary checks: `tests/architecture/`
 
 ### CLI Path (Top-Level)
 
-`resume_agent/cli/app.py` → `resume_agent/core/agent_factory.py` → `ResumeAgent`/`OrchestratorAgent` → `LLMAgent` → CLI tools → domain functions.
+`resume_agent/cli/app.py` → `resume_agent/core/agent_factory.py` → `ResumeAgent` → `LLMAgent` → CLI tools → domain functions.
 
 ### Detailed Execution Flow
 
-For step-by-step runtime behavior (inline wire approval, loop guard, auto-save, delegation), see:
+For step-by-step runtime behavior (inline wire approval, loop guard, auto-save), see:
 
 - `docs/architecture/execution-data-flow.md`
 
@@ -105,9 +105,8 @@ Use this section to avoid starting from stale details when editing docs:
 
 | Document | Status | Notes |
 | --- | --- | --- |
-| `docs/architecture/execution-data-flow.md` | Current | Canonical runtime behavior for CLI, LLM loop, tools, and delegation. |
+| `docs/architecture/execution-data-flow.md` | Current | Canonical runtime behavior for CLI, LLM loop, tools, and session persistence. |
 | `docs/architecture/adrs/001-gemini-function-calling.md` | Current (updated) | Decision remains valid; references now map to provider-agnostic schema + provider adapter code. |
-| `docs/architecture/adrs/002-multi-agent-architecture.md` | Current | Operational mode model remains `single` / `multi` / `auto`. |
 | `docs/architecture/adrs/003-agent-loop-tool-boundary.md` | Current | Defines hard ownership boundary between loop orchestration and tool mutation semantics. |
 | `docs/archive/phase1-improvements.md` | Archived | Historical implementation summary retained for context only. |
 
@@ -116,7 +115,7 @@ Use this section to avoid starting from stale details when editing docs:
 For lint-related doc changes, read this path in order:
 
 1. `resume_agent/cli/tool_factory.py` (`lint_resume` registration)
-2. `resume_agent/core/agent_factory.py` (single vs multi-agent tool wiring)
+2. `resume_agent/core/agent_factory.py` (single-agent runtime construction)
 3. `resume_agent/tools/resume_tools.py` (`ResumeLinterTool`)
 4. `resume_agent/domain/resume_linter.py` (score model + report formatting)
 5. `resume_agent/domain/linting/*` (rule engine, AST parser, language router)
