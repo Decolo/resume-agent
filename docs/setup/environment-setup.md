@@ -35,9 +35,9 @@ Default configuration template. Safe to commit to git.
 ```yaml
 api_key: "${GEMINI_API_KEY}"  # References .env
 model: "gemini-2.5-flash"
-multi_agent:
-  enabled: true
-  # ...
+prompt_cache:
+  enabled: false
+  retention: null
 ```
 
 ### `config/config.local.yaml` (Local Overrides - Gitignored)

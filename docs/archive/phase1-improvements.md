@@ -7,6 +7,10 @@ Phase 1 focused on core agent loop enhancements: reliability, performance, obser
 > Note: This file is primarily a historical implementation summary. For current
 > line-level behavior and exact data fields, use `resume_agent/core/*.py` and
 > `tests/core/*.py` as source of truth.
+>
+> Current runtime status: generic tool-result caching has been removed. Prompt
+> cache is now configured at the provider request layer for OpenAI-compatible
+> backends.
 
 ## Key Improvements
 

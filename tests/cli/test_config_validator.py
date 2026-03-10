@@ -88,22 +88,6 @@ class TestValidateConfig:
         assert len(token_errors) == 1
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_invalid_multi_agent_enabled(self):
-        config = self._valid_config()
-        config["multi_agent"] = {"enabled": "maybe"}
-        issues = validate_config(config)
-        ma_errors = [e for e in issues if e.field == "multi_agent.enabled"]
-        assert len(ma_errors) == 1
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_valid_multi_agent_auto(self):
-        config = self._valid_config()
-        config["multi_agent"] = {"enabled": "auto"}
-        issues = validate_config(config)
-        ma_errors = [e for e in issues if e.field == "multi_agent.enabled"]
-        assert len(ma_errors) == 0
-
-    @patch.dict(os.environ, {}, clear=True)
     def test_nonexistent_workspace_is_warning(self):
         config = self._valid_config()
         issues = validate_config(config, workspace_dir="/nonexistent/path/xyz")

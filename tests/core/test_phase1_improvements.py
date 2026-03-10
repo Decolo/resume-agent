@@ -1,10 +1,9 @@
-"""Test suite for Phase 1 improvements: retry, history, caching, observability."""
+"""Test suite for Phase 1 improvements: retry, history, and observability."""
 
 import logging
 
 import pytest
 
-from resume_agent.core.cache import ToolCache, get_tool_ttl, should_cache_tool
 from resume_agent.core.llm import HistoryManager
 from resume_agent.core.observability import AgentObserver
 
@@ -150,82 +149,6 @@ class TestHistoryManager:
         assert len(manager.get_history()) == 0
 
 
-class TestToolCache:
-    """Test tool result caching with TTL."""
-
-    def test_cache_set_and_get(self):
-        """Test basic cache set and get."""
-        cache = ToolCache()
-
-        cache.set("test_tool", {"arg": "value"}, "result", ttl_seconds=300)
-        result = cache.get("test_tool", {"arg": "value"})
-
-        assert result == "result"
-
-    def test_cache_miss(self):
-        """Test cache miss returns None."""
-        cache = ToolCache()
-
-        result = cache.get("nonexistent", {})
-        assert result is None
-
-    def test_cache_expiration(self):
-        """Test that expired entries are not returned."""
-        cache = ToolCache()
-
-        # Add entry with 0 second TTL (immediately expired)
-        cache.set("test_tool", {"arg": "value"}, "result", ttl_seconds=0)
-
-        # Wait a tiny bit to ensure expiration
-        import time
-
-        time.sleep(0.01)
-
-        result = cache.get("test_tool", {"arg": "value"})
-        assert result is None
-
-    def test_cache_stats(self):
-        """Test cache statistics tracking."""
-        cache = ToolCache()
-
-        # Add and retrieve (hit)
-        cache.set("tool1", {"a": 1}, "result1")
-        cache.get("tool1", {"a": 1})
-
-        # Try to get non-existent (miss)
-        cache.get("tool2", {"b": 2})
-
-        stats = cache.get_stats()
-        assert stats["hits"] == 1
-        assert stats["misses"] == 1
-        assert stats["hit_rate"] == 0.5
-
-    def test_cache_deterministic_key(self):
-        """Test that cache keys are deterministic."""
-        cache = ToolCache()
-
-        # Same args in different order should produce same key
-        cache.set("tool", {"a": 1, "b": 2}, "result1")
-        result = cache.get("tool", {"b": 2, "a": 1})
-
-        assert result == "result1"
-
-    def test_should_cache_tool(self):
-        """Test tool caching configuration."""
-        assert should_cache_tool("file_read") is True
-        assert should_cache_tool("file_list") is True
-        assert should_cache_tool("resume_parse") is True
-        assert should_cache_tool("file_write") is False
-        assert should_cache_tool("bash") is False
-
-    def test_get_tool_ttl(self):
-        """Test tool TTL configuration."""
-        assert get_tool_ttl("file_read") == 60
-        assert get_tool_ttl("file_list") == 30
-        assert get_tool_ttl("resume_parse") == 300
-        assert get_tool_ttl("unknown_tool") == 300  # Default
-
-
 class TestObservability:
     """Test structured logging and observability."""
 
@@ -254,7 +177,6 @@ class TestObservability:
             result="success",
             duration_ms=100.5,
             success=True,
-            cached=False,
         )
 
         assert len(observer.events) == 1

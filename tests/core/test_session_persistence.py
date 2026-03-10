@@ -123,7 +123,6 @@ class TestSessionSerializer:
             result="File contents",
             duration_ms=100.0,
             success=True,
-            cached=False,
         )
 
         serialized = SessionSerializer.serialize_observability(observer)

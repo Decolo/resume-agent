@@ -8,7 +8,7 @@ import sys
 import threading
 import traceback
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Union
+from typing import Any, Dict, Iterable, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application.current import get_app
@@ -21,9 +21,8 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from resume_agent.core.agent import AgentConfig, ResumeAgent
+from resume_agent.core.agent import ResumeAgent
 from resume_agent.core.agent_factory import create_agent
-from resume_agent.core.agents.orchestrator_agent import OrchestratorAgent
 from resume_agent.core.llm import LLMConfig, load_config, load_raw_config
 from resume_agent.core.session import SessionManager
 from resume_agent.core.wire import QueueShutDown, Wire
@@ -215,9 +214,6 @@ class ResumeCLICompleter(Completer):
         "/export",
         "/auto-approve",
         "/stream",
-        "/agents",
-        "/trace",
-        "/delegation-tree",
         "/quit",
         "/exit",
     ]
@@ -318,9 +314,6 @@ def print_help():
 | `/export [target] [format]` | Export conversation history |
 | `/auto-approve [on|off|status]` | Control auto-approval for write tools |
 | `/stream [on|off|status]` | Control streaming output in interactive mode |
-| `/agents` | Show agent statistics (multi-agent mode) |
-| `/trace` | Show delegation trace (multi-agent mode) |
-| `/delegation-tree` | Show delegation stats (multi-agent mode) |
 
 ### Session Management
 
@@ -337,7 +330,7 @@ Sessions are auto-saved; use these commands to inspect and restore:
 - 🔎 **Fuzzy search**: `/sessions data eng` filters sessions by token match
 - ✅ **Explicit selection**: interactive mode always confirms the target session before loading
 - 🔄 **Auto-save always enabled**: Sessions automatically saved after each assistant turn
-- 📊 **Full state preservation**: History, observability, multi-agent state
+- 📊 **Full state preservation**: History and observability
 
 ### Export Command
 
@@ -357,11 +350,12 @@ Export conversation history to file or clipboard:
 ```
 
 **Verbose mode includes:**
-- Tool execution logs (name, args, duration, cache status)
+- Tool execution logs (name, args, duration)
 - LLM API requests (model, tokens, cost, duration)
+- Prompt cache read tokens when available
 - Error events with context
 - Step-by-step execution trace
-- Session statistics (total tokens, cost, cache hit rate)
+- Session statistics (total tokens, cost, prompt cache usage)
 
 Files are saved to `exports/conversation_YYYYMMDD_HHMMSS[_verbose].{ext}`
 
@@ -377,46 +371,12 @@ Files are saved to `exports/conversation_YYYYMMDD_HHMMSS[_verbose].{ext}`
     console.print(Markdown(help_text))
 
 
-def _get_llm_agents(agent: Union[ResumeAgent, OrchestratorAgent]):
-    """Return list of LLMAgent instances for pending tool approvals."""
-    from resume_agent.core.agent_factory import AutoAgent
-
-    agents = []
-    if isinstance(agent, AutoAgent):
-        if hasattr(agent, "single_agent") and hasattr(agent.single_agent, "agent"):
-            agents.append(agent.single_agent.agent)
-        if hasattr(agent, "multi_agent") and hasattr(agent.multi_agent, "llm_agent"):
-            agents.append(agent.multi_agent.llm_agent)
-        if hasattr(agent, "multi_agent") and hasattr(agent.multi_agent, "registry"):
-            for sub_agent in agent.multi_agent.registry.get_all_agents():
-                if hasattr(sub_agent, "llm_agent") and sub_agent.llm_agent:
-                    agents.append(sub_agent.llm_agent)
-    elif isinstance(agent, ResumeAgent):
-        if hasattr(agent, "agent"):
-            agents.append(agent.agent)
-    elif isinstance(agent, OrchestratorAgent):
-        if hasattr(agent, "llm_agent"):
-            agents.append(agent.llm_agent)
-        if hasattr(agent, "registry"):
-            for sub_agent in agent.registry.get_all_agents():
-                if hasattr(sub_agent, "llm_agent") and sub_agent.llm_agent:
-                    agents.append(sub_agent.llm_agent)
-
-    # De-duplicate
-    unique = []
-    seen = set()
-    for a in agents:
-        if a is None:
-            continue
-        aid = id(a)
-        if aid in seen:
-            continue
-        seen.add(aid)
-        unique.append(a)
-    return unique
+def _get_llm_agents(agent: ResumeAgent):
+    """Return active LLMAgent instances for pending tool approvals."""
+    return [agent.agent] if hasattr(agent, "agent") and agent.agent is not None else []
 
 
-def _get_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent]) -> Optional[str]:
+def _get_auto_approve_state(agent: ResumeAgent) -> Optional[str]:
     states = []
     for llm_agent in _get_llm_agents(agent):
         if hasattr(llm_agent, "is_auto_approve_enabled"):
@@ -430,13 +390,13 @@ def _get_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent]) -> Opt
     return "mixed"
 
 
-def _set_auto_approve_state(agent: Union[ResumeAgent, OrchestratorAgent], enabled: bool) -> None:
+def _set_auto_approve_state(agent: ResumeAgent, enabled: bool) -> None:
     for llm_agent in _get_llm_agents(agent):
         if hasattr(llm_agent, "set_auto_approve_tools"):
             llm_agent.set_auto_approve_tools(enabled)
 
 
-def _set_interrupt_checker(agent: Union[ResumeAgent, OrchestratorAgent], checker: Any) -> None:
+def _set_interrupt_checker(agent: ResumeAgent, checker: Any) -> None:
     """Set interrupt checker for all active LLM agents in current mode."""
     for llm_agent in _get_llm_agents(agent):
         if hasattr(llm_agent, "set_interrupt_checker"):
@@ -802,7 +762,7 @@ def _message_preview(message: Any, max_len: int = 120) -> str:
     return preview
 
 
-def _render_loaded_history(agent: Union[ResumeAgent, OrchestratorAgent], max_rows: int = 8) -> None:
+def _render_loaded_history(agent: ResumeAgent, max_rows: int = 8) -> None:
     llm_agents = _get_llm_agents(agent)
     if not llm_agents:
         return
@@ -833,7 +793,7 @@ def _restore_loaded_session(
     session_id: str,
     sessions: list[Dict[str, Any]],
     session_manager: SessionManager,
-    agent: Union[ResumeAgent, OrchestratorAgent],
+    agent: ResumeAgent,
 ) -> None:
     session_data = session_manager.load_session(session_id)
     session_manager.restore_agent_state(agent, session_data)
@@ -850,7 +810,7 @@ def _restore_loaded_session(
 
 async def handle_command(
     command: str,
-    agent: Union[ResumeAgent, OrchestratorAgent],
+    agent: ResumeAgent,
     session_manager: Optional[SessionManager] = None,
     runtime_options: Optional[Dict[str, Any]] = None,
     prompt_session: Optional[PromptSession] = None,
@@ -944,100 +904,14 @@ async def handle_command(
                 console.print("❌ Session not found", style="red")
 
     elif cmd == "/config":
-        if isinstance(agent, ResumeAgent):
-            config_info = f"""
+        config_info = f"""
 **Model**: {agent.llm_config.model}
 **Max Tokens**: {agent.llm_config.max_tokens}
 **Temperature**: {agent.llm_config.temperature}
 **Workspace**: {agent.agent_config.workspace_dir}
 **Mode**: Single-Agent
 """
-        else:
-            config_info = f"""
-**Model**: {agent.config.model}
-**Max Tokens**: {agent.config.max_tokens}
-**Temperature**: {agent.config.temperature}
-**Mode**: Multi-Agent (Orchestrated)
-**Agents**: {len(agent.registry) if agent.registry else 0}
-"""
         console.print(Markdown(config_info))
-
-    elif cmd == "/agents":
-        if isinstance(agent, OrchestratorAgent) and agent.registry:
-            stats = agent.get_agent_stats()
-
-            table = Table(title="Agent Statistics")
-            table.add_column("Agent", style="cyan")
-            table.add_column("Type", style="green")
-            table.add_column("Tasks", justify="right")
-            table.add_column("Success Rate", justify="right")
-            table.add_column("Avg Time", justify="right")
-
-            for agent_id, agent_stats in stats.items():
-                table.add_row(
-                    agent_id,
-                    agent_stats.get("agent_type", ""),
-                    str(agent_stats.get("tasks_completed", 0)),
-                    agent_stats.get("success_rate", "N/A"),
-                    agent_stats.get("average_execution_time_ms", "N/A"),
-                )
-
-            console.print(table)
-        else:
-            console.print("⚠️ Agent statistics only available in multi-agent mode.", style="yellow")
-
-    elif cmd == "/delegation-tree":
-        if isinstance(agent, OrchestratorAgent) and agent.delegation_manager:
-            delegation_stats = agent.delegation_manager.get_stats()
-            console.print(
-                Panel(
-                    f"Total delegations: {delegation_stats['total_delegations']}\n"
-                    f"Successful: {delegation_stats['successful']}\n"
-                    f"Failed: {delegation_stats['failed']}\n"
-                    f"Success rate: {delegation_stats['success_rate']}\n"
-                    f"Average duration: {delegation_stats['average_duration_ms']}",
-                    title="📊 Delegation Statistics",
-                )
-            )
-        else:
-            console.print("⚠️ Delegation tree only available in multi-agent mode.", style="yellow")
-
-    elif cmd == "/trace":
-        if isinstance(agent, OrchestratorAgent) and agent.delegation_manager:
-            history = agent.delegation_manager._delegation_history
-            if not history:
-                console.print("No delegations recorded yet.", style="dim")
-            else:
-                table = Table(title="🔄 Delegation Trace")
-                table.add_column("#", style="dim", justify="right")
-                table.add_column("Task ID", style="cyan")
-                table.add_column("From", style="yellow")
-                table.add_column("To", style="green")
-                table.add_column("Duration", justify="right")
-                table.add_column("Status", justify="center")
-
-                for i, record in enumerate(history, 1):
-                    status = "✓" if record.success else "✗" if record.success is False else "⏳"
-                    status_style = "green" if record.success else "red" if record.success is False else "yellow"
-                    duration = f"{record.duration_ms:.0f}ms" if record.duration_ms else "-"
-                    table.add_row(
-                        str(i),
-                        record.task_id[:16] + "...",
-                        record.from_agent,
-                        record.to_agent,
-                        duration,
-                        f"[{status_style}]{status}[/{status_style}]",
-                    )
-
-                console.print(table)
-
-                # Show delegation flow diagram
-                console.print("\n📊 Delegation Flow:", style="bold")
-                for record in history:
-                    arrow = "[green]→[/green]" if record.success else "[red]→[/red]"
-                    console.print(f"  {record.from_agent} {arrow} {record.to_agent}")
-        else:
-            console.print("⚠️ Trace only available in multi-agent mode.", style="yellow")
 
     elif cmd.startswith("/auto-approve"):
         parts = cmd.split(maxsplit=1)
@@ -1095,15 +969,7 @@ async def handle_command(
             console.print("Usage: /export [file|clipboard] [markdown|json|text] [verbose|-v]", style="yellow")
             return True
 
-        # Get conversation history (handle AutoAgent, OrchestratorAgent, ResumeAgent)
-        from resume_agent.core.agent_factory import AutoAgent
-
-        if isinstance(agent, AutoAgent):
-            llm_agent = agent.agent
-        elif isinstance(agent, OrchestratorAgent):
-            llm_agent = agent.llm_agent
-        else:
-            llm_agent = agent.agent  # ResumeAgent uses self.agent for LLMAgent
+        llm_agent = agent.agent  # ResumeAgent uses self.agent for LLMAgent
 
         if not llm_agent or not llm_agent.history_manager:
             console.print("No conversation history available.", style="yellow")
@@ -1144,7 +1010,7 @@ async def handle_command(
 
             export_data = {
                 "exported_at": datetime.now().isoformat(),
-                "agent_mode": "multi-agent" if isinstance(agent, OrchestratorAgent) else "single-agent",
+                "agent_mode": "single-agent",
                 "messages": [],
             }
 
@@ -1222,14 +1088,15 @@ async def handle_command(
                     if event.event_type == "tool_call":
                         tool = event.data.get("tool", "unknown")
                         success = "✓" if event.data.get("success") else "✗"
-                        cached = " [CACHED]" if event.data.get("cached") else ""
-                        lines.append(f"  {success} Tool: {tool}{cached} ({event.duration_ms:.2f}ms)")
+                        lines.append(f"  {success} Tool: {tool} ({event.duration_ms:.2f}ms)")
                         lines.append(f"  Args: {event.data.get('args', {})}")
 
                     elif event.event_type == "llm_request":
                         lines.append(f"  Model: {event.data.get('model')}")
                         lines.append(f"  Step: {event.data.get('step')}")
                         lines.append(f"  Tokens: {event.tokens_used}")
+                        if event.data.get("input_cache_read"):
+                            lines.append(f"  Prompt Cache Read: {event.data.get('input_cache_read')}")
                         lines.append(f"  Cost: ${event.cost_usd:.4f}")
                         lines.append(f"  Duration: {event.duration_ms:.2f}ms")
 
@@ -1256,10 +1123,11 @@ async def handle_command(
                     lines.append("SESSION STATISTICS")
                     lines.append("=" * 60)
                     lines.append(f"Total Events:     {stats['event_count']}")
-                    lines.append(f"Tool Calls:       {stats['tool_calls']} (cache hit: {stats['cache_hit_rate']:.1%})")
+                    lines.append(f"Tool Calls:       {stats['tool_calls']}")
                     lines.append(f"LLM Requests:     {stats['llm_requests']}")
                     lines.append(f"Errors:           {stats['errors']}")
                     lines.append(f"Total Tokens:     {stats['total_tokens']:,}")
+                    lines.append(f"Prompt Cache:     {stats['input_cache_read']:,} cached input tokens")
                     lines.append(f"Total Cost:       ${stats['total_cost_usd']:.4f}")
                     lines.append(f"Total Duration:   {stats['total_duration_ms']:.2f}ms")
 
@@ -1297,10 +1165,7 @@ async def handle_command(
                     if event.event_type == "tool_call":
                         tool = event.data.get("tool", "unknown")
                         success = "✓" if event.data.get("success") else "✗"
-                        cached = " 🔄" if event.data.get("cached") else ""
-                        lines.append(
-                            f"- **[{timestamp}]** {success} Tool: `{tool}`{cached} ({event.duration_ms:.2f}ms)"
-                        )
+                        lines.append(f"- **[{timestamp}]** {success} Tool: `{tool}` ({event.duration_ms:.2f}ms)")
                         args = event.data.get("args", {})
                         if args:
                             lines.append(f"  - Args: `{args}`")
@@ -1309,9 +1174,11 @@ async def handle_command(
                         model = event.data.get("model")
                         step = event.data.get("step")
                         lines.append(f"- **[{timestamp}]** 🤖 LLM Request: `{model}` (Step {step})")
-                        lines.append(
-                            f"  - Tokens: {event.tokens_used}, Cost: ${event.cost_usd:.4f}, Duration: {event.duration_ms:.2f}ms"
-                        )
+                        summary = f"  - Tokens: {event.tokens_used}"
+                        if event.data.get("input_cache_read"):
+                            summary += f", Prompt Cache Read: {event.data.get('input_cache_read')}"
+                        summary += f", Cost: ${event.cost_usd:.4f}, Duration: {event.duration_ms:.2f}ms"
+                        lines.append(summary)
 
                     elif event.event_type == "llm_response":
                         step = event.data.get("step")
@@ -1349,10 +1216,11 @@ async def handle_command(
                     stats = llm_agent.observer.get_session_stats()
                     lines.append("\n## Session Statistics\n")
                     lines.append(f"- **Total Events:** {stats['event_count']}")
-                    lines.append(f"- **Tool Calls:** {stats['tool_calls']} (cache hit: {stats['cache_hit_rate']:.1%})")
+                    lines.append(f"- **Tool Calls:** {stats['tool_calls']}")
                     lines.append(f"- **LLM Requests:** {stats['llm_requests']}")
                     lines.append(f"- **Errors:** {stats['errors']}")
                     lines.append(f"- **Total Tokens:** {stats['total_tokens']:,}")
+                    lines.append(f"- **Prompt Cache:** {stats['input_cache_read']:,} cached input tokens")
                     lines.append(f"- **Total Cost:** ${stats['total_cost_usd']:.4f}")
                     lines.append(f"- **Total Duration:** {stats['total_duration_ms']:.2f}ms")
 
@@ -1470,7 +1338,7 @@ async def _consume_wire(
 
 
 async def run_interactive(
-    agent: Union[ResumeAgent, OrchestratorAgent],
+    agent: ResumeAgent,
     session_manager: Optional[SessionManager] = None,
     stream_enabled_default: bool = True,
     verbose: bool = False,
@@ -1490,15 +1358,7 @@ async def run_interactive(
 
     print_banner()
 
-    # Show mode
-    from resume_agent.core.agent_factory import AutoAgent
-
-    if isinstance(agent, OrchestratorAgent):
-        console.print("🤖 Running in multi-agent mode", style="dim")
-    elif isinstance(agent, AutoAgent):
-        console.print("🤖 Running in auto-routing mode (single + multi-agent)", style="dim")
-    else:
-        console.print("🤖 Running in single-agent mode", style="dim")
+    console.print("🤖 Running in single-agent mode", style="dim")
     console.print("✅ Inline write approval enabled — file writes prompt before execution", style="green")
     console.print(
         f"✅ Streaming {'ON' if runtime_options['stream_enabled'] else 'OFF'} — use /stream [on|off|status]",
@@ -1678,19 +1538,7 @@ def main():
         "-v",
         action="store_true",
         default=False,
-        help="Verbose output (show tool executions, session summary, cache stats)",
-    )
-    parser.add_argument(
-        "--multi-agent",
-        "-m",
-        action="store_true",
-        help="Force multi-agent mode (overrides config)",
-    )
-    parser.add_argument(
-        "--single-agent",
-        "-s",
-        action="store_true",
-        help="Force single-agent mode (overrides config)",
+        help="Verbose output (show tool executions, session summary, prompt cache stats)",
     )
     parser.add_argument(
         "--stream",
@@ -1745,43 +1593,15 @@ def main():
             )
             return
 
-    # Determine agent mode
-    if args.single_agent:
-        # Force single-agent mode
-        agent_config = AgentConfig(
-            workspace_dir=args.workspace,
-            verbose=args.verbose,
-        )
-        session_manager = SessionManager(args.workspace)
-        tools = create_tools(args.workspace, raw_config=raw_config)
-        agent = ResumeAgent(
-            llm_config=llm_config, agent_config=agent_config, session_manager=session_manager, tools=tools
-        )
-    elif args.multi_agent:
-        # Force multi-agent mode
-        session_manager = SessionManager(args.workspace)
-        tools = create_tools(args.workspace, raw_config=raw_config)
-        agent = create_agent(
-            llm_config=llm_config,
-            workspace_dir=args.workspace,
-            session_manager=session_manager,
-            verbose=args.verbose,
-            tools=tools,
-        )
-        # Ensure it's multi-agent
-        if isinstance(agent, ResumeAgent):
-            console.print("⚠️ Multi-agent mode requested but not configured. Using single-agent.", style="yellow")
-    else:
-        # Use config to determine mode (single, multi, or auto)
-        session_manager = SessionManager(args.workspace)
-        tools = create_tools(args.workspace, raw_config=raw_config)
-        agent = create_agent(
-            llm_config=llm_config,
-            workspace_dir=args.workspace,
-            session_manager=session_manager,
-            verbose=args.verbose,
-            tools=tools,
-        )
+    session_manager = SessionManager(args.workspace)
+    tools = create_tools(args.workspace, raw_config=raw_config)
+    agent = create_agent(
+        llm_config=llm_config,
+        workspace_dir=args.workspace,
+        session_manager=session_manager,
+        verbose=args.verbose,
+        tools=tools,
+    )
 
     # Interactive mode (default and only mode)
     interactive_stream_default = False if args.stream is None else bool(args.stream)

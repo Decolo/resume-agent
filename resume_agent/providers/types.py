@@ -87,6 +87,9 @@ class GenerationConfig:
     system_prompt: str = ""
     max_tokens: int = 4096
     temperature: Optional[float] = 0.7
+    prompt_cache_enabled: bool = False
+    prompt_cache_key: Optional[str] = None
+    prompt_cache_retention: Optional[str] = None
 
 
 @dataclass

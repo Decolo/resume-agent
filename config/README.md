@@ -21,11 +21,9 @@ api_key: "${KIMI_API_KEY}"
 model: "kimi-k2-turbo-preview"
 api_base: "https://api.moonshot.cn/v1"
 
-multi_agent:
-  enabled: false
-
-routing:
-  enabled: false
+prompt_cache:
+  enabled: true
+  retention: "24h"
 ```
 
 ## Minimal Local Config (Gemini)
@@ -44,8 +42,8 @@ model: "gemini-2.5-flash"
 - `deepseek` -> `DEEPSEEK_API_KEY`
 - `minimax` -> `MINIMAX_API_KEY`
 
-## Why disable multi-agent/routing for Kimi first
+## Prompt Cache Notes
 
-`config/config.yaml` currently contains Gemini-oriented multi-agent model presets.
-If you switch provider to Kimi in local config, disabling routing and multi-agent
-avoids model/provider mismatch while you validate baseline behavior.
+`prompt_cache` is a provider-side hint for OpenAI-compatible backends. It is
+useful when your stable prompt prefix is large, such as system prompts and tool
+descriptions. It does not cache local tool execution results in memory.

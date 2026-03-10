@@ -68,7 +68,6 @@ class AgentObserver:
         result: str,
         duration_ms: float,
         success: bool = True,
-        cached: bool = False,
         agent_id: Optional[str] = None,
     ):
         """
@@ -80,7 +79,6 @@ class AgentObserver:
             result: Result from tool execution
             duration_ms: Execution time in milliseconds
             success: Whether execution succeeded
-            cached: Whether result was from cache
         """
         event = AgentEvent(
             timestamp=datetime.now(),
@@ -90,7 +88,6 @@ class AgentObserver:
                 "args": args,
                 "result": result[:200],  # Truncate for logging
                 "success": success,
-                "cached": cached,
             },
             duration_ms=duration_ms,
         )
@@ -98,9 +95,8 @@ class AgentObserver:
 
         # Log to console
         prefix = self._format_agent_prefix(agent_id)
-        cache_indicator = " [CACHED]" if cached else ""
         status = "✓" if success else "✗"
-        self.logger.info(f"{prefix}{status} Tool: {tool_name}{cache_indicator} ({duration_ms:.2f}ms)")
+        self.logger.info(f"{prefix}{status} Tool: {tool_name} ({duration_ms:.2f}ms)")
 
     def log_llm_request(
         self,
@@ -109,6 +105,8 @@ class AgentObserver:
         cost: float,
         duration_ms: float,
         step: int,
+        input_cache_read: int = 0,
+        prompt_cache_key: Optional[str] = None,
         agent_id: Optional[str] = None,
     ):
         """
@@ -124,7 +122,12 @@ class AgentObserver:
         event = AgentEvent(
             timestamp=datetime.now(),
             event_type="llm_request",
-            data={"model": model, "step": step},
+            data={
+                "model": model,
+                "step": step,
+                "input_cache_read": input_cache_read,
+                "prompt_cache_key": prompt_cache_key,
+            },
             duration_ms=duration_ms,
             tokens_used=tokens,
             cost_usd=cost,
@@ -132,7 +135,10 @@ class AgentObserver:
         self.events.append(event)
 
         prefix = self._format_agent_prefix(agent_id)
-        self.logger.info(f"{prefix}🤖 LLM: {model} | Step {step} | {tokens} tokens | ${cost:.4f} | {duration_ms:.2f}ms")
+        cache_note = f" | cache-read {input_cache_read}" if input_cache_read else ""
+        self.logger.info(
+            f"{prefix}🤖 LLM: {model} | Step {step} | {tokens} tokens{cache_note} | ${cost:.4f} | {duration_ms:.2f}ms"
+        )
 
     def log_llm_response(
         self,
@@ -287,9 +293,7 @@ class AgentObserver:
         llm_requests = [e for e in self.events if e.event_type == "llm_request"]
         errors = [e for e in self.events if e.event_type == "error"]
 
-        # Count cached vs non-cached tool calls
-        cached_calls = sum(1 for e in tool_calls if e.data.get("cached", False))
-        cache_hit_rate = cached_calls / len(tool_calls) if tool_calls else 0.0
+        input_cache_read = sum((e.data.get("input_cache_read") or 0) for e in llm_requests)
 
         return {
             "total_tokens": total_tokens,
@@ -299,7 +303,7 @@ class AgentObserver:
             "tool_calls": len(tool_calls),
             "llm_requests": len(llm_requests),
             "errors": len(errors),
-            "cache_hit_rate": cache_hit_rate,
+            "input_cache_read": input_cache_read,
         }
 
     def print_session_summary(self):
@@ -310,10 +314,11 @@ class AgentObserver:
         print("SESSION SUMMARY")
         print("=" * 60)
         print(f"Total Events:     {stats['event_count']}")
-        print(f"Tool Calls:       {stats['tool_calls']} (cache hit: {stats['cache_hit_rate']:.1%})")
+        print(f"Tool Calls:       {stats['tool_calls']}")
         print(f"LLM Requests:     {stats['llm_requests']}")
         print(f"Errors:           {stats['errors']}")
         print(f"Total Tokens:     {stats['total_tokens']:,}")
+        print(f"Prompt Cache:     {stats['input_cache_read']:,} cached input tokens")
         print(f"Total Cost:       ${stats['total_cost_usd']:.4f}")
         print(f"Total Duration:   {stats['total_duration_ms']:.2f}ms")
         print("=" * 60 + "\n")
