@@ -315,7 +315,7 @@ Key files:
     v
 [Continue runtime]
 
-[/sessions picker selection] --> [SessionManager.load_session]
+[/resume picker selection] --> [SessionManager.load_session]
                       |
                       v
          [Restore history / observability / state]

@@ -94,7 +94,7 @@ class TestPendingWriteManager:
         assert count == 2
         assert not mgr.has_pending
 
-    def test_list_pending(self, tmp_path):
+    def test_list_pending_returns_all_staged_paths_in_insertion_order(self, tmp_path):
         mgr = PendingWriteManager()
         assert mgr.list_pending() == []
         mgr.add("one.md", "1", tmp_path / "one.md")
@@ -111,7 +111,7 @@ class TestPendingWriteManager:
         assert result.success
         assert (tmp_path / "f.txt").read_text() == "second"
 
-    def test_has_pending_property(self, tmp_path):
+    def test_has_pending_reflects_whether_any_writes_are_waiting_for_approval(self, tmp_path):
         mgr = PendingWriteManager()
         assert not mgr.has_pending
         mgr.add("x", "y", tmp_path / "x")

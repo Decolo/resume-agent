@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import json
 import os
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+import uuid
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 from resume_agent.providers import create_provider
 from resume_agent.providers.types import (
@@ -29,10 +32,80 @@ if TYPE_CHECKING:
     from .wire import Wire
 
 
-class HistoryManager:
-    """Manages conversation history with automatic pruning."""
+COMPRESSION_STATE_PREFIX = "[COMPRESSION_STATE]"
+COMPACTION_SYSTEM_PROMPT = """Compress the provided conversation history for future continuation.
 
-    def __init__(self, max_messages: int = 50, max_tokens: int = 100000):
+Return JSON with the following keys:
+- summary_text: concise summary of the compacted span
+- session_intent: current user goal
+- file_modifications: list of changed files or artifacts
+- decisions: list of important decisions made
+- open_questions: list of unresolved questions
+- next_steps: list of likely next actions
+
+Keep the response compact and factual.
+"""
+
+
+@dataclass
+class CompactionSummary:
+    """Structured summary result returned by a compaction summarizer."""
+
+    summary_text: str
+    session_intent: str = ""
+    file_modifications: List[str] = field(default_factory=list)
+    decisions: List[str] = field(default_factory=list)
+    open_questions: List[str] = field(default_factory=list)
+    next_steps: List[str] = field(default_factory=list)
+
+
+@dataclass
+class CompactionCheckpoint:
+    """Single compaction checkpoint for resumable history state."""
+
+    checkpoint_id: int
+    covered_messages: int
+    compacted_messages: int
+    summary_text: str
+
+
+@dataclass
+class CompressionState:
+    """Incremental summary state for anchored iterative compaction."""
+
+    version: int = 1
+    covered_messages: int = 0
+    summary_chunks: List[str] = field(default_factory=list)
+    session_intent: str = ""
+    file_modifications: List[str] = field(default_factory=list)
+    decisions: List[str] = field(default_factory=list)
+    open_questions: List[str] = field(default_factory=list)
+    next_steps: List[str] = field(default_factory=list)
+
+
+@dataclass
+class TurnNode:
+    """Single user-anchored conversation turn in the history tree."""
+
+    turn_id: str
+    parent_turn_id: Optional[str]
+    messages: List[Message] = field(default_factory=list)
+    token_estimate: int = 0
+    contains_tool_call: bool = False
+    contains_tool_response: bool = False
+
+
+class HistoryManager:
+    """Manages conversation history as a tree of turns with materialized prompt history."""
+
+    def __init__(
+        self,
+        max_messages: int = 50,
+        max_tokens: int = 100000,
+        *,
+        reserve_tokens: int = 0,
+        tail_tokens: int = 512,
+    ):
         """
         Initialize history manager.
 
@@ -42,7 +115,15 @@ class HistoryManager:
         """
         self.max_messages = max_messages
         self.max_tokens = max_tokens
+        self.reserve_tokens = reserve_tokens
+        self.tail_tokens = tail_tokens
+        self._turns_by_id: Dict[str, TurnNode] = {}
+        self._turn_order: List[str] = []
+        self._current_leaf_turn_id: Optional[str] = None
+        self._active_start_turn_id: Optional[str] = None
         self._history: List[Message] = []
+        self._compression_state: Optional[CompressionState] = None
+        self._compaction_checkpoints: List[CompactionCheckpoint] = []
 
     def add_message(self, message: Message, allow_incomplete: bool = False):
         """Add a message and prune if needed.
@@ -52,47 +133,226 @@ class HistoryManager:
         """
         if message is None:
             return
-        self._history.append(message)
+
+        if not self._turn_order and self._history and message.role != "user":
+            self._history.append(message)
+            return
+
+        if message.role == "user" or self._current_leaf_turn_id is None:
+            self._start_new_turn(message)
+        else:
+            turn = self._turns_by_id[self._current_leaf_turn_id]
+            turn.messages.append(message)
+            self._refresh_turn_metadata(turn)
+
+        self._sync_materialized_history()
         if allow_incomplete:
             return
-        self._ensure_valid_sequence()
         self._prune_if_needed()
 
     def get_history(self) -> List[Message]:
         """Get current history."""
+        if not self._turn_order:
+            return self._history
+        self._sync_materialized_history()
         return self._history
+
+    def get_active_history(self) -> List[Message]:
+        """Get active history sent to the model."""
+        return self.get_history()
+
+    def get_turns(self) -> List[TurnNode]:
+        """Get all known turns in append order."""
+        return [self._copy_turn(self._turns_by_id[turn_id]) for turn_id in self._turn_order]
+
+    def get_current_leaf_turn_id(self) -> Optional[str]:
+        """Get active leaf turn ID."""
+        return self._current_leaf_turn_id
+
+    def get_active_start_turn_id(self) -> Optional[str]:
+        """Get first active turn after compaction/pruning."""
+        return self._active_start_turn_id
+
+    def get_compression_state(self) -> Optional[CompressionState]:
+        """Get current compression state."""
+        return self._compression_state
+
+    def get_compaction_checkpoints(self) -> List[CompactionCheckpoint]:
+        """Get compaction checkpoints."""
+        return list(self._compaction_checkpoints)
+
+    def get_compaction_state_payload(self) -> dict:
+        """Get serializable compaction metadata."""
+        state = None
+        if self._compression_state is not None:
+            state = {
+                "version": self._compression_state.version,
+                "covered_messages": self._compression_state.covered_messages,
+                "summary_chunks": list(self._compression_state.summary_chunks),
+                "session_intent": self._compression_state.session_intent,
+                "file_modifications": list(self._compression_state.file_modifications),
+                "decisions": list(self._compression_state.decisions),
+                "open_questions": list(self._compression_state.open_questions),
+                "next_steps": list(self._compression_state.next_steps),
+            }
+        checkpoints = [
+            {
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "covered_messages": checkpoint.covered_messages,
+                "compacted_messages": checkpoint.compacted_messages,
+                "summary_text": checkpoint.summary_text,
+            }
+            for checkpoint in self._compaction_checkpoints
+        ]
+        return {
+            "history_format": "turn_tree_v1",
+            "reserve_tokens": self.reserve_tokens,
+            "tail_tokens": self.tail_tokens,
+            "current_leaf_turn_id": self._current_leaf_turn_id,
+            "active_start_turn_id": self._active_start_turn_id,
+            "turns": [
+                {
+                    "turn_id": turn.turn_id,
+                    "parent_turn_id": turn.parent_turn_id,
+                    "messages": [self._serialize_message(msg) for msg in turn.messages],
+                    "token_estimate": turn.token_estimate,
+                    "contains_tool_call": turn.contains_tool_call,
+                    "contains_tool_response": turn.contains_tool_response,
+                }
+                for turn in self.get_turns()
+            ],
+            "compression_state": state,
+            "compaction_checkpoints": checkpoints,
+        }
+
+    def restore_compaction_state(self, payload: Optional[dict]) -> None:
+        """Restore compaction metadata from serialized payload."""
+        payload = payload or {}
+        history_format = str(payload.get("history_format", "") or "")
+        if history_format != "turn_tree_v1":
+            raise ValueError("Unsupported session history format. Clear old sessions with /clear-sessions.")
+
+        self.reserve_tokens = int(payload.get("reserve_tokens", self.reserve_tokens))
+        self.tail_tokens = int(payload.get("tail_tokens", self.tail_tokens))
+        self._turns_by_id = {}
+        self._turn_order = []
+        for turn_data in payload.get("turns", []) or []:
+            if not isinstance(turn_data, dict):
+                continue
+            turn_id = str(turn_data.get("turn_id", "") or "")
+            if not turn_id:
+                continue
+            messages = [
+                self._deserialize_message(msg_data)
+                for msg_data in (turn_data.get("messages", []) or [])
+                if isinstance(msg_data, dict)
+            ]
+            turn = TurnNode(
+                turn_id=turn_id,
+                parent_turn_id=str(turn_data.get("parent_turn_id")) if turn_data.get("parent_turn_id") else None,
+                messages=messages,
+            )
+            self._refresh_turn_metadata(turn)
+            self._turns_by_id[turn_id] = turn
+            self._turn_order.append(turn_id)
+
+        self._current_leaf_turn_id = payload.get("current_leaf_turn_id")
+        if self._current_leaf_turn_id not in self._turns_by_id:
+            self._current_leaf_turn_id = self._turn_order[-1] if self._turn_order else None
+        self._active_start_turn_id = payload.get("active_start_turn_id")
+        if self._active_start_turn_id not in self._turns_by_id:
+            self._active_start_turn_id = self._turn_order[0] if self._turn_order else None
+
+        state_data = payload.get("compression_state")
+        if isinstance(state_data, dict):
+            self._compression_state = CompressionState(
+                version=int(state_data.get("version", 1)),
+                covered_messages=int(state_data.get("covered_messages", 0)),
+                summary_chunks=list(state_data.get("summary_chunks", []) or []),
+                session_intent=str(state_data.get("session_intent", "") or ""),
+                file_modifications=list(state_data.get("file_modifications", []) or []),
+                decisions=list(state_data.get("decisions", []) or []),
+                open_questions=list(state_data.get("open_questions", []) or []),
+                next_steps=list(state_data.get("next_steps", []) or []),
+            )
+        else:
+            self._compression_state = None
+
+        checkpoints_data = payload.get("compaction_checkpoints", []) or []
+        self._compaction_checkpoints = [
+            CompactionCheckpoint(
+                checkpoint_id=int(item.get("checkpoint_id", idx + 1)),
+                covered_messages=int(item.get("covered_messages", 0)),
+                compacted_messages=int(item.get("compacted_messages", 0)),
+                summary_text=str(item.get("summary_text", "") or ""),
+            )
+            for idx, item in enumerate(checkpoints_data)
+            if isinstance(item, dict)
+        ]
+        self._sync_materialized_history()
 
     def clear(self):
         """Clear all history."""
+        self._turns_by_id.clear()
+        self._turn_order.clear()
+        self._current_leaf_turn_id = None
+        self._active_start_turn_id = None
         self._history.clear()
+        self._compression_state = None
+        self._compaction_checkpoints.clear()
+
+    def estimated_tokens(self) -> int:
+        """Estimate total tokens currently held in active history."""
+        return sum(self._estimate_tokens(msg) for msg in self.get_history())
+
+    def should_compact(self, *, reserve_tokens: Optional[int] = None) -> bool:
+        """Return whether history should be compacted before the next model call."""
+        reserve = self.reserve_tokens if reserve_tokens is None else reserve_tokens
+        return self.estimated_tokens() + reserve >= self.max_tokens
+
+    async def compact(
+        self,
+        *,
+        summarizer: Callable[[List[Message], Optional[CompressionState]], Awaitable[CompactionSummary]],
+        tail_tokens: Optional[int] = None,
+    ) -> bool:
+        """Compact the older history prefix into a summary plus raw tail."""
+        active_turns = self._get_active_turns()
+        raw_messages = [msg for turn in active_turns for msg in turn.messages]
+        if len(raw_messages) < 3 or len(active_turns) < 2:
+            return False
+
+        tail_budget = self.tail_tokens if tail_tokens is None else tail_tokens
+        tail_start = self._tail_start_turn_index(active_turns, tail_budget)
+        if tail_start <= 0:
+            return False
+
+        turns_to_compact = active_turns[:tail_start]
+        to_compact = [msg for turn in turns_to_compact for msg in turn.messages]
+        summary = await summarizer(to_compact, self._compression_state)
+        self._merge_compaction_summary(
+            summary,
+            compacted_messages=len(to_compact),
+        )
+        self._active_start_turn_id = active_turns[tail_start].turn_id
+        self._sync_materialized_history()
+        return True
 
     def _prune_if_needed(self):
-        """Prune history if it exceeds limits while preserving function call/response pairs."""
-        # Message count pruning
-        if len(self._history) > self.max_messages:
-            # Keep recent messages (sliding window)
-            self._history = self._history[-self.max_messages :]
-            # After sliding window, ensure we didn't break pairs
-            self._fix_broken_pairs()
-            self._ensure_valid_sequence()
+        """Advance the active turn boundary without deleting historical turns."""
+        active_turns = self._get_active_turns()
+        if not active_turns:
+            return
 
-        # Token-based pruning (rough estimate)
-        estimated_tokens = sum(self._estimate_tokens(msg) for msg in self._history)
-        if estimated_tokens > self.max_tokens:
-            # Remove oldest messages until under limit, respecting pairs
-            while estimated_tokens > self.max_tokens and len(self._history) > 2:
-                # Check if first message is part of a function call/response pair
-                if self._is_function_call_pair(0):
-                    # Remove both messages in the pair
-                    removed1 = self._history.pop(0)
-                    removed2 = self._history.pop(0)
-                    estimated_tokens -= self._estimate_tokens(removed1)
-                    estimated_tokens -= self._estimate_tokens(removed2)
-                else:
-                    # Safe to remove single message
-                    removed = self._history.pop(0)
-                    estimated_tokens -= self._estimate_tokens(removed)
-            self._ensure_valid_sequence()
+        while len(self.get_history()) > self.max_messages and len(active_turns) > 1:
+            active_turns = active_turns[1:]
+            self._active_start_turn_id = active_turns[0].turn_id
+            self._sync_materialized_history()
+
+        while self.estimated_tokens() > self.max_tokens and len(active_turns) > 1:
+            active_turns = active_turns[1:]
+            self._active_start_turn_id = active_turns[0].turn_id
+            self._sync_materialized_history()
 
     def _is_function_call_pair(self, index: int) -> bool:
         """
@@ -102,11 +362,12 @@ class HistoryManager:
         - history[index] has role="assistant" with function_call parts
         - history[index+1] has role="tool" with function_response parts
         """
-        if index >= len(self._history) - 1:
+        history = self.get_history()
+        if index >= len(history) - 1:
             return False
 
-        msg1 = self._history[index]
-        msg2 = self._history[index + 1]
+        msg1 = history[index]
+        msg2 = history[index + 1]
         if msg1 is None or msg2 is None:
             return False
 
@@ -123,6 +384,10 @@ class HistoryManager:
         If history starts with an orphaned function response (tool message with
         function_response but no preceding function_call), remove it.
         """
+        if self._turn_order:
+            self._sync_materialized_history()
+            return
+
         if not self._history:
             return
 
@@ -171,6 +436,10 @@ class HistoryManager:
 
     def _ensure_valid_sequence(self):
         """Ensure history ordering is valid for tool calling."""
+        if self._turn_order:
+            self._sync_materialized_history()
+            return
+
         if not self._history:
             return
 
@@ -191,7 +460,11 @@ class HistoryManager:
             if self._has_function_call(msg):
                 # Allow a leading assistant tool call when history was truncated;
                 # the second pass still drops it if no matching tool response.
-                if cleaned and cleaned[-1].role not in {"user", "tool"}:
+                if (
+                    cleaned
+                    and cleaned[-1].role not in {"user", "tool"}
+                    and not self._is_compaction_summary_message(cleaned[-1])
+                ):
                     continue
             cleaned.append(msg)
 
@@ -235,6 +508,297 @@ class HistoryManager:
                     total_chars += len(str(part.function_response.response))
 
         return total_chars // 4  # Rough estimate: 4 chars per token
+
+    @staticmethod
+    def _is_compaction_summary_message(message: Message) -> bool:
+        return (
+            message.role == "assistant"
+            and bool(message.parts)
+            and bool(message.parts[0].text)
+            and message.parts[0].text.startswith(COMPRESSION_STATE_PREFIX)
+        )
+
+    def _tail_start_index(self, raw_messages: List[Message], tail_tokens: int) -> int:
+        if not raw_messages:
+            return 0
+
+        if tail_tokens <= 0:
+            tail_start = max(0, len(raw_messages) - 2)
+        else:
+            accumulated = 0
+            tail_start = len(raw_messages)
+            for idx in range(len(raw_messages) - 1, -1, -1):
+                accumulated += self._estimate_tokens(raw_messages[idx])
+                tail_start = idx
+                if accumulated >= tail_tokens:
+                    break
+
+        if tail_start >= len(raw_messages):
+            tail_start = max(0, len(raw_messages) - 2)
+
+        # If the preserved tail would start with a tool response, include the
+        # matching function call in the raw tail.
+        if (
+            0 < tail_start < len(raw_messages)
+            and self._has_function_response(raw_messages[tail_start])
+            and self._has_function_call(raw_messages[tail_start - 1])
+        ):
+            tail_start -= 1
+
+        return tail_start
+
+    def _tail_start_turn_index(self, turns: List[TurnNode], tail_tokens: int) -> int:
+        if not turns:
+            return 0
+
+        if tail_tokens <= 0:
+            return max(0, len(turns) - 1)
+
+        accumulated = 0
+        tail_start = len(turns)
+        for idx in range(len(turns) - 1, -1, -1):
+            accumulated += turns[idx].token_estimate
+            tail_start = idx
+            if accumulated >= tail_tokens:
+                break
+
+        if tail_start >= len(turns):
+            tail_start = max(0, len(turns) - 1)
+
+        return tail_start
+
+    def _merge_compaction_summary(self, summary: CompactionSummary, *, compacted_messages: int) -> None:
+        state = self._compression_state or CompressionState()
+        state.covered_messages += compacted_messages
+        if summary.summary_text:
+            state.summary_chunks.append(summary.summary_text)
+        if summary.session_intent:
+            state.session_intent = summary.session_intent
+        state.file_modifications = self._merge_unique(state.file_modifications, summary.file_modifications)
+        state.decisions = self._merge_unique(state.decisions, summary.decisions)
+        state.open_questions = self._merge_unique(state.open_questions, summary.open_questions)
+        state.next_steps = self._merge_unique(state.next_steps, summary.next_steps)
+        self._compression_state = state
+        self._compaction_checkpoints.append(
+            CompactionCheckpoint(
+                checkpoint_id=len(self._compaction_checkpoints) + 1,
+                covered_messages=state.covered_messages,
+                compacted_messages=compacted_messages,
+                summary_text=summary.summary_text,
+            )
+        )
+
+    def _build_compression_state_message(self) -> Message:
+        state = self._compression_state or CompressionState()
+        lines = [
+            COMPRESSION_STATE_PREFIX,
+            f"covered_messages={state.covered_messages}",
+        ]
+        if state.session_intent:
+            lines.extend(["Session intent:", state.session_intent])
+        if state.summary_chunks:
+            lines.append("Summary checkpoints:")
+            for idx, chunk in enumerate(state.summary_chunks, start=1):
+                lines.append(f"{idx}. {chunk}")
+        if state.file_modifications:
+            lines.append("Files modified:")
+            lines.extend(f"- {item}" for item in state.file_modifications)
+        if state.decisions:
+            lines.append("Decisions:")
+            lines.extend(f"- {item}" for item in state.decisions)
+        if state.open_questions:
+            lines.append("Open questions:")
+            lines.extend(f"- {item}" for item in state.open_questions)
+        if state.next_steps:
+            lines.append("Next steps:")
+            lines.extend(f"- {item}" for item in state.next_steps)
+        return Message.assistant("\n".join(lines))
+
+    def render_messages_as_transcript(self, messages: List[Message]) -> str:
+        """Render provider messages into plain text transcript for safe summarization."""
+        lines: List[str] = []
+        for message in messages:
+            role = getattr(message, "role", "unknown").upper()
+            if not message.parts:
+                lines.append(f"{role}:")
+                continue
+
+            for part in message.parts:
+                if part.text:
+                    lines.append(f"{role}: {part.text}")
+                    continue
+
+                if part.function_call:
+                    call = part.function_call
+                    arguments = dict(call.arguments) if call.arguments else {}
+                    lines.append(
+                        "ASSISTANT_TOOL_CALL: "
+                        f"{call.name} args={json.dumps(arguments, ensure_ascii=True, sort_keys=True)}"
+                    )
+                    continue
+
+                if part.function_response:
+                    response = part.function_response
+                    lines.append(
+                        "TOOL_RESULT: "
+                        f"{response.name} result={json.dumps(response.response, ensure_ascii=True, sort_keys=True)}"
+                    )
+                    continue
+
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _merge_unique(existing: List[str], incoming: List[str]) -> List[str]:
+        merged = list(existing)
+        for item in incoming:
+            if item and item not in merged:
+                merged.append(item)
+        return merged
+
+    def _copy_turn(self, turn: TurnNode) -> TurnNode:
+        return TurnNode(
+            turn_id=turn.turn_id,
+            parent_turn_id=turn.parent_turn_id,
+            messages=list(turn.messages),
+            token_estimate=turn.token_estimate,
+            contains_tool_call=turn.contains_tool_call,
+            contains_tool_response=turn.contains_tool_response,
+        )
+
+    def _start_new_turn(self, user_message: Message) -> None:
+        turn_id = str(uuid.uuid4())
+        turn = TurnNode(
+            turn_id=turn_id,
+            parent_turn_id=self._current_leaf_turn_id,
+            messages=[user_message],
+        )
+        self._refresh_turn_metadata(turn)
+        self._turns_by_id[turn_id] = turn
+        self._turn_order.append(turn_id)
+        self._current_leaf_turn_id = turn_id
+        if self._active_start_turn_id is None:
+            self._active_start_turn_id = turn_id
+
+    def _refresh_turn_metadata(self, turn: TurnNode) -> None:
+        turn.token_estimate = sum(self._estimate_tokens(msg) for msg in turn.messages)
+        turn.contains_tool_call = any(self._has_function_call(msg) for msg in turn.messages)
+        turn.contains_tool_response = any(self._has_function_response(msg) for msg in turn.messages)
+
+    def _get_path_to_leaf(self) -> List[TurnNode]:
+        if not self._current_leaf_turn_id:
+            return []
+        path: List[TurnNode] = []
+        current_id = self._current_leaf_turn_id
+        while current_id:
+            turn = self._turns_by_id.get(current_id)
+            if turn is None:
+                break
+            path.append(turn)
+            current_id = turn.parent_turn_id
+        path.reverse()
+        return path
+
+    def _get_active_turns(self) -> List[TurnNode]:
+        turns = self._get_path_to_leaf()
+        if not turns:
+            return []
+        if self._active_start_turn_id is None:
+            self._active_start_turn_id = turns[0].turn_id
+
+        start_idx = 0
+        for idx, turn in enumerate(turns):
+            if turn.turn_id == self._active_start_turn_id:
+                start_idx = idx
+                break
+        return turns[start_idx:]
+
+    def _sync_materialized_history(self) -> None:
+        if not self._turn_order:
+            return
+        materialized: List[Message] = []
+        if self._compression_state and self._compression_state.covered_messages > 0:
+            materialized.append(self._build_compression_state_message())
+        for turn in self._get_active_turns():
+            materialized.extend(turn.messages)
+        self._history = materialized
+
+    @staticmethod
+    def _serialize_message(msg: Message) -> dict:
+        msg_data = {"role": msg.role, "parts": []}
+        for part in msg.parts:
+            if part.text:
+                msg_data["parts"].append({"type": "text", "content": part.text})
+            elif part.function_call:
+                thought_signature_b64 = None
+                if part.function_call.thought_signature:
+                    thought_signature_b64 = base64.b64encode(part.function_call.thought_signature).decode("ascii")
+                msg_data["parts"].append(
+                    {
+                        "type": "function_call",
+                        "name": part.function_call.name,
+                        "args": dict(part.function_call.arguments) if part.function_call.arguments else {},
+                        "id": part.function_call.id,
+                        "thought_signature_b64": thought_signature_b64,
+                    }
+                )
+            elif part.function_response:
+                response_value = part.function_response.response
+                if not isinstance(response_value, dict):
+                    response_value = str(response_value)
+                msg_data["parts"].append(
+                    {
+                        "type": "function_response",
+                        "name": part.function_response.name,
+                        "response": response_value,
+                        "call_id": part.function_response.call_id,
+                    }
+                )
+        return msg_data
+
+    @staticmethod
+    def _deserialize_message(data: dict) -> Message:
+        parts: List[MessagePart] = []
+        for part_data in data.get("parts", []):
+            if part_data["type"] == "text":
+                parts.append(MessagePart.from_text(text=part_data["content"]))
+            elif part_data["type"] == "function_call":
+                thought_signature = None
+                thought_signature_b64 = part_data.get("thought_signature_b64")
+                if isinstance(thought_signature_b64, str) and thought_signature_b64:
+                    try:
+                        thought_signature = base64.b64decode(thought_signature_b64)
+                    except Exception:
+                        thought_signature = None
+                parts.append(
+                    MessagePart.from_function_call(
+                        FunctionCall(
+                            name=part_data["name"],
+                            arguments=part_data.get("args", {}) or {},
+                            id=part_data.get("id"),
+                            thought_signature=thought_signature,
+                        )
+                    )
+                )
+            elif part_data["type"] == "function_response":
+                response_data = part_data["response"]
+                if isinstance(response_data, str):
+                    response_data = {"result": response_data}
+                parts.append(
+                    MessagePart.from_function_response(
+                        FunctionResponse(
+                            name=part_data["name"],
+                            response=response_data,
+                            call_id=part_data.get("call_id"),
+                        )
+                    )
+                )
+
+        role = data.get("role", "user")
+        if role == "model":
+            role = "assistant"
+        if role == "user" and any(part.function_response for part in parts):
+            role = "tool"
+        return Message(role=role, parts=parts)
 
 
 @dataclass
@@ -749,12 +1313,25 @@ class LLMAgent:
         """Call LLM with retry logic."""
 
         async def make_request():
+            await self._compact_history_if_needed()
             messages = list(self.history_manager.get_history())
-            response = await self.provider.generate(
-                messages=messages,
-                tools=self._get_tools(),
-                config=self._build_generation_config(),
-            )
+            try:
+                response = await self.provider.generate(
+                    messages=messages,
+                    tools=self._get_tools(),
+                    config=self._build_generation_config(),
+                )
+            except Exception as exc:
+                if not self._is_context_overflow_error(exc):
+                    raise
+                compacted = await self._compact_history_if_needed(force=True)
+                if not compacted:
+                    raise
+                response = await self.provider.generate(
+                    messages=list(self.history_manager.get_history()),
+                    tools=self._get_tools(),
+                    config=self._build_generation_config(),
+                )
             self._raise_if_retryable_malformed_function_call(response)
             # Retry empty responses in the provider-call layer so the main loop
             # only handles actionable LLM outputs.
@@ -801,6 +1378,7 @@ class LLMAgent:
         wire: Optional[Wire] = None,
     ) -> LLMResponse:
         """Call LLM with streaming and aggregate into a final response."""
+        await self._compact_history_if_needed()
         text_chunks: List[str] = []
         accumulated_text = ""
         function_calls_map: Dict[str, FunctionCall] = {}
@@ -979,6 +1557,90 @@ class LLMAgent:
             text="".join(text_chunks).strip(),
             function_calls=function_calls,
         )
+
+    async def _compact_history_if_needed(self, *, force: bool = False) -> bool:
+        """Compact active history when token budget requires it."""
+        if not force and not self.history_manager.should_compact(reserve_tokens=self.config.max_tokens):
+            return False
+        return await self.history_manager.compact(summarizer=self._summarize_history_for_compaction)
+
+    async def compact_history(self, *, force: bool = False) -> bool:
+        """Compact active history on demand or when token budget requires it."""
+        return await self._compact_history_if_needed(force=force)
+
+    async def _summarize_history_for_compaction(
+        self,
+        messages: List[Message],
+        prior_state: Optional[CompressionState],
+    ) -> CompactionSummary:
+        """Summarize a history span into compaction state."""
+        prior_summary = ""
+        if prior_state and prior_state.summary_chunks:
+            prior_summary = "\n".join(prior_state.summary_chunks[-3:])
+        system_prompt = COMPACTION_SYSTEM_PROMPT
+        if prior_summary:
+            system_prompt = f"{system_prompt}\nExisting compacted summary state:\n{prior_summary}"
+
+        transcript = self.history_manager.render_messages_as_transcript(messages)
+        if not transcript:
+            return CompactionSummary(summary_text="")
+
+        response = await self.provider.generate(
+            messages=[
+                Message.user("Summarize this conversation transcript for future continuation.\n\n" f"{transcript}")
+            ],
+            tools=None,
+            config=GenerationConfig(
+                system_prompt=system_prompt,
+                max_tokens=min(self.config.max_tokens, 1024),
+                temperature=0.0,
+            ),
+        )
+        return self._parse_compaction_summary(response.text)
+
+    @staticmethod
+    def _parse_compaction_summary(text: str) -> CompactionSummary:
+        """Parse compaction JSON response, falling back to plain text."""
+        cleaned = (text or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.removeprefix("```json").removeprefix("```JSON")
+            cleaned = cleaned.removeprefix("```").removesuffix("```").strip()
+        try:
+            data = json.loads(cleaned)
+        except Exception:
+            return CompactionSummary(summary_text=cleaned)
+
+        if not isinstance(data, dict):
+            return CompactionSummary(summary_text=cleaned)
+
+        def _list(name: str) -> List[str]:
+            value = data.get(name, [])
+            if not isinstance(value, list):
+                return []
+            return [str(item) for item in value if str(item).strip()]
+
+        return CompactionSummary(
+            summary_text=str(data.get("summary_text", "") or cleaned),
+            session_intent=str(data.get("session_intent", "") or ""),
+            file_modifications=_list("file_modifications"),
+            decisions=_list("decisions"),
+            open_questions=_list("open_questions"),
+            next_steps=_list("next_steps"),
+        )
+
+    @staticmethod
+    def _is_context_overflow_error(error: Exception) -> bool:
+        """Best-effort detection of provider context overflow errors."""
+        message = str(error).lower()
+        patterns = (
+            "context window",
+            "maximum context length",
+            "context length exceeded",
+            "token limit",
+            "too many tokens",
+            "prompt is too long",
+        )
+        return any(pattern in message for pattern in patterns)
 
     @staticmethod
     def _normalize_stream_text_delta(accumulated_text: str, incoming_text: str) -> str:

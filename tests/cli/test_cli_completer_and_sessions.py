@@ -1,9 +1,10 @@
-"""Tests for CLI completer and /sessions fuzzy filtering."""
+"""Tests for CLI completer, /resume, and /compact behavior."""
 
 from __future__ import annotations
 
 import asyncio
 import io
+from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit import PromptSession
@@ -14,6 +15,8 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 import resume_agent.cli.app as cli_app
+from resume_agent.core.llm import COMPRESSION_STATE_PREFIX, HistoryManager
+from resume_agent.providers.types import Message
 
 
 class _FakeSessionManager:
@@ -37,7 +40,9 @@ class _FakeSessionManager:
             },
         ]
         self.loaded_session_id: str | None = None
+        self.saved_session_id: str | None = None
         self.restored = False
+        self.cleared = False
 
     def list_sessions(self) -> list[dict]:
         return list(self._sessions)
@@ -45,14 +50,24 @@ class _FakeSessionManager:
     def load_session(self, session_id: str) -> dict:
         self.loaded_session_id = session_id
         return {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "session": {},
-            "conversation": {"messages": []},
+            "conversation": {"history_format": "turn_tree_v1", "turns": []},
             "observability": {"events": []},
         }
 
     def restore_agent_state(self, agent: object, session_data: dict) -> None:
         self.restored = True
+
+    def save_session(self, agent: object, session_id: str | None = None) -> str:
+        self.saved_session_id = session_id or "session_20260224_090000_compacted_zzzz9999"
+        return self.saved_session_id
+
+    def clear_sessions(self) -> int:
+        removed = len(self._sessions)
+        self._sessions = []
+        self.cleared = True
+        return removed
 
 
 class _FakePromptSession:
@@ -64,26 +79,26 @@ class _FakePromptSession:
 
 
 @pytest.mark.asyncio
-async def test_sessions_command_supports_fuzzy_query(monkeypatch) -> None:
+async def test_resume_command_supports_fuzzy_query(monkeypatch) -> None:
     output = io.StringIO()
     test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
     monkeypatch.setattr(cli_app, "console", test_console)
 
     manager = _FakeSessionManager()
-    assert await cli_app.handle_command("/sessions bkeng", object(), session_manager=manager)
+    assert await cli_app.handle_command("/resume bkeng", object(), session_manager=manager)
 
     assert manager.loaded_session_id == "session_20260223_090000_backend_engineer_abcd1234"
     assert manager.restored is True
 
 
 @pytest.mark.asyncio
-async def test_sessions_command_uses_picker_and_loads_selected_session() -> None:
+async def test_resume_command_uses_picker_and_loads_selected_session() -> None:
     manager = _FakeSessionManager()
 
     with create_pipe_input() as pipe_input:
         prompt_session = PromptSession(input=pipe_input, output=DummyOutput())
         command_task = asyncio.create_task(
-            cli_app.handle_command("/sessions", object(), session_manager=manager, prompt_session=prompt_session)
+            cli_app.handle_command("/resume", object(), session_manager=manager, prompt_session=prompt_session)
         )
         await asyncio.sleep(0.05)
         pipe_input.send_text("\x1b[B")  # Move to first item.
@@ -96,7 +111,7 @@ async def test_sessions_command_uses_picker_and_loads_selected_session() -> None
 
 
 @pytest.mark.asyncio
-async def test_sessions_command_cancelled_picker_does_not_load(monkeypatch) -> None:
+async def test_resume_command_cancelled_picker_does_not_load(monkeypatch) -> None:
     output = io.StringIO()
     test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
     monkeypatch.setattr(cli_app, "console", test_console)
@@ -106,7 +121,7 @@ async def test_sessions_command_cancelled_picker_does_not_load(monkeypatch) -> N
     with create_pipe_input() as pipe_input:
         prompt_session = PromptSession(input=pipe_input, output=DummyOutput())
         command_task = asyncio.create_task(
-            cli_app.handle_command("/sessions", object(), session_manager=manager, prompt_session=prompt_session)
+            cli_app.handle_command("/resume", object(), session_manager=manager, prompt_session=prompt_session)
         )
         await asyncio.sleep(0.05)
         pipe_input.send_text("\r")  # No explicit selection -> cancel.
@@ -118,13 +133,13 @@ async def test_sessions_command_cancelled_picker_does_not_load(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_sessions_command_shows_no_match_message(monkeypatch) -> None:
+async def test_resume_command_shows_no_match_message(monkeypatch) -> None:
     output = io.StringIO()
     test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
     monkeypatch.setattr(cli_app, "console", test_console)
 
     manager = _FakeSessionManager()
-    assert await cli_app.handle_command("/sessions zzz-not-found", object(), session_manager=manager)
+    assert await cli_app.handle_command("/resume zzz-not-found", object(), session_manager=manager)
 
     rendered = output.getvalue()
     assert "No sessions matched query: zzz-not-found" in rendered
@@ -198,7 +213,7 @@ async def test_select_session_id_falls_back_when_dropdown_errors(monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_sessions_single_match_requires_explicit_interactive_selection(monkeypatch) -> None:
+async def test_resume_single_match_requires_explicit_interactive_selection(monkeypatch) -> None:
     output = io.StringIO()
     test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
     monkeypatch.setattr(cli_app, "console", test_console)
@@ -207,7 +222,7 @@ async def test_sessions_single_match_requires_explicit_interactive_selection(mon
     with create_pipe_input() as pipe_input:
         prompt_session = PromptSession(input=pipe_input, output=DummyOutput())
         command_task = asyncio.create_task(
-            cli_app.handle_command("/sessions bkeng", object(), session_manager=manager, prompt_session=prompt_session)
+            cli_app.handle_command("/resume bkeng", object(), session_manager=manager, prompt_session=prompt_session)
         )
         await asyncio.sleep(0.05)
         pipe_input.send_text("\r")  # One match still needs explicit selection in interactive mode.
@@ -218,7 +233,7 @@ async def test_sessions_single_match_requires_explicit_interactive_selection(mon
 
 
 @pytest.mark.asyncio
-async def test_sessions_single_match_loads_after_explicit_selection(monkeypatch) -> None:
+async def test_resume_single_match_loads_after_explicit_selection(monkeypatch) -> None:
     output = io.StringIO()
     test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
     monkeypatch.setattr(cli_app, "console", test_console)
@@ -227,7 +242,7 @@ async def test_sessions_single_match_loads_after_explicit_selection(monkeypatch)
     with create_pipe_input() as pipe_input:
         prompt_session = PromptSession(input=pipe_input, output=DummyOutput())
         command_task = asyncio.create_task(
-            cli_app.handle_command("/sessions bkeng", object(), session_manager=manager, prompt_session=prompt_session)
+            cli_app.handle_command("/resume bkeng", object(), session_manager=manager, prompt_session=prompt_session)
         )
         await asyncio.sleep(0.05)
         pipe_input.send_text("\x1b[B")  # Select the only option.
@@ -295,12 +310,120 @@ def test_restore_loaded_session_renders_history(monkeypatch) -> None:
     assert rendered["called"] is True
 
 
+def test_render_loaded_history_keeps_compaction_summary_visible(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr(cli_app, "console", test_console)
+
+    manager = HistoryManager()
+    manager.restore_compaction_state(
+        {
+            "history_format": "turn_tree_v1",
+            "turns": [],
+            "compression_state": {
+                "covered_messages": 9,
+                "summary_chunks": ["Earlier edits"],
+            },
+            "compaction_checkpoints": [
+                {
+                    "checkpoint_id": 1,
+                    "covered_messages": 9,
+                    "compacted_messages": 9,
+                    "summary_text": "Earlier edits",
+                }
+            ],
+        }
+    )
+    manager._history = [Message.assistant(f"{COMPRESSION_STATE_PREFIX}\ncovered_messages=9")] + [
+        Message.user(f"msg {i}") for i in range(1, 11)
+    ]
+    llm_agent = SimpleNamespace(history_manager=manager)
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+
+    cli_app._render_compaction_status(object())
+    cli_app._render_loaded_history(object(), max_rows=4)
+
+    rendered = output.getvalue()
+    assert "covered_messages: 9" in rendered
+    assert COMPRESSION_STATE_PREFIX in rendered
+    assert "Showing compaction summary plus last 3 of 11 messages." in rendered
+
+
+@pytest.mark.asyncio
+async def test_compact_command_compacts_and_persists_session(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr(cli_app, "console", test_console)
+
+    manager = HistoryManager()
+    llm_agent = SimpleNamespace(current_session_id="session_existing", history_manager=manager)
+
+    async def _compact_history(*, force: bool = False) -> bool:
+        assert force is True
+        manager.restore_compaction_state(
+            {
+                "history_format": "turn_tree_v1",
+                "turns": [],
+                "compression_state": {
+                    "covered_messages": 7,
+                    "summary_chunks": ["Earlier edits"],
+                },
+                "compaction_checkpoints": [
+                    {
+                        "checkpoint_id": 1,
+                        "covered_messages": 7,
+                        "compacted_messages": 7,
+                        "summary_text": "Earlier edits",
+                    }
+                ],
+            }
+        )
+        manager._history = [
+            Message.assistant(f"{COMPRESSION_STATE_PREFIX}\ncovered_messages=7"),
+            Message.user("latest"),
+        ]
+        return True
+
+    llm_agent.compact_history = _compact_history
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+
+    session_manager = _FakeSessionManager()
+    assert await cli_app.handle_command("/compact", object(), session_manager=session_manager)
+
+    rendered = output.getvalue()
+    assert "History compaction complete" in rendered
+    assert "covered_messages=7" in rendered
+    assert "Session updated: session_existing" in rendered
+    assert session_manager.saved_session_id == "session_existing"
+
+
+@pytest.mark.asyncio
+async def test_clear_sessions_command_removes_all_saved_sessions(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr(cli_app, "console", test_console)
+
+    session_manager = _FakeSessionManager()
+    llm_agent = SimpleNamespace(current_session_id="session_existing")
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+
+    assert await cli_app.handle_command("/clear-sessions", object(), session_manager=session_manager)
+
+    rendered = output.getvalue()
+    assert "Cleared 2 saved session(s)." in rendered
+    assert session_manager.cleared is True
+    assert llm_agent.current_session_id is None
+
+
 def test_command_completer_suggests_command_prefix() -> None:
     completer = cli_app.ResumeCLICompleter()
     doc = Document(text="/st", cursor_position=3)
 
     completions = [item.text for item in completer.get_completions(doc, CompleteEvent(completion_requested=True))]
     assert "/stream" in completions
+    assert "/resume" in cli_app.ResumeCLICompleter.COMMANDS
+    assert "/compact" in cli_app.ResumeCLICompleter.COMMANDS
+    assert "/clear-sessions" in cli_app.ResumeCLICompleter.COMMANDS
 
 
 def test_command_completer_suggests_session_refs_for_delete() -> None:

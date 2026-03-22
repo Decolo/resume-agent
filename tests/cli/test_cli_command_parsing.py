@@ -31,9 +31,9 @@ class _FakeSessionManager:
     def load_session(self, session_id: str) -> dict:
         self.loaded_session_id = session_id
         return {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "session": {},
-            "conversation": {"messages": []},
+            "conversation": {"history_format": "turn_tree_v1", "turns": []},
             "observability": {"events": []},
         }
 
@@ -42,7 +42,7 @@ class _FakeSessionManager:
 
 
 @pytest.mark.asyncio
-async def test_load_command_is_unknown(monkeypatch) -> None:
+async def test_unknown_load_command_does_not_attempt_session_restore(monkeypatch) -> None:
     output = io.StringIO()
     test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
     monkeypatch.setattr("resume_agent.cli.app.console", test_console)
@@ -57,5 +57,19 @@ async def test_load_command_is_unknown(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_command_rejects_invalid_format_without_crashing() -> None:
+async def test_unknown_sessions_command_does_not_attempt_session_restore(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr("resume_agent.cli.app.console", test_console)
+
+    manager = _FakeSessionManager()
+
+    assert await handle_command("/sessions", object(), session_manager=manager)
+    assert manager.loaded_session_id is None
+    assert manager.restored is False
+    assert "Unknown command: /sessions" in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_export_command_rejects_unsupported_format_without_crashing() -> None:
     assert await handle_command("/export file yaml", object())
