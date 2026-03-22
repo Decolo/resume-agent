@@ -13,6 +13,7 @@ from .types import (
     GenerationConfig,
     LLMResponse,
     Message,
+    ModelCapabilities,
     StreamDelta,
     ToolSchema,
 )
@@ -33,6 +34,23 @@ class GeminiProvider:
         # google-genai does not expose a stable api_base option; keep for future use
         _ = api_base
         self.client = genai.Client(api_key=api_key)
+
+    def get_model_capabilities(self) -> ModelCapabilities:
+        """Fetch model token limits from the Gemini model metadata API."""
+        try:
+            model_info = self.client.models.get(model=self.model)
+        except Exception:
+            return ModelCapabilities(provider="gemini", model=self.model, source="unknown")
+
+        context_window = getattr(model_info, "input_token_limit", None)
+        max_output_tokens = getattr(model_info, "output_token_limit", None)
+        return ModelCapabilities(
+            provider="gemini",
+            model=self.model,
+            context_window=int(context_window) if context_window else None,
+            max_output_tokens=int(max_output_tokens) if max_output_tokens else None,
+            source="api",
+        )
 
     async def generate(
         self,

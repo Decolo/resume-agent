@@ -211,6 +211,7 @@ class ResumeCLICompleter(Completer):
         "/reset",
         "/resume",
         "/compact",
+        "/context",
         "/clear-sessions",
         "/delete-session",
         "/config",
@@ -295,6 +296,7 @@ def print_banner():
 ║  Quick Commands:                                          ║
 ║    /help     - Show all commands                          ║
 ║    /compact  - Compress older history now                 ║
+║    /context  - Show current context budget                ║
 ║    /clear-sessions - Delete all saved sessions            ║
 ║    /stream   - Toggle streaming output                    ║
 ║    /resume   - Resume a saved session                     ║
@@ -316,6 +318,7 @@ def print_help():
 | `/help` | Show this help message |
 | `/reset` | Reset conversation history |
 | `/compact` | Compact older history immediately and persist the updated session |
+| `/context` | Show the current context window and estimated remaining budget |
 | `/clear-sessions` | Delete all saved sessions and reset the session index |
 | `/resume [query]` | Browse saved sessions and resume one via inline dropdown picker (optional fuzzy filter) |
 | `/delete-session <number>` | Delete a saved session by number |
@@ -334,6 +337,7 @@ Sessions are auto-saved; use these commands to inspect and restore:
 
 ```bash
 /compact                 # Force history compaction now
+/context                 # Show current context usage and remaining budget
 /clear-sessions          # Delete all saved sessions
 /resume                  # Open interactive session picker
 /resume backend          # Filter sessions before picker
@@ -868,6 +872,81 @@ def _render_compaction_status(agent: Union[ResumeAgent, OrchestratorAgent]) -> N
     )
 
 
+def _get_context_budget_snapshot(agent: Union[ResumeAgent, OrchestratorAgent]) -> Optional[Any]:
+    """Return the primary agent's context budget snapshot when available."""
+    llm_agents = _get_llm_agents(agent)
+    if not llm_agents:
+        return None
+
+    llm_agent = llm_agents[0]
+    snapshot_builder = getattr(llm_agent, "get_context_budget_snapshot", None)
+    if not callable(snapshot_builder):
+        return None
+
+    try:
+        return snapshot_builder()
+    except Exception:
+        return None
+
+
+def _render_context_status(agent: Union[ResumeAgent, OrchestratorAgent]) -> bool:
+    """Render context budget metadata for the primary active history."""
+    budget = _get_context_budget_snapshot(agent)
+    if budget is None:
+        return False
+
+    def _fmt_int(value: Optional[int]) -> str:
+        return f"{value:,}" if isinstance(value, int) else "unknown"
+
+    def _fmt_percent(value: Optional[float]) -> str:
+        return f"{value:.1f}%" if isinstance(value, float) else "unknown"
+
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"provider: {budget.provider}",
+                    f"model: {budget.model}",
+                    f"context_window: {_fmt_int(budget.context_window)}",
+                    f"estimated_prompt_tokens: {_fmt_int(budget.estimated_prompt_tokens)}",
+                    f"reserved_output_tokens: {_fmt_int(budget.reserved_output_tokens)}",
+                    f"estimated_remaining_context: {_fmt_int(budget.estimated_remaining_context)}",
+                    f"usage_percent: {_fmt_percent(budget.usage_percent)}",
+                    f"source: {budget.source}",
+                ]
+            ),
+            title="🧠 Context State",
+            border_style="magenta",
+        )
+    )
+    return True
+
+
+def _format_compact_token_count(value: Optional[int]) -> str:
+    """Format token counts compactly for tight CLI status areas."""
+    if not isinstance(value, int):
+        return "unknown"
+    if value >= 1_000_000:
+        text = f"{value / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{text}M"
+    if value >= 1_000:
+        text = f"{value / 1_000:.1f}".rstrip("0").rstrip(".")
+        return f"{text}K"
+    return str(value)
+
+
+def _build_context_rprompt(agent: Union[ResumeAgent, OrchestratorAgent]) -> Optional[str]:
+    """Build a compact right-side prompt for remaining context budget."""
+    budget = _get_context_budget_snapshot(agent)
+    if budget is None:
+        return None
+
+    if not isinstance(getattr(budget, "estimated_remaining_context", None), int):
+        return None
+
+    return f"ctx {_format_compact_token_count(budget.estimated_remaining_context)} left"
+
+
 def _render_loaded_history(agent: Union[ResumeAgent, OrchestratorAgent], max_rows: int = 8) -> None:
     llm_agents = _get_llm_agents(agent)
     if not llm_agents:
@@ -956,6 +1035,7 @@ def _restore_loaded_session(
         )
     else:
         console.print(f"✓ Session loaded: {session_id}", style="green")
+    _render_context_status(agent)
     _render_compaction_status(agent)
     _render_loaded_history(agent)
 
@@ -1004,8 +1084,13 @@ async def handle_command(
                 session_id = _save_session_snapshot(agent, session_manager)
                 if session_id:
                     console.print(f"Session updated: {session_id}", style="dim")
+            _render_context_status(agent)
         else:
             console.print("Nothing eligible for compaction yet.", style="dim")
+
+    elif cmd == "/context":
+        if not _render_context_status(agent):
+            console.print("Context budget unavailable for the current session.", style="dim")
 
     elif cmd == "/clear-sessions":
         if not session_manager:
@@ -1659,7 +1744,7 @@ async def run_interactive(
             prompt_prefix = "\n📝 You: "
             user_input = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: session.prompt(prompt_prefix),
+                lambda: session.prompt(prompt_prefix, rprompt=_build_context_rprompt(agent)),
             )
 
             user_input = user_input.strip()

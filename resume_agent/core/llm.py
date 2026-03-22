@@ -20,6 +20,7 @@ from resume_agent.providers.types import (
     LLMResponse,
     Message,
     MessagePart,
+    ModelCapabilities,
     StreamDelta,
     ToolSchema,
 )
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 
 
 COMPRESSION_STATE_PREFIX = "[COMPRESSION_STATE]"
+DEFAULT_CONTEXT_WINDOW_FALLBACK = 100000
 COMPACTION_SYSTEM_PROMPT = """Compress the provided conversation history for future continuation.
 
 Return JSON with the following keys:
@@ -93,6 +95,20 @@ class TurnNode:
     token_estimate: int = 0
     contains_tool_call: bool = False
     contains_tool_response: bool = False
+
+
+@dataclass
+class ContextBudgetSnapshot:
+    """Estimated prompt budget state for the current agent session."""
+
+    provider: str
+    model: str
+    source: str
+    context_window: Optional[int]
+    estimated_prompt_tokens: int
+    reserved_output_tokens: int
+    estimated_remaining_context: Optional[int]
+    usage_percent: Optional[float]
 
 
 class HistoryManager:
@@ -809,6 +825,7 @@ class LLMConfig:
     provider: str = "gemini"
     model: str = "gemini-2.0-flash"
     max_tokens: int = 4096
+    context_window_override: Optional[int] = None
     temperature: float = 0.7
     api_base: str = ""  # Custom API endpoint (proxy)
     search_grounding: bool = False
@@ -848,13 +865,19 @@ class LLMAgent:
             api_base=self.config.api_base,
             search_grounding=self.config.search_grounding,
         )
+        self._model_capabilities: Optional[ModelCapabilities] = None
+        self._model_capabilities_resolved = False
 
         # Tools registry: name -> (function, schema)
         self._tools: Dict[str, tuple] = {}
         self._tool_policies: Dict[str, Dict[str, Any]] = {}
 
         # History manager with automatic pruning
-        self.history_manager = HistoryManager(max_messages=50, max_tokens=100000)
+        self.history_manager = HistoryManager(
+            max_messages=50,
+            max_tokens=DEFAULT_CONTEXT_WINDOW_FALLBACK,
+            reserve_tokens=max(1, self.config.max_tokens),
+        )
 
         # Observability for logging and metrics
         self.observer = AgentObserver(agent_id=agent_id, verbose=verbose)
@@ -1560,7 +1583,10 @@ class LLMAgent:
 
     async def _compact_history_if_needed(self, *, force: bool = False) -> bool:
         """Compact active history when token budget requires it."""
-        if not force and not self.history_manager.should_compact(reserve_tokens=self.config.max_tokens):
+        self._ensure_model_capabilities()
+        if not force and not self.history_manager.should_compact(
+            reserve_tokens=self._effective_reserved_output_tokens()
+        ):
             return False
         return await self.history_manager.compact(summarizer=self._summarize_history_for_compaction)
 
@@ -1931,10 +1957,119 @@ class LLMAgent:
             return raw_text[:preview_limit], raw_len, True
         return raw_text, raw_len, False
 
+    def _ensure_model_capabilities(self) -> ModelCapabilities:
+        """Resolve and cache runtime model capabilities."""
+        if self._model_capabilities_resolved and self._model_capabilities is not None:
+            return self._model_capabilities
+
+        capabilities = ModelCapabilities(
+            provider=self.config.provider,
+            model=self.config.model,
+            source="unknown",
+        )
+        get_capabilities = getattr(self.provider, "get_model_capabilities", None)
+        if callable(get_capabilities):
+            try:
+                resolved = get_capabilities()
+            except Exception:
+                resolved = None
+            if isinstance(resolved, ModelCapabilities):
+                capabilities = resolved
+
+        if self.config.context_window_override and self.config.context_window_override > 0:
+            capabilities = ModelCapabilities(
+                provider=capabilities.provider or self.config.provider,
+                model=capabilities.model or self.config.model,
+                context_window=int(self.config.context_window_override),
+                max_output_tokens=capabilities.max_output_tokens,
+                source="config_override",
+            )
+
+        self._model_capabilities = capabilities
+        self._model_capabilities_resolved = True
+        self._apply_history_budget_from_capabilities()
+        return capabilities
+
+    def _effective_context_window(self) -> int:
+        capabilities = self._ensure_model_capabilities()
+        if capabilities.context_window and capabilities.context_window > 0:
+            return int(capabilities.context_window)
+        return DEFAULT_CONTEXT_WINDOW_FALLBACK
+
+    def _effective_reserved_output_tokens(self) -> int:
+        capabilities = self._ensure_model_capabilities()
+        configured = max(1, int(self.config.max_tokens or 1))
+        if capabilities.max_output_tokens and capabilities.max_output_tokens > 0:
+            return min(configured, int(capabilities.max_output_tokens))
+        return configured
+
+    def _apply_history_budget_from_capabilities(self) -> None:
+        capabilities = self._model_capabilities
+        if capabilities and capabilities.context_window and capabilities.context_window > 0:
+            self.history_manager.max_tokens = int(capabilities.context_window)
+        self.history_manager.reserve_tokens = self._effective_reserved_output_tokens()
+
+    @staticmethod
+    def _estimate_text_tokens(text: str) -> int:
+        if not text:
+            return 0
+        return len(text) // 4
+
+    def _estimate_tool_schema_tokens(self) -> int:
+        tools = self._get_tools()
+        if not tools:
+            return 0
+        payload = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+            for tool in tools
+        ]
+        try:
+            serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            serialized = str(payload)
+        return self._estimate_text_tokens(serialized)
+
+    def get_context_budget_snapshot(self) -> ContextBudgetSnapshot:
+        """Return the estimated current prompt budget state."""
+        capabilities = self._ensure_model_capabilities()
+        estimated_prompt_tokens = (
+            self.history_manager.estimated_tokens()
+            + self._estimate_text_tokens(self.system_prompt)
+            + self._estimate_tool_schema_tokens()
+        )
+        reserved_output_tokens = self._effective_reserved_output_tokens()
+        estimated_remaining_context: Optional[int] = None
+        usage_percent: Optional[float] = None
+        if capabilities.context_window and capabilities.context_window > 0:
+            estimated_remaining_context = max(
+                0,
+                int(capabilities.context_window) - estimated_prompt_tokens - reserved_output_tokens,
+            )
+            usage_percent = min(
+                100.0,
+                max(0.0, (estimated_prompt_tokens / int(capabilities.context_window)) * 100),
+            )
+
+        return ContextBudgetSnapshot(
+            provider=capabilities.provider or self.config.provider,
+            model=capabilities.model or self.config.model,
+            source=capabilities.source or "unknown",
+            context_window=capabilities.context_window,
+            estimated_prompt_tokens=estimated_prompt_tokens,
+            reserved_output_tokens=reserved_output_tokens,
+            estimated_remaining_context=estimated_remaining_context,
+            usage_percent=usage_percent,
+        )
+
     def _build_generation_config(self) -> GenerationConfig:
+        self._ensure_model_capabilities()
         return GenerationConfig(
             system_prompt=self.system_prompt,
-            max_tokens=self.config.max_tokens,
+            max_tokens=self._effective_reserved_output_tokens(),
             temperature=self.config.temperature,
         )
 
@@ -2630,6 +2765,7 @@ def load_config(config_path: str = "config/config.local.yaml") -> LLMConfig:
         provider=data.get("provider", "gemini"),
         model=data.get("model", "gemini-2.0-flash"),
         max_tokens=data.get("max_tokens", 4096),
+        context_window_override=data.get("context_window_override"),
         temperature=data.get("temperature", 0.7),
         api_base=data.get("api_base", ""),
         search_grounding=data.get("search_grounding", {}).get("enabled", False),

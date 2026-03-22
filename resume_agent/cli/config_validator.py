@@ -109,6 +109,21 @@ def validate_config(raw_config: Dict[str, Any], workspace_dir: str = ".") -> Lis
             )
         )
 
+    context_window_override = raw_config.get("context_window_override")
+    if context_window_override is not None and (
+        not isinstance(context_window_override, int) or context_window_override <= 0
+    ):
+        errors.append(
+            ConfigError(
+                field="context_window_override",
+                message=(
+                    "context_window_override must be a positive integer when provided, "
+                    f"got {context_window_override}"
+                ),
+                severity=Severity.ERROR,
+            )
+        )
+
     # --- Multi-agent enabled ---
     ma = raw_config.get("multi_agent", {})
     if ma:

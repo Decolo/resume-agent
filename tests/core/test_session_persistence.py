@@ -113,6 +113,20 @@ class TestSessionSerializer:
         assert messages[1].role == "assistant"
         assert messages[1].parts[0].text == "Hi there!"
 
+    def test_restore_history_manager_keeps_current_runtime_token_budget(self):
+        """Restoring a session should not overwrite the current model token budget."""
+        original = HistoryManager(max_messages=50, max_tokens=100000, reserve_tokens=2048)
+        original.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
+        original.add_message(Message(role="assistant", parts=[MessagePart.from_text("Hi there!")]))
+        data = SessionSerializer.serialize_history(original)
+
+        restored = HistoryManager(max_messages=50, max_tokens=128000, reserve_tokens=4096)
+        SessionSerializer.restore_history_manager(restored, data)
+
+        assert restored.max_tokens == 128000
+        assert restored.reserve_tokens == 4096
+        assert len(restored.get_history()) == 2
+
     def test_restore_history_manager_rejects_legacy_linear_history_payload(self):
         """Legacy sessions without turn-tree metadata should be rejected clearly."""
         restored = HistoryManager(max_messages=50, max_tokens=100000)

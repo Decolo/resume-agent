@@ -15,7 +15,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 import resume_agent.cli.app as cli_app
-from resume_agent.core.llm import COMPRESSION_STATE_PREFIX, HistoryManager
+from resume_agent.core.llm import COMPRESSION_STATE_PREFIX, ContextBudgetSnapshot, HistoryManager
 from resume_agent.providers.types import Message
 
 
@@ -299,15 +299,20 @@ async def test_fallback_picker_empty_selection_cancels(monkeypatch) -> None:
 def test_restore_loaded_session_renders_history(monkeypatch) -> None:
     manager = _FakeSessionManager()
     sessions = manager.list_sessions()
-    rendered = {"called": False}
+    rendered = {"history": False, "context": False}
 
     def _fake_render_loaded_history(agent, max_rows=8):  # type: ignore[no-untyped-def]
-        rendered["called"] = True
+        rendered["history"] = True
+
+    def _fake_render_context_status(agent):  # type: ignore[no-untyped-def]
+        rendered["context"] = True
 
     monkeypatch.setattr(cli_app, "_render_loaded_history", _fake_render_loaded_history)
+    monkeypatch.setattr(cli_app, "_render_context_status", _fake_render_context_status)
     cli_app._restore_loaded_session(sessions[0]["id"], sessions, manager, object())
 
-    assert rendered["called"] is True
+    assert rendered["history"] is True
+    assert rendered["context"] is True
 
 
 def test_render_loaded_history_keeps_compaction_summary_visible(monkeypatch) -> None:
@@ -398,6 +403,129 @@ async def test_compact_command_compacts_and_persists_session(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_context_command_renders_budget_panel(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr(cli_app, "console", test_console)
+
+    llm_agent = SimpleNamespace(
+        get_context_budget_snapshot=lambda: ContextBudgetSnapshot(
+            provider="gemini",
+            model="gemini-2.5-pro",
+            source="api",
+            context_window=1_048_576,
+            estimated_prompt_tokens=12_345,
+            reserved_output_tokens=2_048,
+            estimated_remaining_context=1_034_183,
+            usage_percent=1.2,
+        )
+    )
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+
+    assert await cli_app.handle_command("/context", object())
+
+    rendered = output.getvalue()
+    assert "Context State" in rendered
+    assert "context_window: 1,048,576" in rendered
+    assert "estimated_remaining_context: 1,034,183" in rendered
+
+
+@pytest.mark.asyncio
+async def test_context_command_reports_unavailable_budget(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr(cli_app, "console", test_console)
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [])
+
+    assert await cli_app.handle_command("/context", object())
+
+    rendered = output.getvalue()
+    assert "Context budget unavailable for the current session." in rendered
+
+
+def test_build_context_rprompt_formats_remaining_context(monkeypatch) -> None:
+    llm_agent = SimpleNamespace(
+        get_context_budget_snapshot=lambda: ContextBudgetSnapshot(
+            provider="gemini",
+            model="gemini-2.5-pro",
+            source="api",
+            context_window=1_048_576,
+            estimated_prompt_tokens=12_345,
+            reserved_output_tokens=2_048,
+            estimated_remaining_context=1_034_183,
+            usage_percent=1.2,
+        )
+    )
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+
+    assert cli_app._build_context_rprompt(object()) == "ctx 1.03M left"
+
+
+def test_build_context_rprompt_hides_unknown_remaining_context(monkeypatch) -> None:
+    llm_agent = SimpleNamespace(
+        get_context_budget_snapshot=lambda: ContextBudgetSnapshot(
+            provider="openai",
+            model="unknown",
+            source="unknown",
+            context_window=None,
+            estimated_prompt_tokens=3_000,
+            reserved_output_tokens=2_048,
+            estimated_remaining_context=None,
+            usage_percent=None,
+        )
+    )
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+
+    assert cli_app._build_context_rprompt(object()) is None
+
+
+@pytest.mark.asyncio
+async def test_run_interactive_passes_context_rprompt_to_prompt_session(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr(cli_app, "console", test_console)
+    monkeypatch.setattr(cli_app, "print_banner", lambda: None)
+
+    captured: dict[str, object] = {}
+
+    class _FakePromptSession:
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            captured["init_kwargs"] = kwargs
+
+        def prompt(self, message: str, **kwargs) -> str:  # type: ignore[no-untyped-def]
+            captured["message"] = message
+            captured["rprompt"] = kwargs.get("rprompt")
+            return "/exit"
+
+    async def _fake_handle_command(*args, **kwargs) -> bool:  # type: ignore[no-untyped-def]
+        captured["command"] = args[0]
+        return False
+
+    llm_agent = SimpleNamespace(
+        get_context_budget_snapshot=lambda: ContextBudgetSnapshot(
+            provider="gemini",
+            model="gemini-2.5-pro",
+            source="api",
+            context_window=1_048_576,
+            estimated_prompt_tokens=12_345,
+            reserved_output_tokens=2_048,
+            estimated_remaining_context=1_034_183,
+            usage_percent=1.2,
+        )
+    )
+
+    monkeypatch.setattr(cli_app, "PromptSession", _FakePromptSession)
+    monkeypatch.setattr(cli_app, "handle_command", _fake_handle_command)
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+
+    await cli_app.run_interactive(object())
+
+    assert captured["message"] == "\n📝 You: "
+    assert captured["rprompt"] == "ctx 1.03M left"
+    assert captured["command"] == "/exit"
+
+
+@pytest.mark.asyncio
 async def test_clear_sessions_command_removes_all_saved_sessions(monkeypatch) -> None:
     output = io.StringIO()
     test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
@@ -423,6 +551,7 @@ def test_command_completer_suggests_command_prefix() -> None:
     assert "/stream" in completions
     assert "/resume" in cli_app.ResumeCLICompleter.COMMANDS
     assert "/compact" in cli_app.ResumeCLICompleter.COMMANDS
+    assert "/context" in cli_app.ResumeCLICompleter.COMMANDS
     assert "/clear-sessions" in cli_app.ResumeCLICompleter.COMMANDS
 
 

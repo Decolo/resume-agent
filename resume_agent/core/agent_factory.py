@@ -444,6 +444,7 @@ def _build_agent_llm_config(
         api_base=api_base,
         model=model,
         max_tokens=max_tokens,
+        context_window_override=agent_config_data.get("context_window_override", base_config.context_window_override),
         temperature=temperature,
         search_grounding=getattr(base_config, "search_grounding", False),
     )

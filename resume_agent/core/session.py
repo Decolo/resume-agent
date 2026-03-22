@@ -130,18 +130,21 @@ class SessionSerializer:
     @staticmethod
     def restore_history_manager(history_manager: HistoryManager, data: dict) -> None:
         """Restore history manager messages and compaction metadata."""
+        current_max_tokens = history_manager.max_tokens
+        current_reserve_tokens = history_manager.reserve_tokens
+        current_tail_tokens = history_manager.tail_tokens
         restored = HistoryManager(
             max_messages=int(data.get("max_messages", history_manager.max_messages)),
-            max_tokens=int(data.get("max_tokens", history_manager.max_tokens)),
-            reserve_tokens=history_manager.reserve_tokens,
-            tail_tokens=history_manager.tail_tokens,
+            max_tokens=current_max_tokens,
+            reserve_tokens=current_reserve_tokens,
+            tail_tokens=current_tail_tokens,
         )
         restored.restore_compaction_state(data)
 
         history_manager.max_messages = restored.max_messages
-        history_manager.max_tokens = restored.max_tokens
-        history_manager.reserve_tokens = restored.reserve_tokens
-        history_manager.tail_tokens = restored.tail_tokens
+        history_manager.max_tokens = current_max_tokens
+        history_manager.reserve_tokens = current_reserve_tokens
+        history_manager.tail_tokens = current_tail_tokens
         history_manager._turns_by_id = restored._turns_by_id
         history_manager._turn_order = restored._turn_order
         history_manager._current_leaf_turn_id = restored._current_leaf_turn_id
