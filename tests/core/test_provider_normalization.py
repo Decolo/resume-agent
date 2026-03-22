@@ -337,6 +337,55 @@ def test_openai_kwargs_do_not_force_thinking_for_non_kimi_models():
     assert "extra_body" not in kwargs
 
 
+def test_openai_kwargs_include_prompt_cache_fields_when_enabled():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2.5",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    kwargs = provider._build_chat_kwargs(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=None,
+        config=GenerationConfig(
+            system_prompt="system",
+            max_tokens=128,
+            temperature=0.2,
+            prompt_cache_enabled=True,
+            prompt_cache_key="resume-agent:v1:kimi:kimi-k2.5:abcd1234",
+            prompt_cache_retention="24h",
+        ),
+        stream=False,
+    )
+
+    assert kwargs["prompt_cache_key"] == "resume-agent:v1:kimi:kimi-k2.5:abcd1234"
+    assert kwargs["prompt_cache_retention"] == "24h"
+
+
+def test_openai_completion_extracts_cached_input_tokens():
+    provider = OpenAICompatibleProvider(
+        api_key="test-key",
+        model="kimi-k2",
+        api_base="https://api.moonshot.cn/v1",
+    )
+    completion = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))],
+        usage=SimpleNamespace(
+            prompt_tokens=10,
+            completion_tokens=20,
+            total_tokens=30,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=7),
+        ),
+    )
+
+    response = provider._from_openai_completion(completion)
+    assert response.usage == {
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "total_tokens": 30,
+        "input_cache_read": 7,
+    }
+
+
 def test_extract_allowed_temperature_from_error_message():
     provider = OpenAICompatibleProvider(
         api_key="test-key",
@@ -386,6 +435,85 @@ async def test_openai_temperature_retry_persists_allowed_temperature(monkeypatch
         stream=False,
     )
     assert second_kwargs["temperature"] == 0.6
+
+
+def test_llm_prompt_cache_key_is_stable_across_tool_registration_order():
+    agent1 = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="kimi",
+            model="kimi-k2",
+            api_base="https://api.moonshot.cn/v1",
+            prompt_cache_enabled=True,
+        ),
+        system_prompt="system prompt",
+    )
+    agent2 = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="kimi",
+            model="kimi-k2",
+            api_base="https://api.moonshot.cn/v1",
+            prompt_cache_enabled=True,
+        ),
+        system_prompt="system prompt",
+    )
+
+    tool_a = {
+        "name": "file_read",
+        "description": "Read file",
+        "parameters": {"properties": {"path": {"type": "string"}}, "required": ["path"]},
+    }
+    tool_b = {
+        "name": "resume_parse",
+        "description": "Parse resume",
+        "parameters": {"properties": {"path": {"type": "string"}}, "required": ["path"]},
+    }
+
+    agent1.register_tool(func=lambda **_: "ok", **tool_a)
+    agent1.register_tool(func=lambda **_: "ok", **tool_b)
+    agent2.register_tool(func=lambda **_: "ok", **tool_b)
+    agent2.register_tool(func=lambda **_: "ok", **tool_a)
+
+    assert agent1._build_generation_config().prompt_cache_key == agent2._build_generation_config().prompt_cache_key
+
+
+def test_llm_prompt_cache_key_changes_when_tool_schema_changes():
+    agent1 = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="kimi",
+            model="kimi-k2",
+            api_base="https://api.moonshot.cn/v1",
+            prompt_cache_enabled=True,
+        ),
+        system_prompt="system prompt",
+    )
+    agent2 = LLMAgent(
+        LLMConfig(
+            api_key="test-key",
+            provider="kimi",
+            model="kimi-k2",
+            api_base="https://api.moonshot.cn/v1",
+            prompt_cache_enabled=True,
+        ),
+        system_prompt="system prompt",
+    )
+
+    agent1.register_tool(
+        name="file_read",
+        description="Read file",
+        parameters={"properties": {"path": {"type": "string"}}, "required": ["path"]},
+        func=lambda **_: "ok",
+    )
+    agent2.register_tool(
+        name="file_read",
+        description="Read file contents",
+        parameters={"properties": {"path": {"type": "string"}}, "required": ["path"]},
+        func=lambda **_: "ok",
+    )
+
+    assert agent1._build_generation_config().prompt_cache_key != agent2._build_generation_config().prompt_cache_key
 
 
 @pytest.mark.asyncio

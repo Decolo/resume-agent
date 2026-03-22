@@ -123,21 +123,6 @@ def validate_config(raw_config: Dict[str, Any], workspace_dir: str = ".") -> Lis
                 severity=Severity.ERROR,
             )
         )
-
-    # --- Multi-agent enabled ---
-    ma = raw_config.get("multi_agent", {})
-    if ma:
-        enabled = ma.get("enabled", False)
-        valid_enabled = {True, False, "auto"}
-        if enabled not in valid_enabled:
-            errors.append(
-                ConfigError(
-                    field="multi_agent.enabled",
-                    message=f'multi_agent.enabled must be true, false, or "auto", got {enabled!r}',
-                    severity=Severity.ERROR,
-                )
-            )
-
     # --- Workspace ---
     ws = Path(workspace_dir)
     if not ws.exists():

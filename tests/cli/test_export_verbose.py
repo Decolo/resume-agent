@@ -22,7 +22,6 @@ def mock_agent():
         result="File content",
         duration_ms=50.0,
         success=True,
-        cached=False,
     )
     observer.log_llm_request(
         model="gemini-2.5-flash",

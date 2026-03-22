@@ -82,23 +82,7 @@ class TestValidateConfig:
         assert len(token_errors) == 1
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_validate_config_reports_invalid_multi_agent_enabled_value(self):
-        config = self._valid_config()
-        config["multi_agent"] = {"enabled": "maybe"}
-        issues = validate_config(config)
-        ma_errors = [e for e in issues if e.field == "multi_agent.enabled"]
-        assert len(ma_errors) == 1
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_validate_config_accepts_multi_agent_auto_mode(self):
-        config = self._valid_config()
-        config["multi_agent"] = {"enabled": "auto"}
-        issues = validate_config(config)
-        ma_errors = [e for e in issues if e.field == "multi_agent.enabled"]
-        assert len(ma_errors) == 0
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_validate_config_warns_when_workspace_directory_does_not_exist(self):
+    def test_nonexistent_workspace_is_warning(self):
         config = self._valid_config()
         issues = validate_config(config, workspace_dir="/nonexistent/path/xyz")
         ws_issues = [e for e in issues if e.field == "workspace_dir"]
@@ -111,3 +95,12 @@ class TestValidateConfig:
         issues = validate_config(config, workspace_dir=str(tmp_path))
         ws_issues = [e for e in issues if e.field == "workspace_dir"]
         assert len(ws_issues) == 0
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_validate_config_reports_non_positive_context_window_override(self):
+        config = self._valid_config()
+        config["context_window_override"] = 0
+        issues = validate_config(config)
+        override_errors = [e for e in issues if e.field == "context_window_override"]
+        assert len(override_errors) == 1
+        assert override_errors[0].severity == Severity.ERROR

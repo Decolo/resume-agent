@@ -34,7 +34,7 @@ class _FakeSessionManager:
                 "id": "session_20260220_090000_data_scientist_efgh5678",
                 "created_at": "2026-02-20T09:00:00",
                 "updated_at": "2026-02-20T09:05:00",
-                "mode": "multi-agent",
+                "mode": "single-agent",
                 "message_count": 8,
                 "total_tokens": 900,
             },

@@ -77,8 +77,8 @@ I'll parse your resume now.
 - **[14:23:15]** ✓ Tool: `file_read` (45.23ms)
   - Args: `{'path': 'resume.md'}`
 - **[14:23:15]** 🤖 LLM Request: `gemini-2.5-flash` (Step 1)
-  - Tokens: 1250, Cost: $0.0025, Duration: 234.56ms
-- **[14:23:16]** ✓ Tool: `resume_parse` 🔄 (12.34ms)
+  - Tokens: 1250, Prompt Cache Read: 640, Cost: $0.0025, Duration: 234.56ms
+- **[14:23:16]** ✓ Tool: `resume_parse` (12.34ms)
   - Args: `{'path': 'resume.md', 'format': 'markdown'}`
 - **[14:23:16]** 🤖 LLM Request: `gemini-2.5-flash` (Step 2)
   - Tokens: 890, Cost: $0.0018, Duration: 189.23ms
@@ -86,10 +86,11 @@ I'll parse your resume now.
 ## Session Statistics
 
 - **Total Events:** 8
-- **Tool Calls:** 2 (cache hit: 50.0%)
+- **Tool Calls:** 2
 - **LLM Requests:** 2
 - **Errors:** 0
 - **Total Tokens:** 2,140
+- **Prompt Cache:** 640 cached input tokens
 - **Total Cost:** $0.0043
 - **Total Duration:** 481.36ms
 ```
@@ -129,8 +130,7 @@ I'll parse your resume now.
           "tool": "file_read",
           "args": {"path": "resume.md"},
           "result": "# John Doe...",
-          "success": true,
-          "cached": false
+          "success": true
         },
         "duration_ms": 45.23,
         "tokens_used": null,
@@ -141,7 +141,9 @@ I'll parse your resume now.
         "event_type": "llm_request",
         "data": {
           "model": "gemini-2.5-flash",
-          "step": 1
+          "step": 1,
+          "input_cache_read": 640,
+          "prompt_cache_key": "resume-agent:v1:kimi:kimi-k2.5:abcd1234"
         },
         "duration_ms": 234.56,
         "tokens_used": 1250,
@@ -156,7 +158,7 @@ I'll parse your resume now.
       "tool_calls": 2,
       "llm_requests": 2,
       "errors": 0,
-      "cache_hit_rate": 0.5
+      "input_cache_read": 640
     }
   }
 }
@@ -187,6 +189,7 @@ OBSERVABILITY LOGS
   Model: gemini-2.5-flash
   Step: 1
   Tokens: 1250
+  Prompt Cache Read: 640
   Cost: $0.0025
   Duration: 234.56ms
 
@@ -205,10 +208,11 @@ OBSERVABILITY LOGS
 SESSION STATISTICS
 ============================================================
 Total Events:     8
-Tool Calls:       2 (cache hit: 50.0%)
+Tool Calls:       2
 LLM Requests:     2
 Errors:           0
 Total Tokens:     2,140
+Prompt Cache:     640 cached input tokens
 Total Cost:       $0.0043
 Total Duration:   481.36ms
 ```
@@ -227,8 +231,8 @@ Maintain detailed records of agent operations for compliance or review.
 ### 4. Cost Tracking
 Monitor API costs across sessions to manage budget.
 
-### 5. Cache Optimization
-Identify cache hit rates to tune caching strategies.
+### 5. Prompt Cache Optimization
+Track cached input tokens to verify prompt prefix reuse.
 
 ## File Naming
 

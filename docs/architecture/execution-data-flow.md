@@ -1,8 +1,9 @@
 # Execution Data Flow
 
 Canonical runtime map for the CLI-first architecture.
-Prefer this doc when changing control flow, tool orchestration, or session behavior.
-Last updated: 2026-03-08.
+Prefer this doc when changing control flow, tool orchestration, prompt caching,
+or session behavior.
+Last updated: 2026-03-10.
 
 ## 1) End-to-End Pipeline (Interactive CLI)
 
@@ -30,55 +31,46 @@ Last updated: 2026-03-08.
                   |
                   v
 +--------------------------------------+
-| Resolve Agent Mode                   |
-| --single-agent / --multi-agent / auto|
+| Create ResumeAgent                   |
+| - create_agent(...)                  |
 +--------------------------------------+
-      |                    |                    |
-      v                    v                    v
-+---------------+  +------------------+  +----------------+
-| ResumeAgent   |  | OrchestratorAgent|  | AutoAgent      |
-| .run()        |  | .run()           |  | .run()         |
-+---------------+  +------------------+  +----------------+
-      \                    |                    /
-       \                   |                   /
-        +------------------------------------+
-                          |
-                          v
-               +----------------------+
-               | LLMAgent.run loop    |
-               +----------------------+
-                          |
-                          v
-               +----------------------+
-               | Provider call        |
-               | gemini/openai_compat |
-               +----------------------+
-                          |
-                          v
-               +----------------------+
-               | Function calls?      |
-               +----------------------+
-                     |        |
-                   No|        |Yes
-                     v        v
-      +--------------------+  +----------------------+
-      | Render final text  |  | Execute tools        |
-      | in CLI             |  +----------------------+
-      +--------------------+            |
-                                        v
-                              +----------------------+
-                              | Tool adapters        |
-                              | (resume_agent/tools) |
-                              +----------------------+
-                                        |
-                                        v
-                              +----------------------+
-                              | Domain functions     |
-                              | (resume_agent/domain)|
-                              +----------------------+
-                                        |
-                                        v
-                              (back to LLMAgent loop)
+                  |
+                  v
++--------------------------------------+
+| LLMAgent.run loop                    |
++--------------------------------------+
+                  |
+                  v
++--------------------------------------+
+| Provider call                        |
+| gemini / openai_compat               |
++--------------------------------------+
+                  |
+                  v
++--------------------------------------+
+| Function calls?                      |
++--------------------------------------+
+             |              |
+           No|              |Yes
+             v              v
+ +--------------------+  +----------------------+
+ | Render final text  |  | Execute tools        |
+ | in CLI             |  +----------------------+
+ +--------------------+             |
+                                    v
+                          +----------------------+
+                          | Tool adapters        |
+                          | (resume_agent/tools) |
+                          +----------------------+
+                                    |
+                                    v
+                          +----------------------+
+                          | Domain functions     |
+                          | (resume_agent/domain)|
+                          +----------------------+
+                                    |
+                                    v
+                          (back to LLMAgent loop)
 ```
 
 Key files:
@@ -86,6 +78,7 @@ Key files:
 - `resume_agent/cli/config_validator.py`
 - `resume_agent/cli/tool_factory.py`
 - `resume_agent/core/agent_factory.py`
+- `resume_agent/core/agent.py`
 - `resume_agent/core/llm.py`
 - `resume_agent/tools/*`
 - `resume_agent/domain/*`
@@ -127,10 +120,9 @@ Key files:
 [Inline approval via Wire]
   Build approval metadata per tool call:
     - loop asks tool for build_approval_request(**args) when available
-    - tool returns action key + description (description may include diff preview)
+    - tool returns action key + description
     - fallback path uses generic call summary
   Approval.request() blocks on asyncio.Future
-  _pipe_approval_to_wire sends ApprovalRequest to UI
   UI consumer prompts user and resolves the Future
   "approve_all" persists as action-scoped auto-approve across subsequent turns
     |
@@ -180,10 +172,10 @@ Key files:
 [Continue normal execution]
 ```
 
-Safety and reliability mechanisms in both paths:
+Safety and reliability mechanisms:
 - retry/backoff wrapper around provider calls
-- per-tool cache for read-heavy tools
-- required-argument pre-validation before tool execution (missing required args fail fast with structured error)
+- provider-level prompt cache support for OpenAI-compatible backends
+- required-argument pre-validation before tool execution
 - malformed function-call response retry for provider-level empty payload cases
 - observability events for step/tool/llm lifecycle
 
@@ -213,7 +205,7 @@ Current ownership boundary:
 
 Key files:
 - `resume_agent/core/llm.py`
-- `resume_agent/core/wire/` (Wire protocol, Approval, Queue primitives)
+- `resume_agent/core/wire/`
 - `resume_agent/tools/file_tool.py`
 
 ## 3) Tool and Domain Data Path
@@ -250,48 +242,7 @@ For resume-specific tools:
 - adapters: `resume_agent/tools/resume_tools.py`
 - domain: `resume_agent/domain/resume_parser.py`, `resume_linter.py`, `job_matcher.py`, `resume_writer.py`, `resume_validator.py`
 
-## 4) Multi-Agent Delegation Path
-
-```text
-[User task]
-    |
-    v
-[OrchestratorAgent]
-    |
-    v
-[delegate_to_* via AgentTool]
-    |
-    v
-[DelegationManager creates AgentTask]
-    |
-    v
-[Target agent?]
-   | Parser      | Writer      | Formatter
-   v             v             v
-[ParserAgent] [WriterAgent] [FormatterAgent]
-   |             |             |
-   +-------------+-------------+
-                 |
-                 v
-            [Agent result]
-                 |
-                 v
-[Return as tool response to Orchestrator]
-                 |
-                 v
-           [OrchestratorAgent]
-```
-
-Key files:
-- `resume_agent/core/agent_factory.py`
-- `resume_agent/core/agents/orchestrator_agent.py`
-- `resume_agent/core/agents/agent_tool.py`
-- `resume_agent/core/agents/delegation.py`
-- `resume_agent/core/agents/parser_agent.py`
-- `resume_agent/core/agents/writer_agent.py`
-- `resume_agent/core/agents/formatter_agent.py`
-
-## 5) Session Persistence Flow
+## 4) Session Persistence Flow
 
 ```text
 [Tool execution completes]
@@ -333,14 +284,10 @@ Files:
 Fast path:
 1. `resume_agent/cli/app.py`
 2. `resume_agent/core/agent_factory.py`
-3. `resume_agent/core/llm.py`
-4. `resume_agent/cli/tool_factory.py`
-5. `resume_agent/tools/resume_tools.py`
-6. `resume_agent/domain/*.py`
-7. `resume_agent/providers/*.py`
-8. `resume_agent/core/session.py`
-
-If debugging multi-agent:
-1. `resume_agent/core/agents/orchestrator_agent.py`
-2. `resume_agent/core/agents/agent_tool.py`
-3. `resume_agent/core/agents/delegation.py`
+3. `resume_agent/core/agent.py`
+4. `resume_agent/core/llm.py`
+5. `resume_agent/cli/tool_factory.py`
+6. `resume_agent/tools/resume_tools.py`
+7. `resume_agent/domain/*.py`
+8. `resume_agent/providers/*.py`
+9. `resume_agent/core/session.py`

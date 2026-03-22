@@ -106,6 +106,10 @@ class OpenAICompatibleProvider:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        if config.prompt_cache_enabled and config.prompt_cache_key:
+            kwargs["prompt_cache_key"] = config.prompt_cache_key
+            if config.prompt_cache_retention:
+                kwargs["prompt_cache_retention"] = config.prompt_cache_retention
 
         extra_body = self._build_extra_body()
         if extra_body:
@@ -263,6 +267,9 @@ class OpenAICompatibleProvider:
                 "completion_tokens": int(getattr(usage_data, "completion_tokens", 0) or 0),
                 "total_tokens": int(getattr(usage_data, "total_tokens", 0) or 0),
             }
+            cached_tokens = self._extract_cached_input_tokens(usage_data)
+            if cached_tokens:
+                usage["input_cache_read"] = cached_tokens
 
         return LLMResponse(
             text=text,
@@ -270,6 +277,26 @@ class OpenAICompatibleProvider:
             usage=usage,
             raw=completion,
         )
+
+    @staticmethod
+    def _extract_cached_input_tokens(usage_data: Any) -> int:
+        prompt_details = getattr(usage_data, "prompt_tokens_details", None)
+        if prompt_details is not None:
+            cached = getattr(prompt_details, "cached_tokens", None)
+            if cached is not None:
+                return int(cached or 0)
+
+        input_details = getattr(usage_data, "input_tokens_details", None)
+        if input_details is not None:
+            cached = getattr(input_details, "cached_tokens", None)
+            if cached is not None:
+                return int(cached or 0)
+
+        cached = getattr(usage_data, "cached_tokens", None)
+        if cached is not None:
+            return int(cached or 0)
+
+        return 0
 
     def _iter_stream_deltas(
         self,

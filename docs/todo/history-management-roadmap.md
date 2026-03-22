@@ -13,15 +13,10 @@ This file tracks future work for conversation history management in
   - Ensure session persistence and migration from current linear history format.
   - Propose minimal CLI commands for branch navigation and inspection.
 
-- [ ] Hard-remove built-in multi-agent subagents to simplify architecture
-  - Remove `AutoAgent`, `IntentRouter`, `OrchestratorAgent`, and specialized
-    subagent runtime paths.
-  - Remove multi-agent config surface (`multi_agent.*`, `routing.*`) and CLI
-    force flags tied to multi-agent mode.
-  - Remove delegation-related session serialization fields and dead code paths.
-  - Archive superseded architecture/docs and keep one concise single-agent
-    architecture source of truth.
-  - Define migration notes for existing users who rely on multi-agent settings.
+- [x] Simplify runtime to single-agent only
+  - Removed built-in subagent runtime paths and related orchestration code.
+  - Removed obsolete config surface and CLI mode toggles from the old architecture.
+  - Simplified session serialization and architecture docs around one runtime path.
 
 - [ ] Harden tool-call argument integrity for write operations
   - Prevent stream/tool-call argument degradation from producing `{}` at

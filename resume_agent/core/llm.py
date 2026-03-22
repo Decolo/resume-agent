@@ -25,7 +25,6 @@ from resume_agent.providers.types import (
     ToolSchema,
 )
 
-from .cache import ToolCache, get_tool_ttl, should_cache_tool
 from .observability import AgentObserver
 from .retry import RetryConfig, TransientError, is_transient_error, retry_with_backoff
 
@@ -829,6 +828,8 @@ class LLMConfig:
     temperature: float = 0.7
     api_base: str = ""  # Custom API endpoint (proxy)
     search_grounding: bool = False
+    prompt_cache_enabled: bool = False
+    prompt_cache_retention: Optional[str] = None
 
 
 class LLMAgent:
@@ -881,9 +882,6 @@ class LLMAgent:
 
         # Observability for logging and metrics
         self.observer = AgentObserver(agent_id=agent_id, verbose=verbose)
-
-        # Tool result caching
-        self.cache = ToolCache()
 
         # Session management
         self.session_manager = session_manager
@@ -2067,11 +2065,44 @@ class LLMAgent:
 
     def _build_generation_config(self) -> GenerationConfig:
         self._ensure_model_capabilities()
+        prompt_cache_enabled = self._prompt_cache_enabled()
         return GenerationConfig(
             system_prompt=self.system_prompt,
             max_tokens=self._effective_reserved_output_tokens(),
             temperature=self.config.temperature,
+            prompt_cache_enabled=prompt_cache_enabled,
+            prompt_cache_key=self._build_prompt_cache_key() if prompt_cache_enabled else None,
+            prompt_cache_retention=self.config.prompt_cache_retention if prompt_cache_enabled else None,
         )
+
+    def _prompt_cache_enabled(self) -> bool:
+        return bool(self.config.prompt_cache_enabled and self.config.provider.lower() != "gemini")
+
+    def _stable_prompt_cache_tools_payload(self) -> List[Dict[str, Any]]:
+        payload: List[Dict[str, Any]] = []
+        for tool in self._get_tools() or []:
+            payload.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                }
+            )
+        payload.sort(key=lambda item: item["name"])
+        return payload
+
+    def _build_prompt_cache_key(self) -> str:
+        prefix_payload = {
+            "provider": self.config.provider,
+            "model": self.config.model,
+            "system_prompt": self.system_prompt,
+            "tools": self._stable_prompt_cache_tools_payload(),
+        }
+        raw = json.dumps(prefix_payload, sort_keys=True, ensure_ascii=False, default=str)
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        provider = (self.config.provider or "unknown").lower()
+        model = self.config.model or "unknown"
+        return f"resume-agent:v1:{provider}:{model}:{digest}"
 
     def _raise_if_retryable_malformed_function_call(self, response: LLMResponse) -> None:
         """Raise transient error for provider-level malformed tool-call replies."""
@@ -2130,6 +2161,8 @@ class LLMAgent:
             cost=estimated_cost,
             duration_ms=llm_duration,
             step=step,
+            input_cache_read=int(usage.get("input_cache_read") or 0) if usage else 0,
+            prompt_cache_key=self._build_prompt_cache_key() if self._prompt_cache_enabled() else None,
             agent_id=self.agent_id,
         )
 
@@ -2549,14 +2582,13 @@ class LLMAgent:
         return normalized
 
     async def _execute_tool(self, fc: FunctionCall) -> FunctionResponse:
-        """Execute a single tool call, with caching and observability."""
+        """Execute a single tool call and record observability."""
         func_name = fc.name
         func_args = self._normalize_tool_args(func_name, dict(fc.arguments) if fc.arguments else {})
 
         tool_start_time = time.time()
         success = True
         result_str = ""
-        cached = False
         tool_error = None
         tool_data: Dict[str, Any] = {}
 
@@ -2564,79 +2596,64 @@ class LLMAgent:
         if self._tool_event_handler:
             await self._tool_event_handler("tool_start", func_name, func_args, None, None)
 
-        # Check cache first (only for cacheable tools)
-        if should_cache_tool(func_name):
-            cached_result = self.cache.get(func_name, func_args)
-            if cached_result is not None:
-                result_str = cached_result
-                cached = True
-                success = True
-
-        # If not cached, execute the tool
-        if not cached:
-            if func_name in self._tools:
-                func, _ = self._tools[func_name]
-                missing_required = self._missing_required_tool_args(func_name, func_args)
-                if missing_required:
-                    self._log_tool_arg_debug(
-                        "tool_call_missing_required_args",
-                        "Tool execution blocked due to missing required args.",
-                        {
-                            "tool": func_name,
-                            "missing_required": missing_required,
-                            "provided_args_summary": self._summarize_argument_shapes(func_args),
-                            "call_id": fc.id,
-                        },
-                    )
-                    success = False
-                    result_str = (
-                        f"Error: Invalid tool call for '{func_name}': "
-                        f"missing required argument(s): {', '.join(missing_required)}"
-                    )
-                    tool_error = result_str
-                else:
-                    try:
-                        # Execute the tool (await if async)
-                        if asyncio.iscoroutinefunction(func):
-                            result = await func(**func_args)
-                        else:
-                            result = func(**func_args)
-
-                        # Convert ToolResult to string if needed
-                        if hasattr(result, "to_message"):
-                            result_str = result.to_message()
-                            success = getattr(result, "success", True)
-                            tool_error = getattr(result, "error", None)
-                            raw_data = getattr(result, "data", None)
-                            if isinstance(raw_data, dict):
-                                tool_data = raw_data
-                        else:
-                            result_str = str(result)
-
-                        # Cache only successful tool results
-                        if success and should_cache_tool(func_name):
-                            ttl = get_tool_ttl(func_name)
-                            self.cache.set(func_name, func_args, result_str, ttl)
-
-                    except Exception as e:
-                        success = False
-                        result_str = f"Error: {str(e)}"
-                        tool_error = str(e)
-                        self.observer.log_error(
-                            error_type="tool_execution",
-                            message=str(e),
-                            context={"tool": func_name, "args": func_args},
-                            agent_id=self.agent_id,
-                        )
-            else:
-                success = False
-                result_str = f"Error: Unknown tool '{func_name}'"
-                self.observer.log_error(
-                    error_type="unknown_tool",
-                    message=f"Tool '{func_name}' not found",
-                    context={"tool": func_name},
-                    agent_id=self.agent_id,
+        if func_name in self._tools:
+            func, _ = self._tools[func_name]
+            missing_required = self._missing_required_tool_args(func_name, func_args)
+            if missing_required:
+                self._log_tool_arg_debug(
+                    "tool_call_missing_required_args",
+                    "Tool execution blocked due to missing required args.",
+                    {
+                        "tool": func_name,
+                        "missing_required": missing_required,
+                        "provided_args_summary": self._summarize_argument_shapes(func_args),
+                        "call_id": fc.id,
+                    },
                 )
+                success = False
+                result_str = (
+                    f"Error: Invalid tool call for '{func_name}': "
+                    f"missing required argument(s): {', '.join(missing_required)}"
+                )
+                tool_error = result_str
+            else:
+                try:
+                    # Execute the tool (await if async)
+                    if asyncio.iscoroutinefunction(func):
+                        result = await func(**func_args)
+                    else:
+                        result = func(**func_args)
+
+                    # Convert ToolResult to string if needed
+                    if hasattr(result, "to_message"):
+                        result_str = result.to_message()
+                        success = getattr(result, "success", True)
+                        tool_error = getattr(result, "error", None)
+                        raw_data = getattr(result, "data", None)
+                        if isinstance(raw_data, dict):
+                            tool_data = raw_data
+                    else:
+                        result_str = str(result)
+
+                except Exception as e:
+                    success = False
+                    result_str = f"Error: {str(e)}"
+                    tool_error = str(e)
+                    self.observer.log_error(
+                        error_type="tool_execution",
+                        message=str(e),
+                        context={"tool": func_name, "args": func_args},
+                        agent_id=self.agent_id,
+                    )
+        else:
+            success = False
+            result_str = f"Error: Unknown tool '{func_name}'"
+            self.observer.log_error(
+                error_type="unknown_tool",
+                message=f"Tool '{func_name}' not found",
+                context={"tool": func_name},
+                agent_id=self.agent_id,
+            )
 
         # Log tool execution
         tool_duration = (time.time() - tool_start_time) * 1000
@@ -2654,7 +2671,6 @@ class LLMAgent:
             result=result_str,
             duration_ms=tool_duration,
             success=success,
-            cached=cached,
             agent_id=self.agent_id,
         )
 
@@ -2672,8 +2688,7 @@ class LLMAgent:
         """Trigger auto-save."""
         if self.session_manager:
             try:
-                # Get the agent instance (passed from parent)
-                # This will be set by ResumeAgent or OrchestratorAgent
+                # Get the parent ResumeAgent instance for persistence
                 if hasattr(self, "_parent_agent"):
                     self.current_session_id = self.session_manager.save_session(
                         agent=self._parent_agent,
@@ -2759,6 +2774,7 @@ def load_raw_config(config_path: str = "config/config.local.yaml") -> dict:
 def load_config(config_path: str = "config/config.local.yaml") -> LLMConfig:
     """Load LLM configuration from YAML file."""
     data = load_raw_config(config_path)
+    prompt_cache = data.get("prompt_cache", {}) or {}
 
     config = LLMConfig(
         api_key=data.get("api_key", ""),
@@ -2769,6 +2785,8 @@ def load_config(config_path: str = "config/config.local.yaml") -> LLMConfig:
         temperature=data.get("temperature", 0.7),
         api_base=data.get("api_base", ""),
         search_grounding=data.get("search_grounding", {}).get("enabled", False),
+        prompt_cache_enabled=bool(prompt_cache.get("enabled", False)),
+        prompt_cache_retention=prompt_cache.get("retention"),
     )
 
     return config

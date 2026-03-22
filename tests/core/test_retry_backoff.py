@@ -1,12 +1,9 @@
-"""Focused tests for deterministic retry and cache primitives."""
+"""Behavior tests for retry backoff execution."""
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
-from resume_agent.core.cache import ToolCache, get_tool_ttl, should_cache_tool
 from resume_agent.core.retry import PermanentError, RetryConfig, TransientError, retry_with_backoff
 
 
@@ -90,56 +87,3 @@ def test_retry_backoff_grows_exponentially_when_jitter_is_disabled() -> None:
     for attempt, expected in enumerate(expected_delays):
         delay = min(config.base_delay * (config.exponential_base**attempt), config.max_delay)
         assert delay == expected
-
-
-def test_tool_cache_returns_cached_value_for_identical_tool_arguments() -> None:
-    cache = ToolCache()
-
-    cache.set("test_tool", {"arg": "value"}, "result", ttl_seconds=300)
-
-    assert cache.get("test_tool", {"arg": "value"}) == "result"
-
-
-def test_tool_cache_uses_deterministic_keys_for_equivalent_argument_ordering() -> None:
-    cache = ToolCache()
-
-    cache.set("tool", {"a": 1, "b": 2}, "result")
-
-    assert cache.get("tool", {"b": 2, "a": 1}) == "result"
-
-
-def test_tool_cache_returns_none_for_missing_entries_and_expired_entries() -> None:
-    cache = ToolCache()
-
-    assert cache.get("nonexistent", {}) is None
-
-    cache.set("test_tool", {"arg": "value"}, "result", ttl_seconds=0)
-    time.sleep(0.01)
-
-    assert cache.get("test_tool", {"arg": "value"}) is None
-
-
-def test_tool_cache_stats_reflect_hit_miss_counts_and_rate() -> None:
-    cache = ToolCache()
-
-    cache.set("tool1", {"a": 1}, "result1")
-    cache.get("tool1", {"a": 1})
-    cache.get("tool2", {"b": 2})
-
-    stats = cache.get_stats()
-    assert stats["hits"] == 1
-    assert stats["misses"] == 1
-    assert stats["hit_rate"] == 0.5
-
-
-def test_tool_cache_policy_matches_expected_cacheability_and_ttls() -> None:
-    assert should_cache_tool("file_read") is True
-    assert should_cache_tool("file_list") is True
-    assert should_cache_tool("resume_parse") is True
-    assert should_cache_tool("file_write") is False
-    assert should_cache_tool("bash") is False
-
-    assert get_tool_ttl("file_read") == 60
-    assert get_tool_ttl("file_list") == 30
-    assert get_tool_ttl("resume_parse") == 300
-    assert get_tool_ttl("unknown_tool") == 300
