@@ -1,497 +1,281 @@
 # Session Persistence
 
-Phase 3 adds conversation persistence to Resume Agent, allowing you to save and restore sessions across runs.
+Session persistence stores conversation state in `workspace/sessions/` so a
+later `/resume` continues from the last saved state instead of starting from an
+empty history.
+
+This document describes the current implementation after the turn-tree and
+compaction refactor.
 
 ## Overview
 
-Session persistence enables:
-- **Save/Load Sessions**: Preserve conversation history, agent state, and observability data
-- **Auto-Save**: Automatically save after tool executions
-- **Session Management**: List, load, and delete sessions via CLI commands
-- **Full State Restoration**: Restore conversation history, observability events, and multi-agent state
-- **Multi-Agent Support**: Serialize delegation history, shared context, and agent statistics
+Session persistence currently provides:
+
+- Auto-save after assistant/tool progress updates the session state.
+- `/resume` to browse and restore saved sessions.
+- `/compact` to compress older history and persist the compacted state.
+- `/delete-session <id>` to remove one saved session.
+- `/clear-sessions` to remove all saved sessions.
+
+When a session has already been compacted, `/resume` restores the compacted
+history, not the original raw transcript that was truncated away.
 
 ## Quick Start
 
-### Basic Usage
-
 ```bash
-# Start the agent
-uv run resume-agent
+# Start the CLI with a workspace
+uv run resume-agent --workspace ./examples/my_resume
 
 # Have a conversation
-You: Parse my resume from resume.pdf
+You: Parse my resume and improve the summary section
 
-# Save the session
-/save my_resume_analysis
+# Force compaction if the session is getting long
+/compact
 
-# Later, restore the session
-/load session_20260202_143022_my_resume_analysis
+# Later, restore the saved session
+/resume
 
-# Continue the conversation with full context
-You: Now improve the work experience section
-```
-
-### List and Manage Sessions
-
-```bash
-# List all saved sessions
-/sessions
-
-# Delete a session
-/delete-session session_20260202_143022
+# Continue from the restored state
+You: Now create an HTML version
 ```
 
 ## CLI Commands
 
-### `/save [name]`
+### `/resume [query]`
 
-Save the current session to a JSON file.
-
-```bash
-/save                    # Auto-generated ID
-/save my_resume_v1       # Custom name
-```
-
-**Session ID Format**: `session_YYYYMMDD_HHMMSS_[name]_[uuid]`
-
-**Storage Location**: `workspace/sessions/`
-
-### `/load <session_id>`
-
-Load a previously saved session.
+Open the inline session picker and restore one saved session.
 
 ```bash
-/load session_20260202_143022_my_resume_v1_abc123
+/resume
+/resume backend
 ```
 
-**Restores**:
-- Full conversation history
-- Observability events (tool calls, LLM requests, errors)
-- Multi-agent state (delegation history, shared context)
+What gets restored:
 
-### `/sessions`
+- The active prompt history used for the next LLM request.
+- Turn-tree metadata used to rebuild the active path.
+- Compaction state and compaction checkpoints.
+- Observability data and session stats.
+- Runtime-specific state when that runtime supports it.
 
-List all saved sessions with metadata.
+### `/compact`
 
-**Displays**:
-- Session ID
-- Created/Updated timestamps
-- Agent mode (single-agent or multi-agent)
-- Message count
-- Total tokens used
+Force history compaction immediately.
+
+The CLI prints:
+
+- `covered_messages`
+- `checkpoints`
+- `summary_chunks`
+- `active_history_messages`
+
+If compaction changed the active history, the updated session snapshot is saved
+immediately.
 
 ### `/delete-session <session_id>`
 
-Delete a saved session.
+Delete one saved session JSON file.
 
 ```bash
-/delete-session session_20260202_143022
+/delete-session session_20260320_233443_6907d063
 ```
+
+### `/clear-sessions`
+
+Delete all saved session files and reset the session index.
+
+```bash
+/clear-sessions
+```
+
+## Persistence Model
+
+The runtime now persists more than a flat `messages` array.
+
+### 1. Materialized Active History
+
+This is the exact history that will be sent on the next provider call.
+
+After compaction it usually looks like:
+
+```text
+[COMPRESSION_STATE] summary message
+recent raw tail turn(s)
+```
+
+The first item is a synthetic assistant message that contains the structured
+summary state in prompt form.
+
+### 2. Turn Tree
+
+Conversation history is stored internally as user-anchored turns rather than as
+only one flat list.
+
+Each turn tracks:
+
+- `turn_id`
+- `parent_turn_id`
+- `messages`
+- token estimate
+- whether the turn contains tool calls or tool responses
+
+This lets the runtime compact complete turn prefixes without cutting through the
+middle of a user turn.
+
+### 3. Compression State
+
+Compaction uses anchored iterative summarization.
+
+That means:
+
+- only the newly compacted span is summarized
+- the prior summary is reused as context for the next compaction
+- the runtime merges structured fields instead of regenerating one full summary
+  from scratch every time
+
+Current structured fields:
+
+- `summary_chunks`
+- `session_intent`
+- `file_modifications`
+- `decisions`
+- `open_questions`
+- `next_steps`
+
+### 4. Compaction Checkpoints
+
+Each compaction records a checkpoint with coverage metadata so the runtime knows
+how much history has already been summarized.
+
+Each checkpoint stores:
+
+- `checkpoint_id`
+- `covered_messages`
+- `compacted_messages`
+- `summary_text`
 
 ## Session File Format
 
-Sessions are stored as JSON files in `workspace/sessions/`:
+Session files now use schema `2.0`.
+
+Simplified example:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "session": {
-    "id": "session_20260202_143022_abc123",
-    "created_at": "2026-02-02T14:30:22.123456",
-    "updated_at": "2026-02-02T14:35:45.654321",
-    "mode": "multi-agent",
-    "workspace_dir": "/path/to/workspace",
-    "config": {
-      "model": "gemini-2.5-flash",
-      "max_tokens": 4096,
-      "temperature": 0.7
-    }
+    "id": "session_20260320_233443_6907d063",
+    "created_at": "2026-03-20T23:34:43.000000",
+    "updated_at": "2026-03-20T23:41:02.000000",
+    "workspace_dir": "/path/to/workspace"
   },
   "conversation": {
-    "messages": [
-      {
-        "role": "user",
-        "parts": [
-          {"type": "text", "content": "Hello"}
-        ]
-      },
-      {
-        "role": "model",
-        "parts": [
-          {"type": "function_call", "name": "file_read", "args": {...}}
-        ]
-      },
-      {
-        "role": "user",
-        "parts": [
-          {"type": "function_response", "name": "file_read", "response": "..."}
-        ]
-      }
-    ],
     "max_messages": 50,
-    "max_tokens": 100000
-  },
-  "observability": {
-    "events": [
+    "max_tokens": 100000,
+    "history_format": "turn_tree_v1",
+    "reserve_tokens": 0,
+    "tail_tokens": 512,
+    "current_leaf_turn_id": "turn_7",
+    "active_start_turn_id": "turn_5",
+    "turns": [
       {
-        "timestamp": "2026-02-02T14:30:22.123456",
-        "event_type": "tool_call",
-        "data": {"tool": "file_read", "args": {...}},
-        "duration_ms": 100.5,
-        "tokens_used": null,
-        "cost_usd": null
+        "turn_id": "turn_5",
+        "parent_turn_id": "turn_4",
+        "messages": [
+          {"role": "user", "parts": [{"type": "text", "content": "..." }]}
+        ],
+        "token_estimate": 123,
+        "contains_tool_call": false,
+        "contains_tool_response": false
       }
     ],
-    "session_stats": {
-      "event_count": 42,
-      "tool_calls": 15,
-      "llm_requests": 10,
-      "errors": 0,
-      "total_tokens": 12450,
-      "total_cost_usd": 0.0099,
-      "cache_hit_rate": 0.33
-    }
-  },
-  "multi_agent": {
-    "delegation_history": [
+    "compression_state": {
+      "version": 1,
+      "covered_messages": 23,
+      "summary_chunks": ["..."],
+      "session_intent": "Generate and refine the resume outputs",
+      "file_modifications": ["frontend-resume-optimized-2026-03-20.md"],
+      "decisions": ["Use compacted history on resume"],
+      "open_questions": [],
+      "next_steps": ["Generate HTML version"]
+    },
+    "compaction_checkpoints": [
       {
-        "task_id": "task_123",
-        "from_agent": "orchestrator_agent",
-        "to_agent": "parser_agent",
-        "timestamp": "2026-02-02T14:30:25.000000",
-        "duration_ms": 1500.0,
-        "success": true
+        "checkpoint_id": 1,
+        "covered_messages": 23,
+        "compacted_messages": 23,
+        "summary_text": "..."
       }
-    ],
-    "agent_stats": {...},
-    "shared_context": {
-      "data": {...},
-      "history": [...]
-    }
+    ]
   }
 }
 ```
 
-## Configuration
+## Compaction Behavior
 
-Edit `config/config.yaml` or `config/config.local.yaml`:
+Compaction is intended to run before the provider hard-fails on context size.
 
-```yaml
-# Session persistence
-session:
-  enabled: true
-  sessions_dir: "./sessions"  # Relative to workspace_dir
+Trigger rule:
+
+```text
+estimated_context_tokens + reserve_tokens >= model_context_window
 ```
 
-Auto-save is always enabled when a `SessionManager` is present.
+Current behavior:
 
-## Architecture
+- Keep a recent raw tail controlled by `tail_tokens`.
+- Compact only the older active prefix.
+- Preserve tool-call integrity by compacting at turn boundaries.
+- Materialize the result back into prompt history as one
+  `[COMPRESSION_STATE]` summary item plus the raw tail.
+- If the provider still reports context overflow, the runtime gets one forced
+  compaction retry path before surfacing the error.
 
-### Components
+## Restore Behavior
 
-1. **SessionSerializer**: Converts agent state to/from JSON
-   - `serialize_message()`: provider-agnostic `Message` → JSON
-   - `deserialize_message()`: JSON → provider-agnostic `Message`
-   - `serialize_history()`: Full conversation history
-   - `serialize_observability()`: Events + session stats
-   - `serialize_multi_agent_state()`: Delegation, context, agent stats
+When `/resume` loads a compacted session:
 
-2. **SessionManager**: Manages session lifecycle
-   - `save_session()`: Save current session to JSON file
-   - `load_session()`: Load session from JSON file
-   - `list_sessions()`: List all sessions with metadata
-   - `delete_session()`: Delete a session file
-   - `restore_agent_state()`: Reconstruct agent state from JSON
+1. the turn tree is restored
+2. the compression state is restored
+3. the materialized active history is rebuilt
+4. the CLI shows compaction metadata before printing the recent history preview
 
-3. **SessionIndex**: Fast session lookup
-   - `.index.json`: Metadata cache for quick listing
-   - Sorted by `updated_at` (most recent first)
+This is why a resumed compacted session shows a compaction summary item at the
+top instead of replaying the full old transcript.
 
-### Storage Structure
+## Compatibility
 
-```
-workspace/
-├── sessions/                          # Session files directory
-│   ├── session_20260202_143022.json  # Auto-saved session
-│   ├── session_20260202_150000.json
-│   └── .index.json                    # Session index for quick lookup
-├── exports/                           # Existing export directory
-└── resumes/                           # User's resume files
-```
+Old pre-refactor session files are not supported by the new turn-tree restore
+path.
 
-### Auto-Save Flow
-
-1. User sends a message
-2. Agent processes and calls tools
-3. After tool execution completes:
-   - `SessionManager.save_session()` is called
-   - Session is saved to `sessions/` directory
-   - Index is updated
-
-### Restoration Flow
-
-1. User runs `/load <session_id>`
-2. `SessionManager.load_session()` reads JSON file
-3. `SessionManager.restore_agent_state()` reconstructs:
-   - Conversation history → `HistoryManager._history`
-   - Observability events → `AgentObserver.events`
-   - Multi-agent state → `DelegationManager`, `SharedContext`
-4. Agent continues with full context
-
-## Use Cases
-
-### Resume Iteration Workflow
+If you still have old sessions created before the schema `2.0` format, clear
+them and start fresh:
 
 ```bash
-# Session 1: Initial analysis
-uv run resume-agent
-You: Parse and analyze my resume
-/save resume_analysis_v1
-
-# Session 2: Improvements
-uv run resume-agent
-/load resume_analysis_v1
-You: Improve the work experience section
-/save resume_improvements_v2
-
-# Session 3: Final formatting
-uv run resume-agent
-/load resume_improvements_v2
-You: Convert to HTML format
-/save resume_final_v3
-```
-
-### Long-Running Tasks
-
-```bash
-# Work on complex resume improvements
-You: Parse my resume and improve all sections
-
-# Session is automatically saved after each tool call
-# If interrupted, restart and /load to continue
-```
-
-### Experimentation
-
-```bash
-# Save before trying different approaches
-/save before_experiment
-
-# Try approach A
-You: Rewrite in a more technical style
-/save approach_a
-
-# Revert and try approach B
-/load before_experiment
-You: Rewrite in a more business-focused style
-/save approach_b
-
-# Compare results
-/sessions
+/clear-sessions
 ```
 
 ## Troubleshooting
 
-### Session Not Found
+### Resume fails with unsupported history format
 
-**Error**: `❌ Session not found: session_xyz`
+This means the session file predates the current turn-tree persistence format.
 
-**Solution**:
-- Use `/sessions` to list available sessions
-- Check session ID spelling
-- Verify `workspace/sessions/` directory exists
-
-### Failed to Save Session
-
-**Error**: `❌ Failed to save session: [error]`
-
-**Possible Causes**:
-- Insufficient disk space
-- Permission issues on `sessions/` directory
-- Corrupted session data
-
-**Solution**:
-```bash
-# Check disk space
-df -h
-
-# Check permissions
-ls -la workspace/sessions/
-
-# Create sessions directory if missing
-mkdir -p workspace/sessions
-```
-
-### Failed to Load Session
-
-**Error**: `❌ Failed to load session: [error]`
-
-**Possible Causes**:
-- Corrupted JSON file
-- Schema version mismatch
-- Missing required fields
-
-**Solution**:
-```bash
-# Validate JSON syntax
-cat workspace/sessions/session_xyz.json | python3 -m json.tool
-
-# Check schema version
-grep schema_version workspace/sessions/session_xyz.json
-
-# If corrupted, delete and start fresh
-/delete-session session_xyz
-```
-
-### Auto-Save Not Working
-
-**Symptoms**: Sessions not saving automatically
-
-**Checklist**:
-1. Check if tools are being executed (auto-save triggers after tool calls)
-2. Verify `SessionManager` is initialized in CLI
-3. Check for errors in console output
-
-## Performance Considerations
-
-### Session File Size
-
-- **Typical Size**: 10-100 KB per session
-- **Large Sessions**: 1-5 MB (with extensive history)
-- **Recommendation**: Delete old sessions periodically
-
-### Auto-Save Overhead
-
-- **Trigger**: After tool execution (not every message)
-- **Duration**: ~10-50ms for typical sessions
-- **Impact**: Minimal (async I/O)
-
-### Index Performance
-
-- **Lookup**: O(1) for metadata retrieval
-- **List All**: O(n log n) for sorting by timestamp
-- **Recommendation**: Keep < 100 sessions for optimal performance
-
-## Security Considerations
-
-### File Permissions
-
-Session files should be user-readable only:
+Fix:
 
 ```bash
-# Set restrictive permissions
-chmod 600 workspace/sessions/*.json
-chmod 700 workspace/sessions/
+/clear-sessions
 ```
 
-### Sensitive Data
+### `/compact` reports nothing eligible for compaction
 
-**Warning**: Sessions may contain:
-- Resume content (PII: names, addresses, phone numbers)
-- File paths
-- Tool execution logs
+The active history is still short enough that no older prefix needs to be
+summarized yet.
 
-**Recommendations**:
-- Do not commit `sessions/` to version control
-- Add to `.gitignore`:
-  ```
-  workspace/sessions/
-  ```
-- Encrypt sessions if storing in cloud storage
+### You want to verify a session was compacted
 
-### Session Expiration
+Use `/resume` and look for the compaction panel:
 
-Consider implementing auto-deletion:
-
-```bash
-# Delete sessions older than 30 days
-find workspace/sessions/ -name "session_*.json" -mtime +30 -delete
-```
-
-## Migration from Phase 2
-
-Phase 3 is **fully backward compatible** with Phase 2:
-
-- ✅ All existing functionality preserved
-- ✅ No breaking changes to CLI or API
-- ✅ Session persistence is initialized by CLI runtime by default
-- ✅ Works with both single-agent and multi-agent modes
-
-**To use**:
-1. Run CLI with a workspace (`uv run resume-agent --workspace ./examples/my_resume`)
-2. Use `/save`, `/load`, `/sessions` commands
-
-## Current Scope
-
-Session persistence currently works for both single-agent and multi-agent flows in the current single-package runtime (`resume_agent/*`).
-
-## API Reference
-
-### SessionSerializer
-
-```python
-from resume_agent.core.session import SessionSerializer
-from resume_agent.providers.types import Message, MessagePart
-
-# Serialize a message
-msg = Message(role="user", parts=[MessagePart.from_text("hello")])
-serialized = SessionSerializer.serialize_message(msg)
-
-# Deserialize a message
-msg = SessionSerializer.deserialize_message(serialized)
-
-# Serialize history
-history_data = SessionSerializer.serialize_history(history_manager)
-
-# Serialize observability
-obs_data = SessionSerializer.serialize_observability(observer)
-```
-
-### SessionManager
-
-```python
-from resume_agent.core.session import SessionManager
-
-# Initialize
-session_manager = SessionManager(workspace_dir="./workspace")
-
-# Save session
-session_id = session_manager.save_session(
-    agent=agent,
-    session_name="my_session",
-)
-
-# Load session
-session_data = session_manager.load_session(session_id)
-
-# Restore agent state
-session_manager.restore_agent_state(agent, session_data)
-
-# List sessions
-sessions = session_manager.list_sessions()
-
-# Delete session
-session_manager.delete_session(session_id)
-```
-
-### SessionIndex
-
-```python
-from resume_agent.core.session import SessionIndex
-
-# Initialize
-index = SessionIndex(index_path=Path("sessions/.index.json"))
-
-# Add session
-index.add_session(session_id, metadata)
-
-# Get metadata
-metadata = index.get_session_metadata(session_id)
-
-# List all
-sessions = index.list_all()
-
-# Remove session
-index.remove_session(session_id)
-```
+- `covered_messages > 0`
+- `checkpoints >= 1`
+- first history preview row starts with `[COMPRESSION_STATE]`

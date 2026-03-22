@@ -91,28 +91,64 @@ class TestSessionSerializer:
 
         serialized = SessionSerializer.serialize_history(history_manager)
 
-        assert len(serialized["messages"]) == 2
+        assert serialized["history_format"] == "turn_tree_v1"
+        assert len(serialized["turns"]) == 1
         assert serialized["max_messages"] == 50
         assert serialized["max_tokens"] == 100000
 
-    def test_deserialize_history(self):
-        """Test deserializing conversation history."""
-        data = {
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "Hello"}]},
-                {"role": "assistant", "parts": [{"type": "text", "content": "Hi there!"}]},
-            ],
-            "max_messages": 50,
-            "max_tokens": 100000,
-        }
+    def test_restore_history_manager_from_turn_tree_payload(self):
+        """Test restoring history manager from serialized turn-tree history."""
+        original = HistoryManager(max_messages=50, max_tokens=100000)
+        original.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
+        original.add_message(Message(role="assistant", parts=[MessagePart.from_text("Hi there!")]))
+        data = SessionSerializer.serialize_history(original)
 
-        messages = SessionSerializer.deserialize_history(data)
+        restored = HistoryManager(max_messages=1, max_tokens=1)
+        SessionSerializer.restore_history_manager(restored, data)
 
+        messages = restored.get_history()
         assert len(messages) == 2
         assert messages[0].role == "user"
         assert messages[0].parts[0].text == "Hello"
         assert messages[1].role == "assistant"
         assert messages[1].parts[0].text == "Hi there!"
+
+    def test_restore_history_manager_keeps_current_runtime_token_budget(self):
+        """Restoring a session should not overwrite the current model token budget."""
+        original = HistoryManager(max_messages=50, max_tokens=100000, reserve_tokens=2048)
+        original.add_message(Message(role="user", parts=[MessagePart.from_text("Hello")]))
+        original.add_message(Message(role="assistant", parts=[MessagePart.from_text("Hi there!")]))
+        data = SessionSerializer.serialize_history(original)
+
+        restored = HistoryManager(max_messages=50, max_tokens=128000, reserve_tokens=4096)
+        SessionSerializer.restore_history_manager(restored, data)
+
+        assert restored.max_tokens == 128000
+        assert restored.reserve_tokens == 4096
+        assert len(restored.get_history()) == 2
+
+    def test_restore_history_manager_rejects_legacy_linear_history_payload(self):
+        """Legacy sessions without turn-tree metadata should be rejected clearly."""
+        restored = HistoryManager(max_messages=50, max_tokens=100000)
+        restored.add_message(Message(role="user", parts=[MessagePart.from_text("Keep this message")]))
+        restored.add_message(Message(role="assistant", parts=[MessagePart.from_text("Still active")]))
+
+        with pytest.raises(ValueError, match="/clear-sessions"):
+            SessionSerializer.restore_history_manager(
+                restored,
+                {
+                    "messages": [
+                        {"role": "user", "parts": [{"type": "text", "content": "Hello"}]},
+                    ],
+                    "max_messages": 50,
+                    "max_tokens": 100000,
+                },
+            )
+
+        messages = restored.get_history()
+        assert len(messages) == 2
+        assert messages[0].parts[0].text == "Keep this message"
+        assert messages[1].parts[0].text == "Still active"
 
     def test_serialize_observability(self):
         """Test serializing observability data."""
@@ -157,7 +193,7 @@ class TestSessionSerializer:
 class TestSessionIndex:
     """Test session index functionality."""
 
-    def test_add_and_get_session(self, tmp_path):
+    def test_add_session_makes_metadata_available_for_later_lookup(self, tmp_path):
         """Test adding and retrieving session metadata."""
         index_path = tmp_path / ".index.json"
         index = SessionIndex(index_path)
@@ -178,7 +214,7 @@ class TestSessionIndex:
         assert retrieved["mode"] == "single-agent"
         assert retrieved["message_count"] == 10
 
-    def test_remove_session(self, tmp_path):
+    def test_remove_session_deletes_metadata_from_the_index(self, tmp_path):
         """Test removing session from index."""
         index_path = tmp_path / ".index.json"
         index = SessionIndex(index_path)
@@ -198,7 +234,7 @@ class TestSessionIndex:
         retrieved = index.get_session_metadata("test_session_123")
         assert retrieved is None
 
-    def test_list_all_sessions(self, tmp_path):
+    def test_list_all_returns_sessions_sorted_by_most_recent_update(self, tmp_path):
         """Test listing all sessions."""
         index_path = tmp_path / ".index.json"
         index = SessionIndex(index_path)
@@ -265,11 +301,12 @@ class TestSessionManager:
         # Load session
         session_data = session_manager.load_session(session_id)
 
-        assert session_data["schema_version"] == "1.0"
+        assert session_data["schema_version"] == "2.0"
         assert session_data["session"]["mode"] == "single-agent"
-        assert len(session_data["conversation"]["messages"]) == 2
+        assert session_data["conversation"]["history_format"] == "turn_tree_v1"
+        assert len(session_data["conversation"]["turns"]) == 1
 
-    def test_list_sessions(self, tmp_path):
+    def test_list_sessions_returns_each_saved_session_from_workspace_storage(self, tmp_path):
         """Test listing sessions."""
         config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
         agent = LLMAgent(config=config, system_prompt="Test prompt")
@@ -295,7 +332,7 @@ class TestSessionManager:
         sessions = session_manager.list_sessions()
         assert len(sessions) == 3
 
-    def test_delete_session(self, tmp_path):
+    def test_delete_session_removes_the_saved_session_file_from_workspace_storage(self, tmp_path):
         """Test deleting a session."""
         config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
         agent = LLMAgent(config=config, system_prompt="Test prompt")
@@ -355,6 +392,28 @@ class TestSessionManager:
         assert restored_history[0].parts[0].text == "Hello"
         assert restored_history[1].role == "assistant"
         assert restored_history[1].parts[0].text == "Hi there!"
+
+    def test_clear_sessions_removes_all_saved_sessions(self, tmp_path):
+        """Test clearing all saved sessions and resetting the index."""
+        config = LLMConfig(api_key="test_key", model="gemini-2.5-flash")
+        agent = LLMAgent(config=config, system_prompt="Test prompt")
+
+        class MockAgent:
+            def __init__(self):
+                self.agent = agent
+                self.llm_config = config
+                self.agent_config = type("obj", (object,), {"workspace_dir": str(tmp_path)})()
+
+        mock_agent = MockAgent()
+        session_manager = SessionManager(str(tmp_path))
+
+        session_manager.save_session(mock_agent)
+        session_manager.save_session(mock_agent)
+
+        removed = session_manager.clear_sessions()
+
+        assert removed == 2
+        assert session_manager.list_sessions() == []
 
 
 def test_session_name_is_sanitized_for_filesystem(tmp_path):

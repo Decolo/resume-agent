@@ -23,7 +23,7 @@ from rich.table import Table
 
 from resume_agent.core.agent import ResumeAgent
 from resume_agent.core.agent_factory import create_agent
-from resume_agent.core.llm import LLMConfig, load_config, load_raw_config
+from resume_agent.core.llm import COMPRESSION_STATE_PREFIX, LLMConfig, load_config, load_raw_config
 from resume_agent.core.session import SessionManager
 from resume_agent.core.wire import QueueShutDown, Wire
 from resume_agent.core.wire.types import (
@@ -208,7 +208,10 @@ class ResumeCLICompleter(Completer):
     COMMANDS = [
         "/help",
         "/reset",
-        "/sessions",
+        "/resume",
+        "/compact",
+        "/context",
+        "/clear-sessions",
         "/delete-session",
         "/config",
         "/export",
@@ -288,8 +291,11 @@ def print_banner():
 ╠═══════════════════════════════════════════════════════════╣
 ║  Quick Commands:                                          ║
 ║    /help     - Show all commands                          ║
+║    /compact  - Compress older history now                 ║
+║    /context  - Show current context budget                ║
+║    /clear-sessions - Delete all saved sessions            ║
 ║    /stream   - Toggle streaming output                    ║
-║    /sessions - Browse and load saved sessions             ║
+║    /resume   - Resume a saved session                     ║
 ║    /quit     - Exit the agent                             ║
 ║                                                           ║
 ║  💡 Auto-save is enabled - your work is protected!        ║
@@ -307,7 +313,10 @@ def print_help():
 |---------|-------------|
 | `/help` | Show this help message |
 | `/reset` | Reset conversation history |
-| `/sessions [query]` | Browse sessions and load one via inline dropdown picker (optional fuzzy filter) |
+| `/compact` | Compact older history immediately and persist the updated session |
+| `/context` | Show the current context window and estimated remaining budget |
+| `/clear-sessions` | Delete all saved sessions and reset the session index |
+| `/resume [query]` | Browse saved sessions and resume one via inline dropdown picker (optional fuzzy filter) |
 | `/delete-session <number>` | Delete a saved session by number |
 | `/quit` or `/exit` | Exit the agent |
 | `/config` | Show current configuration |
@@ -320,16 +329,20 @@ def print_help():
 Sessions are auto-saved; use these commands to inspect and restore:
 
 ```bash
-/sessions                # Open interactive session picker
-/sessions backend        # Filter sessions before picker
+/compact                 # Force history compaction now
+/context                 # Show current context usage and remaining budget
+/clear-sessions          # Delete all saved sessions
+/resume                  # Open interactive session picker
+/resume backend          # Filter sessions before picker
 /delete-session 1        # Delete session #1
 ```
 
 **Session features:**
-- 🖱️ **Inline dropdown**: `/sessions` uses arrow-key and mouse selection (non-fullscreen)
-- 🔎 **Fuzzy search**: `/sessions data eng` filters sessions by token match
+- 🖱️ **Inline dropdown**: `/resume` uses arrow-key and mouse selection (non-fullscreen)
+- 🔎 **Fuzzy search**: `/resume data eng` filters sessions by token match
 - ✅ **Explicit selection**: interactive mode always confirms the target session before loading
 - 🔄 **Auto-save always enabled**: Sessions automatically saved after each assistant turn
+- 🗜️ **Manual compaction**: `/compact` forces summary-based history compression and saves it
 - 📊 **Full state preservation**: History and observability
 
 ### Export Command
@@ -401,6 +414,31 @@ def _set_interrupt_checker(agent: ResumeAgent, checker: Any) -> None:
     for llm_agent in _get_llm_agents(agent):
         if hasattr(llm_agent, "set_interrupt_checker"):
             llm_agent.set_interrupt_checker(checker)
+
+
+def _set_current_session_id(agent: ResumeAgent, session_id: Optional[str]) -> None:
+    """Sync current session id across active LLM agents."""
+    for llm_agent in _get_llm_agents(agent):
+        if hasattr(llm_agent, "current_session_id"):
+            llm_agent.current_session_id = session_id
+
+
+def _save_session_snapshot(
+    agent: ResumeAgent,
+    session_manager: SessionManager,
+) -> Optional[str]:
+    """Persist current state and keep the active session id in sync."""
+    current_session_id = next(
+        (
+            getattr(llm_agent, "current_session_id", None)
+            for llm_agent in _get_llm_agents(agent)
+            if getattr(llm_agent, "current_session_id", None)
+        ),
+        None,
+    )
+    session_id = session_manager.save_session(agent, session_id=current_session_id)
+    _set_current_session_id(agent, session_id)
+    return session_id
 
 
 def _wait_for_escape(
@@ -762,6 +800,113 @@ def _message_preview(message: Any, max_len: int = 120) -> str:
     return preview
 
 
+def _render_compaction_status(agent: ResumeAgent) -> None:
+    """Render compaction metadata for the primary active history."""
+    llm_agents = _get_llm_agents(agent)
+    if not llm_agents:
+        return
+    llm_agent = llm_agents[0]
+    history_manager = getattr(llm_agent, "history_manager", None)
+    if history_manager is None:
+        return
+
+    state = history_manager.get_compression_state()
+    if state is None:
+        console.print("Compaction: none", style="dim")
+        return
+
+    checkpoints = history_manager.get_compaction_checkpoints()
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"covered_messages: {state.covered_messages}",
+                    f"checkpoints: {len(checkpoints)}",
+                    f"summary_chunks: {len(state.summary_chunks)}",
+                    f"active_history_messages: {len(history_manager.get_active_history())}",
+                ]
+            ),
+            title="🗜️ Compaction State",
+            border_style="cyan",
+        )
+    )
+
+
+def _get_context_budget_snapshot(agent: ResumeAgent) -> Optional[Any]:
+    """Return the primary agent's context budget snapshot when available."""
+    llm_agents = _get_llm_agents(agent)
+    if not llm_agents:
+        return None
+
+    llm_agent = llm_agents[0]
+    snapshot_builder = getattr(llm_agent, "get_context_budget_snapshot", None)
+    if not callable(snapshot_builder):
+        return None
+
+    try:
+        return snapshot_builder()
+    except Exception:
+        return None
+
+
+def _render_context_status(agent: ResumeAgent) -> bool:
+    """Render context budget metadata for the primary active history."""
+    budget = _get_context_budget_snapshot(agent)
+    if budget is None:
+        return False
+
+    def _fmt_int(value: Optional[int]) -> str:
+        return f"{value:,}" if isinstance(value, int) else "unknown"
+
+    def _fmt_percent(value: Optional[float]) -> str:
+        return f"{value:.1f}%" if isinstance(value, float) else "unknown"
+
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"provider: {budget.provider}",
+                    f"model: {budget.model}",
+                    f"context_window: {_fmt_int(budget.context_window)}",
+                    f"estimated_prompt_tokens: {_fmt_int(budget.estimated_prompt_tokens)}",
+                    f"reserved_output_tokens: {_fmt_int(budget.reserved_output_tokens)}",
+                    f"estimated_remaining_context: {_fmt_int(budget.estimated_remaining_context)}",
+                    f"usage_percent: {_fmt_percent(budget.usage_percent)}",
+                    f"source: {budget.source}",
+                ]
+            ),
+            title="🧠 Context State",
+            border_style="magenta",
+        )
+    )
+    return True
+
+
+def _format_compact_token_count(value: Optional[int]) -> str:
+    """Format token counts compactly for tight CLI status areas."""
+    if not isinstance(value, int):
+        return "unknown"
+    if value >= 1_000_000:
+        text = f"{value / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{text}M"
+    if value >= 1_000:
+        text = f"{value / 1_000:.1f}".rstrip("0").rstrip(".")
+        return f"{text}K"
+    return str(value)
+
+
+def _build_context_rprompt(agent: ResumeAgent) -> Optional[str]:
+    """Build a compact right-side prompt for remaining context budget."""
+    budget = _get_context_budget_snapshot(agent)
+    if budget is None:
+        return None
+
+    if not isinstance(getattr(budget, "estimated_remaining_context", None), int):
+        return None
+
+    return f"ctx {_format_compact_token_count(budget.estimated_remaining_context)} left"
+
+
 def _render_loaded_history(agent: ResumeAgent, max_rows: int = 8) -> None:
     llm_agents = _get_llm_agents(agent)
     if not llm_agents:
@@ -774,19 +919,63 @@ def _render_loaded_history(agent: ResumeAgent, max_rows: int = 8) -> None:
     if not history:
         return
 
-    start_index = max(0, len(history) - max_rows)
-    visible = history[start_index:]
+    visible_indexes: list[int]
+    if (
+        len(history) > max_rows
+        and bool(history[0].parts)
+        and bool(history[0].parts[0].text)
+        and history[0].parts[0].text.startswith(COMPRESSION_STATE_PREFIX)
+    ):
+        tail_count = max(1, max_rows - 1)
+        tail_start = max(1, len(history) - tail_count)
+        visible_indexes = [0, *range(tail_start, len(history))]
+        visible_indexes = list(dict.fromkeys(visible_indexes))
+    else:
+        start_index = max(0, len(history) - max_rows)
+        visible_indexes = list(range(start_index, len(history)))
+
+    visible = [(index, history[index]) for index in visible_indexes]
 
     table = Table(title="📜 Loaded Session History", show_header=True, header_style="bold cyan")
     table.add_column("#", style="dim", width=4, justify="right")
     table.add_column("Role", style="green", width=10)
     table.add_column("Preview", style="cyan")
-    for offset, message in enumerate(visible, start=start_index + 1):
-        table.add_row(str(offset), str(getattr(message, "role", "?")), _message_preview(message))
+    for index, message in visible:
+        table.add_row(str(index + 1), str(getattr(message, "role", "?")), _message_preview(message))
     console.print(table)
 
-    if start_index > 0:
-        console.print(f"Showing last {len(visible)} of {len(history)} messages.", style="dim")
+    if visible_indexes and len(visible_indexes) < len(history):
+        if visible_indexes[0] == 0 and len(visible_indexes) > 1:
+            console.print(
+                f"Showing compaction summary plus last {len(visible_indexes) - 1} of {len(history)} messages.",
+                style="dim",
+            )
+        else:
+            console.print(f"Showing last {len(visible_indexes)} of {len(history)} messages.", style="dim")
+
+
+async def _compact_active_history(agent: ResumeAgent) -> list[dict[str, Any]]:
+    """Force compaction across active LLM agents and return state snapshots."""
+    results: list[dict[str, Any]] = []
+    for llm_agent in _get_llm_agents(agent):
+        compact_history = getattr(llm_agent, "compact_history", None)
+        if compact_history is None:
+            continue
+        compacted = await compact_history(force=True)
+        history_manager = getattr(llm_agent, "history_manager", None)
+        state = history_manager.get_compression_state() if history_manager else None
+        checkpoints = history_manager.get_compaction_checkpoints() if history_manager else []
+        active_history = history_manager.get_active_history() if history_manager else []
+        results.append(
+            {
+                "compacted": compacted,
+                "covered_messages": getattr(state, "covered_messages", 0),
+                "checkpoints": len(checkpoints),
+                "summary_chunks": len(getattr(state, "summary_chunks", [])) if state else 0,
+                "active_history_messages": len(active_history),
+            }
+        )
+    return results
 
 
 def _restore_loaded_session(
@@ -797,6 +986,7 @@ def _restore_loaded_session(
 ) -> None:
     session_data = session_manager.load_session(session_id)
     session_manager.restore_agent_state(agent, session_data)
+    _set_current_session_id(agent, session_id)
     session_info = next((session for session in sessions if session.get("id") == session_id), None)
     if session_info:
         console.print(
@@ -805,6 +995,8 @@ def _restore_loaded_session(
         )
     else:
         console.print(f"✓ Session loaded: {session_id}", style="green")
+    _render_context_status(agent)
+    _render_compaction_status(agent)
     _render_loaded_history(agent)
 
 
@@ -830,13 +1022,52 @@ async def handle_command(
         agent.reset()
         console.print("🔄 Conversation reset.", style="green")
 
-    elif cmd.startswith("/sessions"):
+    elif cmd == "/compact":
+        results = await _compact_active_history(agent)
+        if not results:
+            console.print("⚠️ History compaction not available in this mode.", style="yellow")
+            return True
+
+        compacted_any = any(result["compacted"] for result in results)
+        if compacted_any:
+            console.print("✓ History compaction complete.", style="green")
+            for index, result in enumerate(results, start=1):
+                label = f"Agent {index}" if len(results) > 1 else "History"
+                console.print(
+                    f"{label}: covered_messages={result['covered_messages']}, "
+                    f"checkpoints={result['checkpoints']}, "
+                    f"summary_chunks={result['summary_chunks']}, "
+                    f"active_history_messages={result['active_history_messages']}",
+                    style="cyan",
+                )
+            if session_manager is not None:
+                session_id = _save_session_snapshot(agent, session_manager)
+                if session_id:
+                    console.print(f"Session updated: {session_id}", style="dim")
+            _render_context_status(agent)
+        else:
+            console.print("Nothing eligible for compaction yet.", style="dim")
+
+    elif cmd == "/context":
+        if not _render_context_status(agent):
+            console.print("Context budget unavailable for the current session.", style="dim")
+
+    elif cmd == "/clear-sessions":
+        if not session_manager:
+            console.print("⚠️ Session management not available.", style="yellow")
+            return True
+
+        removed = session_manager.clear_sessions()
+        _set_current_session_id(agent, None)
+        console.print(f"✓ Cleared {removed} saved session(s).", style="green")
+
+    elif cmd.startswith("/resume"):
         if not session_manager:
             console.print("⚠️ Session management not available.", style="yellow")
             return True
 
         verbose_picker = bool((runtime_options or {}).get("verbose", False))
-        session_query = command_text[len("/sessions") :].strip()
+        session_query = command_text[len("/resume") :].strip()
         sessions = session_manager.list_sessions()
         if session_query:
             sessions = [session for session in sessions if _session_matches_query(session, session_query)]
@@ -864,6 +1095,8 @@ async def handle_command(
                 _restore_loaded_session(selected_session_id, sessions, session_manager, agent)
             except FileNotFoundError:
                 console.print(f"❌ Session not found: {selected_session_id}", style="red")
+            except ValueError as e:
+                console.print(f"❌ {e}", style="red")
             except Exception as e:
                 console.print(f"❌ Failed to load session: {e}", style="red")
 
@@ -876,7 +1109,7 @@ async def handle_command(
         parts = command_text.split()
         if len(parts) < 2:
             console.print("Usage: /delete-session <number> or /delete-session <full_session_id>", style="yellow")
-            console.print("Tip: Use /sessions to see session numbers", style="dim")
+            console.print("Tip: Use /resume to see session numbers", style="dim")
         elif len(parts) > 2:
             console.print("Usage: /delete-session <number> or /delete-session <full_session_id>", style="yellow")
         else:
@@ -1371,7 +1604,7 @@ async def run_interactive(
             prompt_prefix = "\n📝 You: "
             user_input = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: session.prompt(prompt_prefix),
+                lambda: session.prompt(prompt_prefix, rprompt=_build_context_rprompt(agent)),
             )
 
             user_input = user_input.strip()

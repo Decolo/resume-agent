@@ -54,7 +54,7 @@ class TestParseJobListings:
         assert "Google" in companies
         assert "Mountain View, CA" in locations
 
-    def test_empty_text_returns_empty_list(self):
+    def test_parse_job_listings_returns_no_results_for_empty_or_placeholder_search_text(self):
         assert parse_job_listings("") == []
         assert parse_job_listings("   \n\n  ") == []
         assert parse_job_listings("Jobs\nSearch results") == []
@@ -82,7 +82,7 @@ class TestFormatJobListings:
         # Should be compact — no posted_time in listing output
         assert "1d ago" not in output
 
-    def test_empty_list(self):
+    def test_format_job_listings_returns_empty_or_no_results_text_for_empty_input(self):
         output = format_job_listings([])
         assert "no" in output.lower() or output.strip() == ""
 

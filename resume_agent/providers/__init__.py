@@ -41,6 +41,7 @@ def create_provider(
     return OpenAICompatibleProvider(
         api_key=api_key,
         model=model,
+        provider_name=provider_name,
         api_base=base,
     )
 

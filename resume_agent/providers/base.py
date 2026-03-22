@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import AsyncIterator, List, Optional, Protocol
 
-from .types import GenerationConfig, LLMResponse, Message, StreamDelta, ToolSchema
+from .types import GenerationConfig, LLMResponse, Message, ModelCapabilities, StreamDelta, ToolSchema
 
 
 class ChatProvider(Protocol):
     """Protocol for provider implementations."""
+
+    def get_model_capabilities(self) -> ModelCapabilities: ...
 
     async def generate(
         self,

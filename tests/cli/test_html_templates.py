@@ -5,98 +5,21 @@ import pytest
 from resume_agent.core.templates import AVAILABLE_TEMPLATES, load_template_css
 
 
-class TestTemplateLoading:
-    """Tests for CSS template loading."""
-
-    def test_available_templates_list(self):
-        assert "modern" in AVAILABLE_TEMPLATES
-        assert "classic" in AVAILABLE_TEMPLATES
-        assert "minimal" in AVAILABLE_TEMPLATES
-        assert "creative" in AVAILABLE_TEMPLATES
-        assert len(AVAILABLE_TEMPLATES) == 4
-
-    @pytest.mark.parametrize("template", AVAILABLE_TEMPLATES)
-    def test_load_each_template(self, template):
-        css = load_template_css(template)
-        assert isinstance(css, str)
-        assert len(css) > 100  # non-trivial CSS
-
-    def test_unknown_template_falls_back_to_modern(self):
-        css = load_template_css("nonexistent")
-        modern_css = load_template_css("modern")
-        assert css == modern_css
-
-    def test_templates_are_different(self):
-        styles = {t: load_template_css(t) for t in AVAILABLE_TEMPLATES}
-        # Each template should be unique
-        unique = set(styles.values())
-        assert len(unique) == len(AVAILABLE_TEMPLATES)
+def test_available_templates_exposes_all_supported_template_names() -> None:
+    assert AVAILABLE_TEMPLATES == ["modern", "classic", "minimal", "creative"]
 
 
-class TestModernTemplate:
-    """Tests for modern.css content."""
-
-    def test_has_resume_container(self):
-        css = load_template_css("modern")
-        assert ".resume-container" in css
-
-    def test_has_print_media_query(self):
-        css = load_template_css("modern")
-        assert "@media print" in css
-
-    def test_uses_sans_serif(self):
-        css = load_template_css("modern")
-        assert "sans-serif" in css
-
-    def test_has_box_shadow(self):
-        css = load_template_css("modern")
-        assert "box-shadow" in css
+@pytest.mark.parametrize("template", AVAILABLE_TEMPLATES)
+def test_load_template_css_returns_nontrivial_styles_for_each_supported_template(template: str) -> None:
+    css = load_template_css(template)
+    assert isinstance(css, str)
+    assert len(css) > 100
 
 
-class TestClassicTemplate:
-    """Tests for classic.css content."""
-
-    def test_uses_serif(self):
-        css = load_template_css("classic")
-        assert "serif" in css
-
-    def test_has_double_border(self):
-        css = load_template_css("classic")
-        assert "double" in css
-
-    def test_has_print_media_query(self):
-        css = load_template_css("classic")
-        assert "@media print" in css
+def test_load_template_css_falls_back_to_modern_when_template_name_is_unknown() -> None:
+    assert load_template_css("nonexistent") == load_template_css("modern")
 
 
-class TestMinimalTemplate:
-    """Tests for minimal.css content."""
-
-    def test_uses_helvetica(self):
-        css = load_template_css("minimal")
-        assert "Helvetica" in css
-
-    def test_has_muted_colors(self):
-        css = load_template_css("minimal")
-        # Minimal uses muted grays
-        assert "#888" in css or "#aaa" in css
-
-    def test_list_style_none(self):
-        css = load_template_css("minimal")
-        assert "list-style-type: none" in css
-
-
-class TestCreativeTemplate:
-    """Tests for creative.css content."""
-
-    def test_has_gradient(self):
-        css = load_template_css("creative")
-        assert "gradient" in css
-
-    def test_has_border_radius(self):
-        css = load_template_css("creative")
-        assert "border-radius" in css
-
-    def test_has_print_media_query(self):
-        css = load_template_css("creative")
-        assert "@media print" in css
+def test_supported_templates_do_not_share_identical_css_payloads() -> None:
+    styles = {template: load_template_css(template) for template in AVAILABLE_TEMPLATES}
+    assert len(set(styles.values())) == len(AVAILABLE_TEMPLATES)

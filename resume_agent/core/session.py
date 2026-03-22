@@ -120,16 +120,38 @@ class SessionSerializer:
     @staticmethod
     def serialize_history(history_manager: HistoryManager) -> dict:
         """Serialize conversation history."""
-        return {
-            "messages": [SessionSerializer.serialize_message(msg) for msg in history_manager.get_history()],
+        data = {
             "max_messages": history_manager.max_messages,
             "max_tokens": history_manager.max_tokens,
         }
+        data.update(history_manager.get_compaction_state_payload())
+        return data
 
     @staticmethod
-    def deserialize_history(data: dict) -> List[Message]:
-        """Deserialize conversation history."""
-        return [SessionSerializer.deserialize_message(msg_data) for msg_data in data.get("messages", [])]
+    def restore_history_manager(history_manager: HistoryManager, data: dict) -> None:
+        """Restore history manager messages and compaction metadata."""
+        current_max_tokens = history_manager.max_tokens
+        current_reserve_tokens = history_manager.reserve_tokens
+        current_tail_tokens = history_manager.tail_tokens
+        restored = HistoryManager(
+            max_messages=int(data.get("max_messages", history_manager.max_messages)),
+            max_tokens=current_max_tokens,
+            reserve_tokens=current_reserve_tokens,
+            tail_tokens=current_tail_tokens,
+        )
+        restored.restore_compaction_state(data)
+
+        history_manager.max_messages = restored.max_messages
+        history_manager.max_tokens = current_max_tokens
+        history_manager.reserve_tokens = current_reserve_tokens
+        history_manager.tail_tokens = current_tail_tokens
+        history_manager._turns_by_id = restored._turns_by_id
+        history_manager._turn_order = restored._turn_order
+        history_manager._current_leaf_turn_id = restored._current_leaf_turn_id
+        history_manager._active_start_turn_id = restored._active_start_turn_id
+        history_manager._history = restored._history
+        history_manager._compression_state = restored._compression_state
+        history_manager._compaction_checkpoints = restored._compaction_checkpoints
 
     @staticmethod
     def serialize_observability(observer: AgentObserver) -> dict:
@@ -292,7 +314,7 @@ class SessionManager:
         # Build session data
         now = datetime.now()
         session_data = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "session": {
                 "id": session_id,
                 "created_at": now.isoformat(),
@@ -311,7 +333,7 @@ class SessionManager:
             json.dump(session_data, f, indent=2)
 
         # Update index
-        message_count = len(conversation_data["messages"])
+        message_count = len(llm_agent.history_manager.get_history())
         stats = observability_data.get("session_stats", {})
         self.index.add_session(
             session_id,
@@ -370,6 +392,21 @@ class SessionManager:
             return True
         return False
 
+    def clear_sessions(self) -> int:
+        """Delete all saved session files and reset the session index."""
+        removed = 0
+        for session_file in self.sessions_dir.glob("*.json"):
+            if session_file.name == ".index.json":
+                continue
+            session_file.unlink()
+            removed += 1
+
+        index_path = self.sessions_dir / ".index.json"
+        if index_path.exists():
+            index_path.unlink()
+        self.index = SessionIndex(index_path)
+        return removed
+
     def get_latest_session(self) -> Optional[str]:
         """Get most recent session ID.
 
@@ -391,8 +428,7 @@ class SessionManager:
         llm_agent = agent.agent
 
         # 1. Restore conversation history
-        messages = SessionSerializer.deserialize_history(session_data["conversation"])
-        llm_agent.history_manager._history = messages
+        SessionSerializer.restore_history_manager(llm_agent.history_manager, session_data["conversation"])
 
         # 2. Restore observability events
         events = SessionSerializer.deserialize_observability(session_data["observability"])

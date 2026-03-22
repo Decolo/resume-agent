@@ -93,6 +93,17 @@ class GenerationConfig:
 
 
 @dataclass
+class ModelCapabilities:
+    """Runtime-discovered model capability metadata."""
+
+    provider: str
+    model: str
+    context_window: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    source: str = "unknown"
+
+
+@dataclass
 class StreamDelta:
     """Single chunk from a streaming response."""
 

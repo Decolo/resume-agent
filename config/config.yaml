@@ -9,6 +9,8 @@ model: "gemini-3-pro-preview"
 # Core runtime
 max_steps: 20
 max_tokens: 2048
+# Optional fallback when the provider cannot expose model context metadata.
+# context_window_override: 131072
 temperature: 0.5
 workspace_dir: "./workspace"
 

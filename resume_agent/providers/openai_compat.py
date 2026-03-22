@@ -10,11 +10,13 @@ from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
+from .model_registry import lookup_model_capabilities
 from .types import (
     FunctionCall,
     GenerationConfig,
     LLMResponse,
     Message,
+    ModelCapabilities,
     StreamDelta,
     ToolSchema,
 )
@@ -27,12 +29,21 @@ class OpenAICompatibleProvider:
         self,
         api_key: str,
         model: str,
+        provider_name: str = "",
         api_base: str = "",
     ) -> None:
+        self.provider_name = (provider_name or "").lower() or "openai_compat"
         self.model = model
         self.api_base = api_base or ""
         self.client = AsyncOpenAI(api_key=api_key, base_url=api_base or None)
         self._forced_temperature: Optional[float] = None
+
+    def get_model_capabilities(self) -> ModelCapabilities:
+        """Return static fallback capabilities for OpenAI-compatible providers."""
+        capabilities = lookup_model_capabilities(self.provider_name, self.model)
+        if capabilities is not None:
+            return capabilities
+        return ModelCapabilities(provider=self.provider_name, model=self.model, source="unknown")
 
     async def generate(
         self,
