@@ -15,6 +15,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 import resume_agent.cli.app as cli_app
+from resume_agent.cli.stream_display import format_tool_call_inline, parse_approval_choice, summarize_tool_result
 from resume_agent.core.llm import COMPRESSION_STATE_PREFIX, ContextBudgetSnapshot, HistoryManager
 from resume_agent.providers.types import Message
 
@@ -443,7 +444,7 @@ async def test_context_command_reports_unavailable_budget(monkeypatch) -> None:
     assert "Context budget unavailable for the current session." in rendered
 
 
-def test_build_context_rprompt_formats_remaining_context(monkeypatch) -> None:
+def test_build_state_lines_include_context_model_and_workspace(monkeypatch) -> None:
     llm_agent = SimpleNamespace(
         get_context_budget_snapshot=lambda: ContextBudgetSnapshot(
             provider="gemini",
@@ -457,11 +458,18 @@ def test_build_context_rprompt_formats_remaining_context(monkeypatch) -> None:
         )
     )
     monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+    agent = SimpleNamespace(
+        llm_config=SimpleNamespace(model="gemini-2.5-pro"),
+        agent_config=SimpleNamespace(workspace_dir="./examples/sample_resumes"),
+    )
 
-    assert cli_app._build_context_rprompt(object()) == "ctx 1.03M left"
+    assert (
+        cli_app._build_state_lines(agent)
+        == "Context: 98.6% left  |  Model: gemini-2.5-pro  |  Workspace: ./examples/sample_resumes"
+    )
 
 
-def test_build_context_rprompt_hides_unknown_remaining_context(monkeypatch) -> None:
+def test_build_state_lines_show_unknown_context_when_budget_missing(monkeypatch) -> None:
     llm_agent = SimpleNamespace(
         get_context_budget_snapshot=lambda: ContextBudgetSnapshot(
             provider="openai",
@@ -475,12 +483,38 @@ def test_build_context_rprompt_hides_unknown_remaining_context(monkeypatch) -> N
         )
     )
     monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+    agent = SimpleNamespace(
+        llm_config=SimpleNamespace(model="gpt-4.1"),
+        agent_config=SimpleNamespace(workspace_dir="."),
+    )
 
-    assert cli_app._build_context_rprompt(object()) is None
+    assert cli_app._build_state_lines(agent) == "Context: unknown  |  Model: gpt-4.1  |  Workspace: ."
+
+
+def test_build_state_lines_falls_back_to_usage_percent_for_context_left(monkeypatch) -> None:
+    llm_agent = SimpleNamespace(
+        get_context_budget_snapshot=lambda: ContextBudgetSnapshot(
+            provider="openai",
+            model="gpt-4.1",
+            source="api",
+            context_window=None,
+            estimated_prompt_tokens=3_000,
+            reserved_output_tokens=2_048,
+            estimated_remaining_context=None,
+            usage_percent=27.25,
+        )
+    )
+    monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+    agent = SimpleNamespace(
+        llm_config=SimpleNamespace(model="gpt-4.1"),
+        agent_config=SimpleNamespace(workspace_dir="."),
+    )
+
+    assert cli_app._build_state_lines(agent) == "Context: 72.8% left  |  Model: gpt-4.1  |  Workspace: ."
 
 
 @pytest.mark.asyncio
-async def test_run_interactive_passes_context_rprompt_to_prompt_session(monkeypatch) -> None:
+async def test_run_interactive_passes_state_lines_to_prompt_session(monkeypatch) -> None:
     output = io.StringIO()
     test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
     monkeypatch.setattr(cli_app, "console", test_console)
@@ -495,6 +529,7 @@ async def test_run_interactive_passes_context_rprompt_to_prompt_session(monkeypa
         def prompt(self, message: str, **kwargs) -> str:  # type: ignore[no-untyped-def]
             captured["message"] = message
             captured["rprompt"] = kwargs.get("rprompt")
+            captured["bottom_toolbar"] = kwargs.get("bottom_toolbar")
             return "/exit"
 
     async def _fake_handle_command(*args, **kwargs) -> bool:  # type: ignore[no-untyped-def]
@@ -517,11 +552,20 @@ async def test_run_interactive_passes_context_rprompt_to_prompt_session(monkeypa
     monkeypatch.setattr(cli_app, "PromptSession", _FakePromptSession)
     monkeypatch.setattr(cli_app, "handle_command", _fake_handle_command)
     monkeypatch.setattr(cli_app, "_get_llm_agents", lambda agent: [llm_agent])
+    agent = SimpleNamespace(
+        llm_config=SimpleNamespace(model="gemini-2.5-pro"),
+        agent_config=SimpleNamespace(workspace_dir="./examples/sample_resumes"),
+    )
 
-    await cli_app.run_interactive(object())
+    await cli_app.run_interactive(agent)
 
     assert captured["message"] == "\n📝 You: "
-    assert captured["rprompt"] == "ctx 1.03M left"
+    assert captured["rprompt"] is None
+    assert captured["bottom_toolbar"] == (
+        "Context: 98.6% left  |  Model: gemini-2.5-pro  |  Workspace: ./examples/sample_resumes"
+    )
+    style_rules = getattr(captured["init_kwargs"]["style"], "style_rules", [])
+    assert ("bottom-toolbar", "fg:#6b7280 bg:default") in style_rules
     assert captured["command"] == "/exit"
 
 
@@ -548,7 +592,7 @@ def test_command_completer_suggests_command_prefix() -> None:
     doc = Document(text="/st", cursor_position=3)
 
     completions = [item.text for item in completer.get_completions(doc, CompleteEvent(completion_requested=True))]
-    assert "/stream" in completions
+    assert "/stream" not in completions
     assert "/resume" in cli_app.ResumeCLICompleter.COMMANDS
     assert "/compact" in cli_app.ResumeCLICompleter.COMMANDS
     assert "/context" in cli_app.ResumeCLICompleter.COMMANDS
@@ -568,29 +612,29 @@ def test_command_completer_suggests_session_refs_for_delete() -> None:
 
 def test_file_list_result_summary_is_single_line() -> None:
     output = "file\t1522\tsample_resume.md\n" "dir\t0\tsessions\n"
-    rendered = cli_app._summarize_tool_result("file_list", output)
+    rendered = summarize_tool_result("file_list", output)
 
     assert rendered == "2 entries: sample_resume.md, sessions/"
 
 
 def test_tool_call_inline_format_is_single_line() -> None:
-    line = cli_app._format_tool_call_inline("file_list", {"path": ".", "recursive": False})
+    line = format_tool_call_inline("file_list", {"path": ".", "recursive": False})
     assert line.startswith("🔧 file_list(")
     assert "path=." in line
     assert "recursive=False" in line
 
 
 def test_tool_result_summary_truncates_multiline_output() -> None:
-    rendered = cli_app._summarize_tool_result("bash", "line1\nline2\nline3")
+    rendered = summarize_tool_result("bash", "line1\nline2\nline3")
     assert rendered == "line1 (+2 lines)"
 
 
 def test_parse_approval_choice_does_not_escalate_reject_all() -> None:
-    assert cli_app._parse_approval_choice("reject all") == "reject"
-    assert cli_app._parse_approval_choice("3 reject all") == "reject"
+    assert parse_approval_choice("reject all") == "reject"
+    assert parse_approval_choice("3 reject all") == "reject"
 
 
 def test_parse_approval_choice_handles_common_inputs() -> None:
-    assert cli_app._parse_approval_choice("[1] Approve") == "approve"
-    assert cli_app._parse_approval_choice("2") == "approve_all"
-    assert cli_app._parse_approval_choice("approve all") == "approve_all"
+    assert parse_approval_choice("[1] Approve") == "approve"
+    assert parse_approval_choice("2") == "approve_all"
+    assert parse_approval_choice("approve all") == "approve_all"

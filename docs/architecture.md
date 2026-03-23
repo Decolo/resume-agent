@@ -2,7 +2,7 @@
 
 This document is the high-level system map for contributors and agents.
 Deep design details stay in specialized docs under `docs/architecture/`.
-Last validated against code: 2026-03-09.
+Last validated against code: 2026-03-23.
 
 ## System Overview
 
@@ -39,6 +39,7 @@ Automated boundary checks: `tests/architecture/`
 For step-by-step runtime behavior (inline wire approval, loop guard, auto-save), see:
 
 - `docs/architecture/execution-data-flow.md`
+- `docs/architecture/cli-stream-display.md`
 
 ## Key Design Decisions
 

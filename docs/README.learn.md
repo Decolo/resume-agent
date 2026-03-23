@@ -27,6 +27,7 @@ For day-to-day maintenance docs, use **[Maintainer Index](./README.md)**.
 
 ## Deep Dives
 
+- **[Agent Stream Display Reference](./learn/agent-stream-display-reference.md)** - Concise comparison of how Codex, Kimi CLI, and AI SDK render streamed responses.
 - **[Event Loop & Async Patterns](./learn/event-loop-async-patterns.md)** - Async mental model used by the CLI.
 - **[Kimi CLI History Design Reference](./learn/kimi-cli-history-design-reference.md)** - Session-scoped history and compaction design learnings.
 - **[PI-Mono History Design Reference](./learn/pi-mono-history-design-reference.md)** - Tree history, compaction, and branch context learnings.
