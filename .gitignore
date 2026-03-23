@@ -66,6 +66,7 @@ Thumbs.db
 # Project-specific
 workspace/
 exports/
+.superset/
 *.pdf
 *.docx
 *.xlsx

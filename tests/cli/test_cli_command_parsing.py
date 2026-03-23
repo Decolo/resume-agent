@@ -71,5 +71,15 @@ async def test_unknown_sessions_command_does_not_attempt_session_restore(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_unknown_stream_command_is_reported(monkeypatch) -> None:
+    output = io.StringIO()
+    test_console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    monkeypatch.setattr("resume_agent.cli.app.console", test_console)
+
+    assert await handle_command("/stream status", object())
+    assert "Unknown command: /stream status" in output.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_export_command_rejects_unsupported_format_without_crashing() -> None:
     assert await handle_command("/export file yaml", object())

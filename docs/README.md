@@ -18,6 +18,8 @@ If you want guided onboarding and background reading, use
 ## Architecture
 
 - **[ADR Index](./architecture/adrs/README.md)** - Decision records
+- **[CLI Stream Display](./architecture/cli-stream-display.md)** - Default live display model and stable transcript finalization
+- **[Agent Stream Display Reference](./learn/agent-stream-display-reference.md)** - How Codex, Kimi CLI, and AI SDK display streamed LLM output
 - **[Kimi CLI History Design Reference](./learn/kimi-cli-history-design-reference.md)** - External session/compaction design learnings
 - **[PI-Mono History Design Reference](./learn/pi-mono-history-design-reference.md)** - External history-management design learnings
 - **[Phase 1 Improvements (Archived)](./archive/phase1-improvements.md)** - Historical reliability/perf/security details

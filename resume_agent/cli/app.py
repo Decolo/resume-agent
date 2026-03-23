@@ -16,6 +16,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import CompleteStyle
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -26,143 +27,15 @@ from resume_agent.core.agent_factory import create_agent
 from resume_agent.core.llm import COMPRESSION_STATE_PREFIX, LLMConfig, load_config, load_raw_config
 from resume_agent.core.session import SessionManager
 from resume_agent.core.wire import QueueShutDown, Wire
-from resume_agent.core.wire.types import (
-    ApprovalRequest,
-    TextDelta,
-    ToolCallEvent,
-    ToolResultEvent,
-    TurnEnd,
-)
+from resume_agent.core.wire.types import ApprovalRequest, StepBegin, TextDelta, ToolCallEvent, ToolResultEvent, TurnEnd
 
 from .config_validator import Severity, has_errors, validate_config
+from .stream_display import InteractiveTurnRenderer, format_tool_call_approval_inline, parse_approval_choice
 from .tool_factory import create_tools
 
 console = Console()
-
-# Keys whose values are typically short and useful for preview
-_PREVIEW_KEY_PRIORITY = ("file_path", "path", "filename", "url", "query", "command")
-_MAX_INLINE_VALUE_LEN = 120
-_MAX_INLINE_ARG_PAIRS = 2
-_MAX_RESULT_SUMMARY_LEN = 160
 _INLINE_WHITESPACE_RE = re.compile(r"\s+")
-_APPROVAL_CHOICE_RE = re.compile(r"\b([123])\b")
-_REDACTED_APPROVAL_ARG_KEYS = {"content", "text", "body", "data", "patch", "code"}
-
-
-def _format_tool_call_approval_inline(name: str, args: Dict[str, Any]) -> str:
-    """Single-line approval preview with large payload redaction."""
-    safe_args: Dict[str, Any] = {}
-    for key, value in (args or {}).items():
-        if key.lower() in _REDACTED_APPROVAL_ARG_KEYS and isinstance(value, str):
-            compact = _INLINE_WHITESPACE_RE.sub(" ", value).strip()
-            safe_args[key] = f"<{len(compact)} chars>"
-        else:
-            safe_args[key] = value
-    return _format_tool_call_inline(name, safe_args)
-
-
-def _parse_approval_choice(raw_choice: str) -> str:
-    """Parse approval input from variants like '1', '[1] Approve', 'approve'."""
-    text = (raw_choice or "").strip().lower()
-    if not text:
-        return "reject"
-
-    # Match explicit intent first to avoid accidental privilege escalation.
-    if "reject" in text or text.startswith("deny"):
-        return "reject"
-    if "approve all" in text or "approve tools" in text:
-        return "approve_all"
-    if text.startswith("approve"):
-        return "approve"
-
-    match = _APPROVAL_CHOICE_RE.search(text)
-    if not match:
-        return "reject"
-    return {"1": "approve", "2": "approve_all", "3": "reject"}[match.group(0)]
-
-
-def _truncate_value(val: Any, max_len: int = _MAX_INLINE_VALUE_LEN) -> str:
-    """Truncate a single arg value for display."""
-    s = _INLINE_WHITESPACE_RE.sub(" ", str(val)).strip()
-    if len(s) <= max_len:
-        return s
-    return s[:max_len] + " …"
-
-
-def _normalize_tool_output(output: str) -> str:
-    """Normalize tool output for stable terminal rendering."""
-    if not output:
-        return ""
-    normalized = output.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = "\n".join(line.rstrip() for line in normalized.splitlines())
-    return normalized.strip("\n")
-
-
-def _format_tool_call_inline(name: str, args: Dict[str, Any]) -> str:
-    """Single-line tool call display."""
-    if not args:
-        return f"🔧 {name}"
-
-    ordered_keys = [k for k in _PREVIEW_KEY_PRIORITY if k in args]
-    ordered_keys.extend(k for k in args if k not in ordered_keys)
-    pairs = []
-    for key in ordered_keys[:_MAX_INLINE_ARG_PAIRS]:
-        pairs.append(f"{key}={_truncate_value(args[key], max_len=40)}")
-    if len(ordered_keys) > _MAX_INLINE_ARG_PAIRS:
-        pairs.append("...")
-    return f"🔧 {name}({', '.join(pairs)})"
-
-
-def _summarize_file_list_result(output: str) -> Optional[str]:
-    """Summarize tab-separated file_list output in one line."""
-    normalized = output.replace("\r\n", "\n").replace("\r", "\n")
-    lines = [line for line in normalized.splitlines() if line.strip()]
-    if not lines:
-        return None
-    if lines == ["(empty directory)"]:
-        return "empty directory"
-
-    parsed_rows: list[tuple[str, str, str]] = []
-    for line in lines:
-        parts = line.split("\t", 2)
-        if len(parts) != 3:
-            return None
-        file_type, size, path = parts
-        parsed_rows.append((file_type.strip(), size.strip(), path.strip()))
-
-    preview_items: list[str] = []
-    for file_type, _size, path in parsed_rows[:3]:
-        preview_items.append(f"{path}/" if file_type == "dir" else path)
-    summary = f"{len(parsed_rows)} entries"
-    if preview_items:
-        summary += ": " + ", ".join(preview_items)
-    if len(parsed_rows) > 3:
-        summary += ", ..."
-    return summary
-
-
-def _summarize_tool_result(name: str, result: str) -> str:
-    """Single-line tool result summary."""
-    if not result:
-        return "ok"
-
-    if name == "file_list":
-        file_list_summary = _summarize_file_list_result(result)
-        if file_list_summary is not None:
-            return file_list_summary
-
-    normalized = _normalize_tool_output(result).replace("\t", " ")
-    if not normalized:
-        return "ok"
-
-    lines = [line for line in normalized.splitlines() if line.strip()]
-    if not lines:
-        return "ok"
-
-    summary = _INLINE_WHITESPACE_RE.sub(" ", lines[0]).strip()
-    if len(lines) > 1:
-        summary += f" (+{len(lines) - 1} lines)"
-    return _truncate_value(summary, max_len=_MAX_RESULT_SUMMARY_LEN)
+_PROMPT_STYLE = Style.from_dict({"bottom-toolbar": "fg:#6b7280 bg:default"})
 
 
 def _fuzzy_token_match(token: str, text: str) -> bool:
@@ -216,7 +89,6 @@ class ResumeCLICompleter(Completer):
         "/config",
         "/export",
         "/auto-approve",
-        "/stream",
         "/quit",
         "/exit",
     ]
@@ -267,7 +139,7 @@ class ResumeCLICompleter(Completer):
         command = parts[0].lower()
         current = parts[-1]
 
-        if command in {"/stream", "/auto-approve"} and len(parts) == 2:
+        if command == "/auto-approve" and len(parts) == 2:
             yield from self._yield_options(["on", "off", "status"], current)
             return
         if command == "/delete-session" and len(parts) == 2:
@@ -294,7 +166,6 @@ def print_banner():
 ║    /compact  - Compress older history now                 ║
 ║    /context  - Show current context budget                ║
 ║    /clear-sessions - Delete all saved sessions            ║
-║    /stream   - Toggle streaming output                    ║
 ║    /resume   - Resume a saved session                     ║
 ║    /quit     - Exit the agent                             ║
 ║                                                           ║
@@ -322,7 +193,6 @@ def print_help():
 | `/config` | Show current configuration |
 | `/export [target] [format]` | Export conversation history |
 | `/auto-approve [on|off|status]` | Control auto-approval for write tools |
-| `/stream [on|off|status]` | Control streaming output in interactive mode |
 
 ### Session Management
 
@@ -882,29 +752,31 @@ def _render_context_status(agent: ResumeAgent) -> bool:
     return True
 
 
-def _format_compact_token_count(value: Optional[int]) -> str:
-    """Format token counts compactly for tight CLI status areas."""
-    if not isinstance(value, int):
-        return "unknown"
-    if value >= 1_000_000:
-        text = f"{value / 1_000_000:.2f}".rstrip("0").rstrip(".")
-        return f"{text}M"
-    if value >= 1_000:
-        text = f"{value / 1_000:.1f}".rstrip("0").rstrip(".")
-        return f"{text}K"
-    return str(value)
+def _format_context_left_percent(budget: Any) -> str:
+    """Format remaining context as a percentage-left label."""
+    remaining = getattr(budget, "estimated_remaining_context", None)
+    window = getattr(budget, "context_window", None)
+    if isinstance(remaining, int) and isinstance(window, int) and window > 0:
+        percent_left = max(0.0, min(100.0, (remaining / window) * 100))
+        return f"{percent_left:.1f}% left"
+
+    usage_percent = getattr(budget, "usage_percent", None)
+    if isinstance(usage_percent, (int, float)):
+        percent_left = max(0.0, min(100.0, 100.0 - float(usage_percent)))
+        return f"{percent_left:.1f}% left"
+
+    return "unknown"
 
 
-def _build_context_rprompt(agent: ResumeAgent) -> Optional[str]:
-    """Build a compact right-side prompt for remaining context budget."""
+def _build_state_lines(agent: ResumeAgent) -> str:
+    """Build a single-line state line shown below the input box."""
     budget = _get_context_budget_snapshot(agent)
-    if budget is None:
-        return None
+    context_text = _format_context_left_percent(budget) if budget is not None else "unknown"
 
-    if not isinstance(getattr(budget, "estimated_remaining_context", None), int):
-        return None
+    model = getattr(getattr(agent, "llm_config", None), "model", None) or "unknown"
+    workspace = getattr(getattr(agent, "agent_config", None), "workspace_dir", None) or "."
 
-    return f"ctx {_format_compact_token_count(budget.estimated_remaining_context)} left"
+    return f"Context: {context_text}  |  Model: {model}  |  Workspace: {workspace}"
 
 
 def _render_loaded_history(agent: ResumeAgent, max_rows: int = 8) -> None:
@@ -1163,24 +1035,6 @@ async def handle_command(
             console.print("✓ Auto-approve disabled for write tools.", style="yellow")
         else:
             console.print("Usage: /auto-approve [on|off|status]", style="yellow")
-
-    elif cmd == "/stream" or cmd.startswith("/stream "):
-        if runtime_options is None:
-            console.print("Streaming controls unavailable in this mode.", style="yellow")
-            return True
-        parts = cmd.split(maxsplit=1)
-        action = parts[1].strip().lower() if len(parts) > 1 else "status"
-        if action in {"status", "state"}:
-            state = "on" if bool(runtime_options.get("stream_enabled", False)) else "off"
-            console.print(f"Streaming is {state}.", style="green" if state == "on" else "yellow")
-        elif action in {"on", "true", "1", "yes"}:
-            runtime_options["stream_enabled"] = True
-            console.print("✓ Streaming enabled.", style="green")
-        elif action in {"off", "false", "0", "no"}:
-            runtime_options["stream_enabled"] = False
-            console.print("✓ Streaming disabled.", style="yellow")
-        else:
-            console.print("Usage: /stream [on|off|status]", style="yellow")
 
     elif cmd.startswith("/export"):
         # Parse export command: /export [file|clipboard] [format] [verbose]
@@ -1505,30 +1359,32 @@ async def _consume_wire(
     session: PromptSession,
     esc_pause_event: Optional[threading.Event] = None,
     esc_paused_event: Optional[threading.Event] = None,
-) -> None:
+) -> InteractiveTurnRenderer:
     """Consume Wire messages and render them to the CLI.
 
     Handles ApprovalRequests inline by prompting the user.
     Runs as a background asyncio task alongside agent.run().
     """
+    renderer = InteractiveTurnRenderer(console)
+    renderer.start()
     try:
         while True:
             msg = await ui_side.receive()
 
-            if isinstance(msg, TextDelta):
-                console.print(msg.text, end="")
+            if isinstance(msg, StepBegin):
+                renderer.on_step_begin(msg.n)
+
+            elif isinstance(msg, TextDelta):
+                renderer.on_text_delta(msg.text)
 
             elif isinstance(msg, ToolCallEvent):
-                inline = _format_tool_call_inline(msg.name, msg.arguments)
-                console.print(f"  {inline}", style="cyan", markup=False)
+                renderer.on_tool_call(msg.name, msg.arguments)
 
             elif isinstance(msg, ToolResultEvent):
-                style = "green" if msg.success else "red"
-                icon = "✓" if msg.success else "✗"
-                summary = _summarize_tool_result(msg.name, msg.result)
-                console.print(f"  {icon} {msg.name}: {summary}", style=style, markup=False)
+                renderer.on_tool_result(msg.name, msg.result, msg.success)
 
             elif isinstance(msg, ApprovalRequest):
+                renderer.pause()
                 console.print(
                     f"\n🛡️ Approval required ({len(msg.tool_calls)} tool call(s)):",
                     style="bold cyan",
@@ -1537,7 +1393,7 @@ async def _consume_wire(
                     console.print(f"  Action: {msg.action}", style="bold yellow")
                 for tc in msg.tool_calls:
                     args = dict(tc.arguments) if tc.arguments else {}
-                    preview = _format_tool_call_approval_inline(tc.name, args)
+                    preview = format_tool_call_approval_inline(tc.name, args)
                     console.print(f"  {preview}", style="cyan", markup=False)
                 if msg.description:
                     console.print(
@@ -1561,19 +1417,23 @@ async def _consume_wire(
                 finally:
                     if esc_pause_event is not None:
                         esc_pause_event.clear()
-                msg.resolve(_parse_approval_choice(choice))
+                    renderer.resume()
+                msg.resolve(parse_approval_choice(choice))
 
             elif isinstance(msg, TurnEnd):
+                renderer.finish(msg.final_text)
                 break
 
     except QueueShutDown:
         pass
+    finally:
+        renderer.close()
+    return renderer
 
 
 async def run_interactive(
     agent: ResumeAgent,
     session_manager: Optional[SessionManager] = None,
-    stream_enabled_default: bool = True,
     verbose: bool = False,
 ):
     """Run interactive chat loop."""
@@ -1583,20 +1443,15 @@ async def run_interactive(
         history=FileHistory(str(history_file)),
         completer=ResumeCLICompleter(session_manager=session_manager),
         complete_while_typing=False,
+        style=_PROMPT_STYLE,
     )
     runtime_options: Dict[str, Any] = {
-        "stream_enabled": bool(stream_enabled_default),
         "verbose": bool(verbose),
     }
 
     print_banner()
 
     console.print("🤖 Running in single-agent mode", style="dim")
-    console.print("✅ Inline write approval enabled — file writes prompt before execution", style="green")
-    console.print(
-        f"✅ Streaming {'ON' if runtime_options['stream_enabled'] else 'OFF'} — use /stream [on|off|status]",
-        style="green" if runtime_options["stream_enabled"] else "yellow",
-    )
 
     while True:
         try:
@@ -1604,7 +1459,7 @@ async def run_interactive(
             prompt_prefix = "\n📝 You: "
             user_input = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: session.prompt(prompt_prefix, rprompt=_build_context_rprompt(agent)),
+                lambda: session.prompt(prompt_prefix, bottom_toolbar=_build_state_lines(agent)),
             )
 
             user_input = user_input.strip()
@@ -1638,8 +1493,6 @@ async def run_interactive(
             esc_future = None
 
             try:
-                stream_enabled = bool(runtime_options.get("stream_enabled", False))
-
                 wire = Wire()
                 ui_side = wire.ui_side()
                 esc_pause_event = threading.Event()
@@ -1664,7 +1517,7 @@ async def run_interactive(
                 agent_task = asyncio.create_task(
                     agent.run(
                         user_input,
-                        stream=stream_enabled,
+                        stream=True,
                         wire=wire,
                     )
                 )
@@ -1703,13 +1556,9 @@ async def run_interactive(
                         console.print("\n⚠️ Interrupted by user (ESC).", style="yellow")
                         continue
 
-                response = await agent_task
-
-                console.print()
-                if response.startswith("Error:"):
-                    console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="red"))
-                else:
-                    console.print(Panel(Markdown(response), title="🤖 Assistant", border_style="green"))
+                await agent_task
+                if consumer_task is not None:
+                    await consumer_task
 
             except KeyboardInterrupt:
                 if agent_task is not None and not agent_task.done():
@@ -1773,19 +1622,6 @@ def main():
         default=False,
         help="Verbose output (show tool executions, session summary, prompt cache stats)",
     )
-    parser.add_argument(
-        "--stream",
-        dest="stream",
-        action="store_true",
-        help="Enable streaming output (interactive default is off)",
-    )
-    parser.add_argument(
-        "--no-stream",
-        dest="stream",
-        action="store_false",
-        help="Disable streaming output",
-    )
-    parser.set_defaults(stream=None)
 
     args = parser.parse_args()
 
@@ -1837,15 +1673,16 @@ def main():
     )
 
     # Interactive mode (default and only mode)
-    interactive_stream_default = False if args.stream is None else bool(args.stream)
-    asyncio.run(
-        run_interactive(
-            agent,
-            session_manager,
-            stream_enabled_default=interactive_stream_default,
-            verbose=args.verbose,
+    try:
+        asyncio.run(
+            run_interactive(
+                agent,
+                session_manager,
+                verbose=args.verbose,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        console.print("\n👋 Goodbye!", style="yellow")
 
 
 if __name__ == "__main__":
